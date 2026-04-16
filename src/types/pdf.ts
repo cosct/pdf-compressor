@@ -1,16 +1,59 @@
-export type CompressionPreset = 'conservative' | 'balanced' | 'maximum'
+/**
+ * Frontend type definitions for the PDF compression workflow.
+ * PDF 压缩工作流的前端类型定义。
+ */
+
+export type CompressionPreset = 'conservative' | 'balanced' | 'maximum' | 'custom'
 export type DocumentKind = 'text-native' | 'mixed' | 'scan-heavy'
+export type NoticeTone = 'neutral' | 'success' | 'warning' | 'danger'
+export type WorkflowState =
+  | 'idle'
+  | 'selected'
+  | 'analyzing'
+  | 'ready'
+  | 'compressing'
+  | 'success'
+  | 'error'
+
+export type ProgressPhase = 'queued' | 'analyzing' | 'compressing' | 'writing' | 'done' | 'error'
 
 export interface CompressionSettings {
   preset: CompressionPreset
   imageQuality: number
-  maxImageSizePx: number
+  maxImageSizePercent: number
+  referenceMaxImageEdgePx: number | null
   optimizeImages: boolean
   compressStreams: boolean
   stripMetadata: boolean
+  outputDir: string | null
 }
 
-export type NoticeTone = 'neutral' | 'success' | 'warning' | 'danger'
+export interface PresetDefaults {
+  imageQuality: number
+  maxImageSizePercent: number
+}
+
+export type PresetProfile = PresetDefaults
+
+export type PresetProfileMap = Record<CompressionPreset, PresetProfile>
+
+export interface PresetUserConfig {
+  version: number
+  presets: Partial<Record<CompressionPreset, PresetProfile>>
+}
+
+export interface BackendMessage {
+  code: string
+  level: NoticeTone
+  values?: Record<string, string>
+  fallback?: string
+}
+
+export interface ProgressUpdate {
+  phase: ProgressPhase
+  percent: number
+  message?: BackendMessage | null
+}
 
 export interface NoticeItem {
   id: string
@@ -30,6 +73,9 @@ export interface AnalysisSummary {
   scannedConfidence?: number | null
   estimatedSavingsPercent?: number | null
   recommendedPreset?: CompressionPreset | null
+  maxImageEdgePx?: number | null
+  recommendedMaxImageSizePx?: number | null
+  recommendedImageQuality?: number | null
   isLikelyScanned?: boolean | null
   notes: NoticeItem[]
 }
@@ -50,11 +96,17 @@ export interface CompressionResult {
   notes: NoticeItem[]
 }
 
-export type WorkflowState =
-  | 'idle'
-  | 'selected'
-  | 'analyzing'
-  | 'ready'
-  | 'compressing'
-  | 'success'
-  | 'error'
+export interface PdfQueueJob {
+  id: string
+  sourcePath: string
+  fileName: string
+  status: WorkflowState
+  progress: ProgressUpdate
+  analysis: AnalysisSummary | null
+  result: CompressionResult | null
+  settings: CompressionSettings
+  recommendedSettings: CompressionSettings
+  useRecommendedSettings: boolean
+  error: NoticeItem | null
+  lastAction: 'analyze' | 'compress' | null
+}

@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "0.1.0"
+version = "0.2.0"
 description = "A selective PDF compression desktop app built with Tauri and Rust"
 authors = ["cosct"]
 license = "MIT"
@@ -18,13 +18,32 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2.5.6", features = [] }
 
 [dependencies]
+dirs-next = "2.0"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 lopdf = "0.38"
+opener = { version = "0.7", features = ["reveal"] }
 log = "0.4"
-printpdf = { version = "0.8", default-features = false, features = ["jpeg", "png"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
 tauri = { version = "2.10.3", features = [] }
 thiserror = "2"
+
+[lints.rust]
+future-incompatible = "warn"
+nonstandard-style = "warn"
+rust-2018-idioms = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = 10 }
+perf = { level = "warn", priority = 9 }
+redundant_clone = { level = "deny", priority = 8 }
+needless_borrow = { level = "deny", priority = 8 }
+ptr_arg = { level = "deny", priority = 8 }
+too_many_arguments = { level = "deny", priority = 8 }
+useless_conversion = { level = "deny", priority = 8 }
+manual_ok_or = { level = "deny", priority = 8 }
+
+[profile.dev]
+opt-level = 2

@@ -1,61 +1,190 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-import type { CompressionPreset, CompressionSettings } from '../types/pdf'
+import {
+  clearUserPresetConfig,
+  getDefaultPresetProfiles,
+  hasUserPresetConfig,
+  loadPresetProfiles,
+  saveUserPresetProfile,
+} from '../config/presets'
+import type { AnalysisSummary, CompressionPreset, CompressionSettings } from '../types/pdf'
+import {
+  calculateMaxImageSizePx,
+  clampImageQuality,
+  clampMaxImageSizePercent,
+  MAX_IMAGE_QUALITY,
+  MAX_IMAGE_SIZE_PERCENT,
+  MIN_IMAGE_QUALITY,
+  MIN_IMAGE_SIZE_PERCENT,
+  normalizeReferenceMaxImageEdgePx,
+} from '../utils/compressionSettings'
 
-const props = defineProps<{
-  settings: CompressionSettings
-  disabled: boolean
-  recommendedPreset: CompressionPreset | null | undefined
-}>()
+const props = withDefaults(
+  defineProps<{
+    settings: CompressionSettings
+    disabled: boolean
+    canApplyToAll?: boolean
+    recommendedPreset: CompressionPreset | null | undefined
+    analysis?: AnalysisSummary | null
+  }>(),
+  {
+    analysis: null,
+    canApplyToAll: false,
+  },
+)
 
 const emit = defineEmits<{
   'update:settings': [value: CompressionSettings]
+  'apply-settings-to-all': []
 }>()
 
 const { t } = useI18n()
 
-const presetOptions = computed<
-  Array<{ value: CompressionPreset; title: string; description: string }>
->(() => [
-  {
-    value: 'conservative',
-    title: t('app.preset.conservative'),
-    description: t('settings.presetDescriptions.conservative'),
-  },
-  {
-    value: 'balanced',
-    title: t('app.preset.balanced'),
-    description: t('settings.presetDescriptions.balanced'),
-  },
-  {
-    value: 'maximum',
-    title: t('app.preset.maximum'),
-    description: t('settings.presetDescriptions.maximum'),
-  },
+function normalizeSettings(settings: CompressionSettings): CompressionSettings {
+  const resolvedReferenceMaxImageEdgePx =
+    normalizeReferenceMaxImageEdgePx(settings.referenceMaxImageEdgePx) ??
+    normalizeReferenceMaxImageEdgePx(props.analysis?.maxImageEdgePx)
+
+  return {
+    ...settings,
+    imageQuality: clampImageQuality(settings.imageQuality),
+    maxImageSizePercent: clampMaxImageSizePercent(settings.maxImageSizePercent),
+    referenceMaxImageEdgePx: resolvedReferenceMaxImageEdgePx,
+  }
+}
+
+const defaultPresetProfiles = getDefaultPresetProfiles()
+const presetProfiles = ref(getDefaultPresetProfiles())
+const hasCustomPresets = ref(false)
+const presetConfigBusy = ref(false)
+const maxImageEdgePx = computed(() => props.analysis?.maxImageEdgePx ?? 0)
+const hasAnalysisResult = computed(() => maxImageEdgePx.value > 0)
+const displayMaxImageSizePx = computed(() =>
+  hasAnalysisResult.value
+    ? calculateMaxImageSizePx(props.settings.maxImageSizePercent, maxImageEdgePx.value)
+    : null,
+)
+
+const displayMaxImagePercent = computed(
+  () => clampMaxImageSizePercent(props.settings.maxImageSizePercent),
+)
+const canResetPresets = computed(() => {
+  const defaults = defaultPresetProfiles[props.settings.preset]
+
+  return (
+    hasCustomPresets.value ||
+    clampImageQuality(props.settings.imageQuality) !== defaults.imageQuality ||
+    displayMaxImagePercent.value !== defaults.maxImageSizePercent ||
+    props.settings.optimizeImages !== true ||
+    props.settings.compressStreams !== true ||
+    props.settings.stripMetadata !== true
+  )
+})
+
+const presetOptions = computed<Array<{ value: CompressionPreset; title: string }>>(() => [
+  { value: 'conservative', title: t('app.preset.conservative') },
+  { value: 'balanced', title: t('app.preset.balanced') },
+  { value: 'maximum', title: t('app.preset.maximum') },
+  { value: 'custom', title: t('app.preset.custom') },
 ])
 
-const settingsMetrics = computed(() => [
-  {
-    label: t('app.profile'),
-    value: t(`app.preset.${props.settings.preset}`),
-  },
-  {
-    label: t('settings.quality'),
-    value: String(props.settings.imageQuality),
-  },
-  {
-    label: t('settings.maxEdge'),
-    value: `${props.settings.maxImageSizePx} px`,
-  },
-])
+async function refreshPresetProfiles() {
+  presetConfigBusy.value = true
+
+  try {
+    const [profiles, hasCustomConfig] = await Promise.all([
+      loadPresetProfiles(),
+      hasUserPresetConfig(),
+    ])
+    presetProfiles.value = profiles
+    hasCustomPresets.value = hasCustomConfig
+  } finally {
+    presetConfigBusy.value = false
+  }
+}
+
+async function saveCurrentAsPreset() {
+  const preset = props.settings.preset
+  const percent = displayMaxImagePercent.value
+
+  presetConfigBusy.value = true
+
+  try {
+    await saveUserPresetProfile(preset, {
+      imageQuality: clampImageQuality(props.settings.imageQuality),
+      maxImageSizePercent: percent,
+    })
+    await refreshPresetProfiles()
+  } finally {
+    presetConfigBusy.value = false
+  }
+}
+
+async function resetToDefaults() {
+  presetConfigBusy.value = true
+
+  try {
+    if (hasCustomPresets.value) {
+      await clearUserPresetConfig()
+    }
+
+    const defaults = getDefaultPresetProfiles()
+    const nextPreset = props.settings.preset
+
+    presetProfiles.value = defaults
+    hasCustomPresets.value = false
+
+    emit('update:settings', normalizeSettings({
+      ...props.settings,
+      preset: nextPreset,
+      imageQuality: defaults[nextPreset].imageQuality,
+      maxImageSizePercent: defaults[nextPreset].maxImageSizePercent,
+      optimizeImages: true,
+      compressStreams: true,
+      stripMetadata: true,
+    }))
+  } finally {
+    presetConfigBusy.value = false
+  }
+}
+
+onMounted(() => {
+  void refreshPresetProfiles()
+})
+
+function applyLocalPresetPercent(preset: CompressionPreset, percent: number) {
+  presetProfiles.value = {
+    ...presetProfiles.value,
+    [preset]: {
+      ...presetProfiles.value[preset],
+      maxImageSizePercent: clampMaxImageSizePercent(percent),
+    },
+  }
+}
+
+function selectPreset(value: CompressionPreset) {
+  const defaults = presetProfiles.value[value]
+  emit('update:settings', normalizeSettings({
+    ...props.settings,
+    preset: value,
+    imageQuality: defaults.imageQuality,
+    maxImageSizePercent: defaults.maxImageSizePercent,
+  }))
+}
+
+function updateMaxImageSizePercent(percent: number) {
+  const normalizedPercent = clampMaxImageSizePercent(percent)
+  applyLocalPresetPercent(props.settings.preset, normalizedPercent)
+  emit('update:settings', normalizeSettings({
+    ...props.settings,
+    maxImageSizePercent: normalizedPercent,
+  }))
+}
 
 function updateSetting<K extends keyof CompressionSettings>(key: K, value: CompressionSettings[K]) {
-  emit('update:settings', {
-    ...props.settings,
-    [key]: value,
-  })
+  emit('update:settings', normalizeSettings({ ...props.settings, [key]: value }))
 }
 
 function handlePresetKeydown(event: KeyboardEvent, index: number) {
@@ -85,7 +214,7 @@ function handlePresetKeydown(event: KeyboardEvent, index: number) {
   }
 
   event.preventDefault()
-  updateSetting('preset', presetOptions.value[nextIndex].value)
+  selectPreset(presetOptions.value[nextIndex].value)
 
   const currentTarget = event.currentTarget
   if (!(currentTarget instanceof HTMLElement)) {
@@ -97,274 +226,502 @@ function handlePresetKeydown(event: KeyboardEvent, index: number) {
   )
   nextPresetButton?.focus()
 }
+
+function presetSnapshotLabel(preset: CompressionPreset): string {
+  const snapshot = presetProfiles.value[preset] ?? defaultPresetProfiles[preset]
+  return `${snapshot.imageQuality}/${snapshot.maxImageSizePercent}%`
+}
 </script>
 
 <template>
-  <section class="panel-surface settings-panel">
-    <div class="section-header settings-panel__header">
-      <div>
-        <p class="section-kicker">{{ t('settings.eyebrow') }}</p>
-        <h2>{{ t('settings.title') }}</h2>
-        <p class="settings-panel__body">{{ t('settings.body') }}</p>
+  <section class="settings-dock">
+    <div class="dock-head">
+      <div class="panel-header">
+        <svg class="panel-header__icon" width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+          <path d="M10 12.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z" stroke="var(--fd-accent)" stroke-width="1.3"/>
+          <path d="M16.16 12.42a1.27 1.27 0 0 0 .25 1.4l.05.05a1.54 1.54 0 1 1-2.18 2.18l-.05-.05a1.27 1.27 0 0 0-1.4-.25 1.27 1.27 0 0 0-.77 1.16v.14a1.54 1.54 0 0 1-3.08 0v-.07a1.27 1.27 0 0 0-.83-1.16 1.27 1.27 0 0 0-1.4.25l-.05.05A1.54 1.54 0 1 1 4.52 14l.05-.05a1.27 1.27 0 0 0 .25-1.4A1.27 1.27 0 0 0 3.66 11.78h-.14a1.54 1.54 0 0 1 0-3.08h.07a1.27 1.27 0 0 0 1.16-.83 1.27 1.27 0 0 0-.25-1.4L4.45 6.42A1.54 1.54 0 1 1 6.63 4.24l.05.05a1.27 1.27 0 0 0 1.4.25h.06a1.27 1.27 0 0 0 .77-1.16v-.14a1.54 1.54 0 0 1 3.08 0v.07a1.27 1.27 0 0 0 .77 1.16 1.27 1.27 0 0 0 1.4-.25l.05-.05a1.54 1.54 0 1 1 2.18 2.18l-.05.05a1.27 1.27 0 0 0-.25 1.4v.06a1.27 1.27 0 0 0 1.16.77h.14a1.54 1.54 0 0 1 0 3.08h-.07a1.27 1.27 0 0 0-1.16.77Z" stroke="var(--fd-text-tertiary)" stroke-width="1.1" fill="none"/>
+        </svg>
+        <div class="panel-header__copy">
+          <h2>{{ t('settings.eyebrow') }}</h2>
+        </div>
       </div>
-      <span v-if="props.recommendedPreset" class="app-chip app-chip--accent">
-        {{ t('settings.recommendationPrefix') }}: {{ t(`app.preset.${props.recommendedPreset}`) }}
-      </span>
+
+      <div class="preset-actions">
+        <button
+          class="fd-button fd-button--subtle"
+          type="button"
+          :disabled="props.disabled || presetConfigBusy"
+          @click="saveCurrentAsPreset"
+        >
+          {{ t('settings.savePreset') }}
+        </button>
+        <button
+          class="fd-button fd-button--subtle"
+          type="button"
+          :disabled="presetConfigBusy || !canResetPresets"
+          @click="resetToDefaults"
+        >
+          {{ t('settings.resetPresets') }}
+        </button>
+        <button class="fd-button fd-button--subtle" type="button" :disabled="!props.canApplyToAll" @click="emit('apply-settings-to-all')">
+          {{ t('settings.applyToAll') }}
+        </button>
+      </div>
     </div>
 
-    <dl class="settings-metrics">
-      <div v-for="metric in settingsMetrics" :key="metric.label">
-        <dt>{{ metric.label }}</dt>
-        <dd>{{ metric.value }}</dd>
-      </div>
-    </dl>
-
-    <div class="preset-switch" role="radiogroup" :aria-label="t('settings.presetGroupLabel')" :aria-disabled="props.disabled ? 'true' : 'false'">
+    <div
+      class="preset-ribbon"
+      role="radiogroup"
+      :aria-label="t('settings.presetGroupLabel')"
+      :aria-disabled="props.disabled ? 'true' : 'false'"
+    >
       <button
         v-for="(option, index) in presetOptions"
         :key="option.value"
-        class="preset-switch__option"
-        :class="{ 'preset-switch__option--active': props.settings.preset === option.value }"
+        class="preset-pill"
+        :class="{ 'preset-pill--active': props.settings.preset === option.value }"
         type="button"
         role="radio"
         :aria-checked="props.settings.preset === option.value ? 'true' : 'false'"
         :tabindex="props.settings.preset === option.value ? 0 : -1"
         :data-preset-index="index"
         :disabled="props.disabled"
-        @click="updateSetting('preset', option.value)"
+        @click="selectPreset(option.value)"
         @keydown="handlePresetKeydown($event, index)"
       >
-        <strong>{{ option.title }}</strong>
-        <small>{{ option.description }}</small>
+        <span class="preset-pill__head">
+          <span class="preset-pill__title-line">
+            <span class="preset-pill__title">{{ option.title }}</span>
+            <span class="preset-pill__meta">{{ presetSnapshotLabel(option.value) }}</span>
+          </span>
+          <span v-if="props.recommendedPreset === option.value" class="preset-pill__badge">
+            {{ t('settings.recommendedBadge') }}
+          </span>
+        </span>
       </button>
     </div>
 
-    <div class="slider-grid">
-      <label class="range-control">
-        <span>
-          {{ t('settings.quality') }}
-          <strong>{{ props.settings.imageQuality }}</strong>
+    <details class="advanced-panel" open>
+      <summary>
+        <span class="advanced-panel__summary">
+          <strong>{{ t('settings.advancedToggle') }}</strong>
         </span>
-        <input
-          type="range"
-          min="40"
-          max="90"
-          step="2"
-          :value="props.settings.imageQuality"
-          :disabled="props.disabled"
-          @input="updateSetting('imageQuality', Number(($event.target as HTMLInputElement).value))"
-        />
-      </label>
+        <svg class="advanced-panel__chevron" width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+          <path d="M3 4.5l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </summary>
 
-      <label class="range-control">
-        <span>
-          {{ t('settings.maxEdge') }}
-          <strong>{{ props.settings.maxImageSizePx }} px</strong>
-        </span>
-        <input
-          type="range"
-          min="800"
-          max="3200"
-          step="100"
-          :value="props.settings.maxImageSizePx"
-          :disabled="props.disabled"
-          @input="updateSetting('maxImageSizePx', Number(($event.target as HTMLInputElement).value))"
-        />
-      </label>
-    </div>
+      <div class="advanced-content">
+        <div class="slider-row">
+          <label class="slider-control">
+            <span class="slider-label">
+              <span>{{ t('settings.quality') }}</span>
+              <span class="slider-label__value">
+                <strong>{{ props.settings.imageQuality }}</strong>
+              </span>
+            </span>
+            <input
+              type="range"
+              :min="MIN_IMAGE_QUALITY"
+              :max="MAX_IMAGE_QUALITY"
+              step="1"
+              :value="props.settings.imageQuality"
+              :disabled="props.disabled"
+              @input="updateSetting('imageQuality', Number(($event.target as HTMLInputElement).value))"
+            />
+          </label>
 
-    <div class="toggle-list">
-      <label class="toggle-row">
-        <input
-          type="checkbox"
-          :checked="props.settings.optimizeImages"
-          :disabled="props.disabled"
-          @change="updateSetting('optimizeImages', ($event.target as HTMLInputElement).checked)"
-        />
-        <span>
-          <strong>{{ t('settings.optimizeImages') }}</strong>
-          <small>{{ t('settings.optimizeImagesHint') }}</small>
-        </span>
-      </label>
+          <label class="slider-control">
+            <span class="slider-label">
+              <span>{{ t('settings.maxEdge') }}</span>
+              <span class="slider-label__value">
+                <strong>{{ displayMaxImagePercent }}%</strong>
+                <span v-if="displayMaxImageSizePx !== null" class="slider-label__hint">
+                  {{ displayMaxImageSizePx }} px
+                </span>
+              </span>
+            </span>
+            <input
+              type="range"
+              :min="MIN_IMAGE_SIZE_PERCENT"
+              :max="MAX_IMAGE_SIZE_PERCENT"
+              step="1"
+              :value="displayMaxImagePercent"
+              :disabled="props.disabled"
+              @input="updateMaxImageSizePercent(Number(($event.target as HTMLInputElement).value))"
+            />
+          </label>
+        </div>
 
-      <label class="toggle-row">
-        <input
-          type="checkbox"
-          :checked="props.settings.compressStreams"
-          :disabled="props.disabled"
-          @change="updateSetting('compressStreams', ($event.target as HTMLInputElement).checked)"
-        />
-        <span>
-          <strong>{{ t('settings.compressStreams') }}</strong>
-          <small>{{ t('settings.compressStreamsHint') }}</small>
-        </span>
-      </label>
+        <div class="toggle-list">
+          <label class="toggle-chip">
+            <span class="fd-toggle">
+              <input
+                type="checkbox"
+                :checked="props.settings.optimizeImages"
+                :disabled="props.disabled"
+                @change="updateSetting('optimizeImages', ($event.target as HTMLInputElement).checked)"
+              />
+            </span>
+            <span class="toggle-chip__label">{{ t('settings.optimizeImages') }}</span>
+          </label>
 
-      <label class="toggle-row">
-        <input
-          type="checkbox"
-          :checked="props.settings.stripMetadata"
-          :disabled="props.disabled"
-          @change="updateSetting('stripMetadata', ($event.target as HTMLInputElement).checked)"
-        />
-        <span>
-          <strong>{{ t('settings.stripMetadata') }}</strong>
-          <small>{{ t('settings.stripMetadataHint') }}</small>
-        </span>
-      </label>
-    </div>
+          <label class="toggle-chip">
+            <span class="fd-toggle">
+              <input
+                type="checkbox"
+                :checked="props.settings.compressStreams"
+                :disabled="props.disabled"
+                @change="updateSetting('compressStreams', ($event.target as HTMLInputElement).checked)"
+              />
+            </span>
+            <span class="toggle-chip__label">{{ t('settings.compressStreams') }}</span>
+          </label>
+
+          <label class="toggle-chip">
+            <span class="fd-toggle">
+              <input
+                type="checkbox"
+                :checked="props.settings.stripMetadata"
+                :disabled="props.disabled"
+                @change="updateSetting('stripMetadata', ($event.target as HTMLInputElement).checked)"
+              />
+            </span>
+            <span class="toggle-chip__label">{{ t('settings.stripMetadata') }}</span>
+          </label>
+        </div>
+      </div>
+    </details>
   </section>
 </template>
 
 <style scoped>
-.settings-panel,
-.slider-grid,
-.toggle-list,
-.settings-metrics {
+.settings-dock {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fd-space-8);
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.dock-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--fd-space-8);
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  gap: var(--fd-space-8);
+}
+
+.panel-header__icon {
+  flex-shrink: 0;
+}
+
+.panel-header__copy {
+  display: flex;
+  flex-direction: column;
+}
+
+.panel-header h2 {
+  font: var(--fd-text-section);
+}
+
+.preset-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--fd-space-6);
+}
+
+.preset-actions .fd-button {
+  min-height: 26px;
+  padding: 0 8px;
+  border-radius: 12px;
+  font: var(--fd-text-caption);
+}
+
+.preset-ribbon {
   display: grid;
-  gap: var(--space-4);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--fd-space-6);
 }
 
-.settings-panel__body,
-.preset-switch__option small,
-.toggle-row small,
-.settings-metrics dt {
-  margin: 0;
-  color: var(--color-ink-muted);
-}
-
-.settings-metrics {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.settings-metrics div,
-.preset-switch__option,
-.range-control,
-.toggle-row {
-  border: 1px solid var(--color-line);
-  border-radius: var(--radius-2);
-  background: var(--color-surface-strong);
-}
-
-.settings-metrics div {
-  padding: var(--space-3);
-  background: linear-gradient(180deg, rgba(7, 17, 26, 0.42), rgba(18, 36, 54, 0.76));
-}
-
-.settings-metrics dd {
-  margin: var(--space-1) 0 0;
-  color: var(--color-ink-strong);
-  font-weight: 600;
-}
-
-.preset-switch {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: var(--space-2);
-}
-
-.preset-switch__option {
-  display: grid;
-  gap: var(--space-1);
-  padding: var(--space-4);
+.preset-pill {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 6px;
+  min-height: 46px;
+  padding: 8px 8px;
+  border: 1px solid var(--fd-control-stroke);
+  border-radius: 14px;
+  background: var(--fd-layer-2);
+  color: var(--fd-text-primary);
+  cursor: pointer;
   text-align: left;
+  transition:
+    background-color var(--fd-duration-fast) var(--fd-easing-standard),
+    border-color var(--fd-duration-fast) var(--fd-easing-standard),
+    box-shadow var(--fd-duration-fast) var(--fd-easing-standard);
+}
+
+.preset-pill:hover:not(:disabled) {
+  background: var(--fd-control-bg-hover);
+}
+
+.preset-pill--active {
+  border-color: var(--fd-accent-border);
+  background: var(--fd-accent-subtle);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fd-accent) 18%, transparent);
+}
+
+.preset-pill:focus-visible {
+  outline: none;
+  box-shadow: var(--fd-shadow-focus);
+}
+
+.preset-pill:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.preset-pill__head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+
+.preset-pill__title-line {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 6px;
+  width: 100%;
+}
+
+.preset-pill__title {
+  min-width: 0;
+  font: 600 12px/1.2 var(--fd-font-family);
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.preset-pill__meta {
+  color: var(--fd-text-secondary);
+  font: 600 10px/1.2 var(--fd-font-family);
+  white-space: nowrap;
+  text-align: right;
+}
+
+.preset-pill__badge {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  min-height: 16px;
+  padding: 0 6px;
+  border: 1px solid var(--fd-accent-border);
+  border-radius: var(--fd-radius-full);
+  background: var(--fd-accent);
+  color: var(--fd-accent-text);
+  font: 700 10px/1 var(--fd-font-family);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.advanced-panel {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  min-height: 0;
+  border: 1px solid var(--fd-stroke-card);
+  border-radius: 18px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--fd-layer-2) 92%, transparent);
+}
+
+.advanced-panel[open] {
+  flex: 1 1 auto;
+}
+
+.advanced-panel:not([open]) {
+  overflow: hidden;
+}
+
+.advanced-panel summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--fd-space-8);
+  min-height: 36px;
+  padding: 6px 12px;
+  cursor: pointer;
+  list-style: none;
+  transition: background-color var(--fd-duration-fast) var(--fd-easing-standard);
+}
+
+.advanced-panel summary:hover {
+  background: var(--fd-subtle-bg-hover);
+}
+
+.advanced-panel summary::-webkit-details-marker {
+  display: none;
+}
+
+.advanced-panel__summary {
+  display: flex;
+  align-items: center;
+  min-height: 24px;
+}
+
+.advanced-panel__summary strong {
+  font: var(--fd-text-body-strong);
+}
+
+
+
+
+.advanced-panel__chevron {
+  color: var(--fd-text-tertiary);
+  transition: transform var(--fd-duration-fast) var(--fd-easing-standard);
+}
+
+.advanced-panel[open] .advanced-panel__chevron {
+  transform: rotate(180deg);
+}
+
+.advanced-content {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--fd-space-8);
+  padding: 8px 12px 12px;
+  min-height: 0;
+  overflow: auto;
+}
+
+.advanced-panel:not([open]) .advanced-content {
+  display: none;
+}
+
+.slider-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--fd-space-8);
+}
+
+.slider-control {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fd-space-6);
+  padding: 10px 12px;
+  border: 1px solid var(--fd-stroke-card);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--fd-layer-1) 88%, transparent);
+}
+
+.slider-label {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--fd-space-4);
+  font: var(--fd-text-caption);
+  color: var(--fd-text-primary);
+  font-weight: 500;
+}
+
+.slider-label__value {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--fd-space-4);
+  min-width: 0;
+  text-align: right;
+}
+
+.slider-label__hint {
+  color: var(--fd-text-tertiary);
+  font-weight: 400;
+}
+
+input[type='range'] {
+  width: 100%;
+  accent-color: var(--fd-accent);
+  cursor: pointer;
+}
+
+input[type='range']:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.toggle-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--fd-space-6);
+}
+
+.toggle-chip {
+  display: flex;
+  align-items: center;
+  gap: var(--fd-space-8);
+  min-height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--fd-stroke-card);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--fd-layer-1) 88%, transparent);
   cursor: pointer;
   transition:
-    border-color var(--transition-fast),
-    background-color var(--transition-fast),
-    box-shadow var(--transition-fast);
+    background-color var(--fd-duration-fast) var(--fd-easing-standard),
+    border-color var(--fd-duration-fast) var(--fd-easing-standard);
 }
 
-.preset-switch__option:hover:not(:disabled) {
-  border-color: rgba(255, 157, 87, 0.28);
-  background: linear-gradient(135deg, rgba(255, 157, 87, 0.08), rgba(14, 29, 44, 0.94));
+.toggle-chip:hover {
+  background: var(--fd-subtle-bg-hover);
 }
 
-.preset-switch__option--active {
-  border-color: var(--color-accent-strong);
-  background: linear-gradient(135deg, var(--color-accent-soft), rgba(14, 29, 44, 0.94));
-  box-shadow: 0 1rem 2rem rgba(4, 10, 19, 0.18);
+.toggle-chip__label {
+  font: var(--fd-text-body);
+  font-weight: 500;
+  color: var(--fd-text-primary);
 }
 
-.preset-switch__option:focus-visible {
-  outline: none;
-  border-color: var(--color-accent-strong);
-  box-shadow: var(--shadow-focus);
+@media (max-width: 1080px) {
+  .dock-head {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .preset-actions {
+    justify-content: flex-start;
+  }
+
+  .preset-ribbon {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .toggle-list {
+    grid-template-columns: 1fr;
+  }
 }
 
-.preset-switch__option strong,
-.range-control strong,
-.toggle-row strong {
-  color: var(--color-ink-strong);
+@media (max-width: 900px) {
+  .slider-row {
+    grid-template-columns: 1fr;
+  }
 }
 
-.slider-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.range-control {
-  display: grid;
-  gap: var(--space-2);
-  padding: var(--space-4);
-  transition:
-    border-color var(--transition-fast),
-    box-shadow var(--transition-fast),
-    background-color var(--transition-fast);
-}
-
-.range-control:focus-within {
-  border-color: var(--color-accent-strong);
-  box-shadow: var(--shadow-focus);
-}
-
-.range-control span {
-  display: flex;
-  justify-content: space-between;
-  gap: var(--space-2);
-  color: var(--color-ink-strong);
-  font-weight: 600;
-}
-
-input[type='range'],
-.toggle-row input {
-  accent-color: var(--color-accent-strong);
-}
-
-.toggle-row {
-  display: flex;
-  gap: var(--space-3);
-  padding: var(--space-4);
-  align-items: flex-start;
-  transition:
-    border-color var(--transition-fast),
-    box-shadow var(--transition-fast),
-    background-color var(--transition-fast);
-}
-
-.toggle-row:hover {
-  border-color: rgba(120, 211, 203, 0.28);
-  background: rgba(12, 26, 39, 0.9);
-}
-
-.toggle-row:focus-within {
-  border-color: var(--color-accent-strong);
-  box-shadow: var(--shadow-focus);
-}
-
-.toggle-row span {
-  display: grid;
-  gap: var(--space-1);
-}
-
-.toggle-row input {
-  margin-top: 0.2rem;
-}
-
-@media (max-width: 62rem) {
-  .settings-metrics,
-  .preset-switch,
-  .slider-grid {
-    grid-template-columns: repeat(1, minmax(0, 1fr));
+@media (max-width: 768px) {
+  .preset-ribbon {
+    grid-template-columns: 1fr;
   }
 }
 </style>

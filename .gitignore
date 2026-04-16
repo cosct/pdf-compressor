@@ -17,9 +17,12 @@ src-tauri/target
 .vscode/*
 !.vscode/extensions.json
 .idea
+.claude
 .DS_Store
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
+AGENTS.md
+RTK.md

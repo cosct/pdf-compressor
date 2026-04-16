@@ -2,9 +2,9 @@
 
 Language versions: `README.md` (English) | `README.zh-CN.md` (简体中文)
 
-PDF Compressor is a local-first desktop app for reducing PDF size with a Rust backend and a Vue 3 + Tauri frontend. It is built around a simple single-file workflow: choose one PDF, analyze whether compression is worth it, adjust a focused set of settings, and export a lighter copy without overwriting the original.
+PDF Compressor is a local-first desktop app for reducing PDF size with a Rust backend and a Vue 3 + Tauri frontend. It supports a multi-file queue workflow: add one or more PDFs, let the app analyze each file, adjust settings per file or globally, and export lighter copies without overwriting the originals.
 
-Current release: `0.1.0`
+Current release: `0.2.0`
 
 Author: `cosct`
 
@@ -12,23 +12,84 @@ Author: `cosct`
 
 This project is designed for selective PDF optimization rather than blind whole-file rewriting. The current pipeline tries to preserve text and vector instructions whenever possible, then reduces size by working on areas that are usually safer to optimize:
 
-- embedded image streams can be recompressed as JPEG and resized when needed
-- eligible non-image PDF streams can be compressed
-- document metadata can be removed
-- the UI runs an analysis pass first so the user can review likely savings and a suggested preset before export
+- Embedded image streams can be recompressed as JPEG and resized when needed
+- Eligible non-image PDF streams can be compressed
+- Document metadata can be removed
+- The UI runs an analysis pass first so the user can review likely savings and a suggested preset before export
 
-The application is desktop-first and local-first. There is no upload flow, no cloud processing, and no batch queue in this release.
+The application is desktop-first and local-first. There is no upload flow and no cloud processing. The desktop release supports a local queue so multiple PDFs can be analyzed and compressed in batch.
+
+## What's New in v0.2.0
+
+### Fluent Design UI
+
+The entire interface has been redesigned using Microsoft Fluent Design System principles:
+
+- **Dark and light themes** — The app supports three theme modes: Dark, Light, and System (follows OS preference). System is the default on first launch. Theme selection is persisted in local storage and applied before first paint to avoid visual flash.
+- **Acrylic surfaces** — The header uses an acrylic backdrop-filter effect (blurred, semi-transparent) for depth layering, consistent with Windows 11 design language.
+- **Fluent tokens** — All colors, spacing, typography, border radii, shadows, and transitions are defined as CSS custom properties following the WinUI 3 / Fluent 2 token specification. Dark and light themes each have a complete set of semantic tokens.
+- **PDF upload as primary view** — The upload/queue panel is now the dominant left-side area, taking up the majority of screen real estate. Settings and activity are placed in a narrower right sidebar, making the drag-and-drop intake area the clear hero element.
+- **Responsive layout** — The two-column grid collapses to a single column on narrow viewports. The sidebar uses sticky positioning on wide screens so it stays visible while scrolling through a long queue.
+- **Custom window chrome** — The app uses a frameless window with an integrated custom titlebar that includes minimize, maximize/restore, and close controls alongside the theme and locale switchers.
+- **Consistent iconography** — Each panel header has a small inline SVG icon for visual anchoring. The drop zone features a larger upload icon for discoverability.
+- **Toggle switches** — Boolean settings (optimize images, compress streams, strip metadata) use Fluent-style toggle switches instead of raw checkboxes.
+- **Splash screen** — A lightweight splash window is displayed during initial load while the main window and Vue app initialize, then dismissed via `app_ready`.
+- **Error toasts** — Backend errors and dialog failures are surfaced as floating toast cards with per-tone styling (danger, warning, success) and a dismiss button.
+
+### Compression Speed Optimization
+
+The Rust compression engine received targeted performance improvements:
+
+- **CatmullRom resize filter** — Replaced `Triangle` with `CatmullRom` (bicubic interpolation) for the final resize pass. CatmullRom is approximately 2× faster than `Lanczos3` with nearly indistinguishable quality for JPEG-bound output, and sharper than `Triangle`.
+- **Earlier two-pass threshold** — The two-pass resize strategy (Nearest then CatmullRom) now triggers at 4 million pixels instead of 8 million. This means moderately large images (e.g. 2000×2000) benefit from the fast first pass, reducing total resize time.
+- **Wider edge tolerance** — The `RESIZE_EDGE_TOLERANCE` was increased from 1.05 to 1.08. Images that are only slightly over the target edge are no longer resized, avoiding a decode+resize+encode round-trip for negligible dimension reduction.
+- **Larger worker channel buffer** — The parallel image processing channel buffer is now 4× the worker count (up from 2×), reducing blocking on the producer thread and improving pipeline throughput.
+- **Lower parallel threshold** — Parallel image processing now triggers with 3+ images (down from 4), allowing smaller PDFs to benefit from multi-core processing.
+- **Smaller stream compression minimum** — Non-image streams of 64+ bytes (down from 128) are now candidates for deflate compression, catching more short repetitive streams.
+- **Lower tiny-JPEG skip threshold** — JPEG streams under 6 KB (down from 8 KB) are skipped outright, applying fast-path exits more aggressively on truly tiny images.
+- **Higher small-stream threshold** — The `SMALL_IMAGE_STREAM_BYTES` threshold was raised to 64 KB (from 48 KB), allowing more compact JPEGs to be skipped when they are already within the target dimensions.
+- **FlateDecode detection** — The stream filter analysis now tracks `FlateDecode` presence, enabling future optimizations for already-deflated streams.
+
+### Theme System Architecture
+
+The theme system is implemented as a Vue composable (`src/composables/useTheme.ts`):
+
+- **Reactive state** — `themePreference` (ref) tracks the user's choice: `'dark'`, `'light'`, or `'system'`. `resolvedTheme` (computed) resolves `'system'` to the actual OS preference.
+- **System default** — On first launch with no stored preference, the theme defaults to `'system'`, which follows the OS dark/light setting.
+- **DOM synchronization** — A watcher applies `data-theme` attribute and `color-scheme` CSS property to `<html>` whenever the resolved theme changes.
+- **System preference listening** — The composable listens for `prefers-color-scheme` media query changes, so switching OS theme while the app is open updates the UI instantly when mode is set to System.
+- **Flash prevention** — A synchronous `<script>` block in `index.html` reads the stored theme from localStorage and applies the `data-theme` attribute before any CSS or Vue code loads. A CSS `prefers-color-scheme` media query provides the fallback before the script executes.
+- **Persistence** — Theme preference is stored in localStorage under `pdf-compressor-theme`.
+
+### Preset Persistence
+
+User-customized preset profiles are persisted to disk via `src/config/presets.ts` and the Rust `commands.rs` command surface:
+
+- **Save location** — The backend tries the install directory first; falls back to the OS application config directory (e.g. `AppData/Roaming/pdf-compressor`) when the install directory is not writable (e.g. `Program Files`).
+- **Atomic writes** — Config is written to a `.tmp` file then renamed, avoiding corruption from interrupted writes.
+- **Frontend cache** — Loaded config is cached in memory to avoid repeated disk reads during a session.
+- **Reset** — Clearing user overrides removes the config file and restores built-in defaults.
 
 ## Main Features
 
 ### User-facing features
 
-- Single PDF intake with drag and drop, manual path entry, and native desktop browse
-- Preflight analysis before compression
-- Three presets: `conservative`, `balanced`, `maximum`
-- Adjustable image quality and maximum image edge
+- Multi-file PDF queue with drag-and-drop and native desktop browse
+- Automatic preflight analysis before compression
+- Dark, light, and system theme — defaults to system preference on first launch
+- Three presets: `conservative`, `balanced`, `maximum`, plus `custom`
+- Adjustable image quality and maximum image edge (percentage-based with reference edge)
 - Toggles for image optimization, stream compression, and metadata removal
-- Result view with output path, elapsed time, size delta, and optimization counts
+- Custom preset saving, per-preset user overrides, and reset to defaults
+- Apply settings to all queued files at once
+- Selectable output directory for compressed files
+- Queue-aware activity view with output path, progress, size delta, and optimization counts
+- Open or reveal compressed output files via system handler
+- Compression cancellation with per-task tracking
+- Error toast notifications for backend and dialog failures
+- Splash screen during initial load
+- Custom window chrome (frameless with integrated titlebar controls)
+- Portable executable alongside NSIS installer in production build
 - English and Simplified Chinese UI
 
 ### Backend features
@@ -37,18 +98,25 @@ The application is desktop-first and local-first. There is no upload flow, no cl
 - Pure-Rust preflight analysis based on page maps, page resources, and extractable text
 - Heuristic document classification: `text-native`, `mixed`, or `scan-heavy`
 - Suggested preset based on scanned-document confidence
+- Sampled page inspection for large PDFs so recommendations stay responsive
 - Safe-skip behavior for image streams that are not yet supported for rewriting
+- Parallel image recompression with optimized scheduling (largest-first, wider channel buffer)
+- Two-pass resize with CatmullRom for speed/quality balance
 - Output file naming that avoids replacing the original source file
+- User preset config persistence with install-dir-first, OS-config-dir fallback strategy
+- Compression task registry with cancellation flag propagation
+- System-handler integration for opening and revealing output files
+- Splash window management (show on launch, close when app is ready)
 
 ## User Workflow
 
 The app follows a two-stage backend workflow and a three-step UI flow.
 
-1. Add one PDF.
-2. Run analysis to estimate whether compression is worth it.
-3. Review the recommendation, adjust settings, and export a new optimized copy.
+1. Add one or more PDFs via drag-and-drop, browse, or native desktop file picker.
+2. Let the app analyze each file and suggest a preset.
+3. Review the selected file, adjust settings if needed, and export optimized copies.
 
-The analyze-first rule is enforced in `src/composables/usePdfCompressor.ts`. Compression remains disabled until analysis has completed for the current source path.
+The analyze-first rule is enforced in `src/composables/usePdfCompressor.ts`. Compression waits for each queued file to finish analysis before that file is handed to the backend compressor.
 
 ## Project Architecture
 
@@ -61,103 +129,111 @@ Vue UI -> Tauri bridge -> Rust commands -> PDF analysis/compression engine -> ou
 ### Frontend architecture
 
 - `src/main.ts`
-  - Vue entry point
-  - loads global styles and mounts the app with i18n
+  - Vue entry point; loads global styles and mounts the app with i18n
 
 - `src/App.vue`
-  - top-level application shell
-  - composes the intake, analysis, settings, and result panels
-  - maps workflow state into user-facing status copy
+  - Top-level application shell
+  - Two-column layout: upload panel (primary) + sidebar (settings, activity)
+  - Maps workflow state into user-facing status copy
+
+- `src/composables/useTheme.ts`
+  - Theme management composable (dark / light / system)
+  - Persists preference in localStorage
+  - Applies `data-theme` attribute to document root
+  - Listens for OS theme changes
 
 - `src/composables/usePdfCompressor.ts`
-  - source of truth for workflow state
-  - holds the selected path, settings, analysis result, compression result, loading states, and errors
-  - normalizes backend payloads into frontend types
-  - enforces analyze first, then compress
+  - Source of truth for workflow state
+  - Holds jobs, settings, analysis results, compression results, loading states, errors
+  - Normalizes backend payloads into frontend types
+  - Enforces analyze-first-then-compress
+  - Manages concurrent compression with worker pool
 
 - `src/lib/tauri.ts`
-  - thin bridge between Vue and Tauri commands
-  - detects whether native commands are available
-  - opens the desktop file picker
-  - listens for native drag-and-drop events
-  - invokes `analyze_pdf` and `compress_pdf`
+  - Thin bridge between Vue and Tauri commands
+  - Detects whether native commands are available
+  - Opens the desktop file picker and directory picker
+  - Listens for native drag-and-drop events
+  - Invokes `analyze_pdf`, `compress_pdf`, `cancel_compression`, and preset config commands
+  - Provides window management (minimize, maximize, close, drag)
+
+- `src/config/presets.ts`
+  - Manages preset profiles (load, save, clear) with native persistence
+  - Merges built-in defaults with user-saved overrides
+  - Caches loaded config to avoid repeated disk reads
+
+- `src/config/preset-defaults.json`
+  - Built-in default values for each compression preset (quality, max image size percent)
+
+- `src/utils/compressionSettings.ts`
+  - Clamping and normalization for image quality, image size percent, and pixel values
+  - Converts percentage-based max image size to absolute pixel values using a reference edge
+
+- `src/utils/format.ts`
+  - Formatting helpers for bytes, percentages, milliseconds, and file paths
 
 - `src/i18n/index.ts`
-  - boots `vue-i18n`
-  - supports `en` and `zh-CN`
-  - stores the selected locale in local storage
+  - Boots `vue-i18n`; supports `en` and `zh-CN`
+  - Stores the selected locale in localStorage
 
 ### Native backend architecture
 
-- `src-tauri/src/lib.rs`
-  - Tauri application entry
-  - registers plugins and command handlers
-
-- `src-tauri/src/commands.rs`
-  - exposes Tauri commands to the frontend
-  - merges and normalizes compression settings from frontend input
-  - currently registers `analyze_pdf`, `compress_pdf`, and `compress_scanned_pdf`
-
-- `src-tauri/src/models.rs`
-  - shared request and response structures serialized between Rust and Vue
-
-- `src-tauri/src/error.rs`
-  - central backend error mapping for user-facing failures
-
-- `src-tauri/src/pdf/analyzer.rs`
-  - performs the preflight analysis pass
-  - inspects file size, exact page count, extractable text density, and image/XObject structure
-  - estimates scanned confidence, image coverage, likely savings, and a recommended preset
-
-- `src-tauri/src/pdf/compressor.rs`
-  - performs object-level PDF optimization
-  - recompresses supported image streams
-  - compresses eligible non-image streams
-  - optionally removes document metadata
-  - writes an output file with a generated name
-
-- `src-tauri/src/pdf/settings.rs`
-  - normalizes presets and settings
-  - applies backend defaults and clamps accepted ranges
+- `src-tauri/src/lib.rs` — Tauri application entry; registers plugins, manages splash window, and registers command handlers
+- `src-tauri/src/commands.rs` — Tauri command surface; merges and normalizes settings from frontend input; preset config persistence; compression task registry with cancellation; open/reveal via system handler
+- `src-tauri/src/models.rs` — Shared request/response structures serialized between Rust and Vue
+- `src-tauri/src/error.rs` — Central backend error mapping with i18n-compatible error codes for user-facing failures
+- `src-tauri/src/pdf/analyzer.rs` — Preflight analysis engine (page sampling, text density, image signals)
+- `src-tauri/src/pdf/compressor.rs` — Object-level PDF optimization engine (image recompression, stream compression, metadata removal)
+- `src-tauri/src/pdf/settings.rs` — Settings normalization with backend defaults and range clamping
 
 ## Directory Map
 
 ```text
 .
+├─ public/
+│  └─ splash.html                   # Splash screen shown during app initialization
 ├─ src/
 │  ├─ main.ts                       # Vue app entry
-│  ├─ App.vue                       # Main shell and panel composition
+│  ├─ App.vue                       # Main shell: two-column layout
 │  ├─ composables/
-│  │  └─ usePdfCompressor.ts        # Workflow state, command calls, payload normalization
+│  │  ├─ usePdfCompressor.ts        # Workflow state, command calls, payload normalization
+│  │  └─ useTheme.ts                # Dark/light/system theme management
 │  ├─ lib/
 │  │  └─ tauri.ts                   # Native bridge, dialog, drag-and-drop, command invoke
+│  ├─ config/
+│  │  ├─ presets.ts                 # Preset profile management, persistence, default merging
+│  │  └─ preset-defaults.json       # Built-in default values per preset
 │  ├─ components/
-│  │  ├─ FileIntakePanel.vue        # Source path entry and drag-and-drop UI
-│  │  ├─ AnalysisPanel.vue          # Analysis summary
-│  │  ├─ CompressionSettingsPanel.vue
-│  │  ├─ ResultPanel.vue
-│  │  └─ AppHeader.vue
+│  │  ├─ PdfUploadPanel.vue         # Queue intake and drag-and-drop UI (primary view)
+│  │  ├─ CompressionSettingsPanel.vue # Preset grid, sliders, toggles
+│  │  ├─ ActivityPanel.vue          # Current job state, compress button, metrics
+│  │  ├─ AppHeader.vue              # Brand, theme switcher, locale switcher, window controls
+│  │  └─ ErrorToastViewport.vue     # Floating error/warning toast notifications
 │  ├─ i18n/
 │  │  └─ index.ts                   # Locale setup and persistence
 │  ├─ locales/
 │  │  ├─ en.ts
 │  │  └─ zh-CN.ts
+│  ├─ utils/
+│  │  ├─ compressionSettings.ts     # Image quality/size clamping and pixel calculation
+│  │  └─ format.ts                  # Formatting helpers (bytes, percent, path, ms)
 │  └─ types/
 │     └─ pdf.ts                     # Frontend PDF workflow types
 ├─ src-tauri/
 │  ├─ Cargo.toml                    # Rust crate metadata and native dependencies
 │  ├─ tauri.conf.json               # Tauri product and bundling config
 │  └─ src/
-│     ├─ lib.rs                     # Tauri builder entry
-│     ├─ commands.rs                # Command surface
+│     ├─ lib.rs                     # Tauri builder entry, splash window setup
+│     ├─ commands.rs                # Command surface, preset config, task registry
 │     ├─ models.rs                  # Analysis and compression payloads
-│     ├─ error.rs                   # Shared backend error type
+│     ├─ error.rs                   # Shared backend error type with i18n codes
 │     └─ pdf/
 │        ├─ analyzer.rs             # Preflight analysis engine
 │        ├─ compressor.rs           # Compression engine
 │        └─ settings.rs             # Settings normalization
 ├─ package.json                     # Frontend scripts and JS dependencies
-└─ README.md
+├─ README.md
+└─ README.zh-CN.md
 ```
 
 ## Prerequisites
@@ -186,13 +262,10 @@ This starts the Vite frontend only. It is useful for UI work, layout checks, and
 
 Important limits in preview/browser mode:
 
-- native Tauri commands are not available
-- the native file picker is disabled
-- drag and drop may not provide a usable desktop file path the same way the desktop shell does
-- manual path entry remains available in the UI
-- real backend analysis and compression require the desktop shell
-
-That means preview mode supports the manual path flow at the interface level, but native browse requires the desktop shell.
+- Native Tauri commands are not available
+- The native file picker is disabled
+- Drag-and-drop may not provide a usable desktop file path
+- Real backend analysis and compression require the desktop shell
 
 ### Run the full desktop app during development
 
@@ -200,15 +273,7 @@ That means preview mode supports the manual path flow at the interface level, bu
 npm run tauri dev
 ```
 
-This is the main end-to-end development path. It starts the Vue dev server and launches the Tauri shell defined in `src-tauri/tauri.conf.json`.
-
-Use this mode when you want to verify:
-
-- native file browsing
-- native drag and drop
-- backend analysis
-- compression output generation
-- pure-Rust PDF inspection and optimization
+This starts the Vue dev server and launches the Tauri shell. Use this mode when you want to verify native file browsing, drag-and-drop, backend analysis, compression output, and theme switching in the desktop environment.
 
 ## Build and Release
 
@@ -218,256 +283,134 @@ Use this mode when you want to verify:
 npm run build
 ```
 
-This runs:
-
-- `vue-tsc -b`
-- `vite build`
-
 ### Build desktop release artifacts
 
 ```bash
 npm run tauri build
 ```
 
-Release metadata is defined in:
+This produces the NSIS installer. To also output a portable (no-install) executable alongside the installer:
 
-- `package.json`
-- `src-tauri/Cargo.toml`
-- `src-tauri/tauri.conf.json`
+```bash
+npm run tauri:build
+```
 
-Current first release metadata:
+The portable copy is placed at `src-tauri/target/release/bundle/PDF-Compressor-portable.exe`.
 
-- product name: `PDF Compressor`
-- version: `0.1.0`
-- author: `cosct`
-- identifier: `com.cosct.pdfcompressor`
+The portable executable requires Windows 10 21H2+ or Windows 11 (WebView2 is pre-installed on these systems).
 
-The Tauri bundle target is currently set to `all` in `src-tauri/tauri.conf.json`.
+Release metadata:
+
+- Product name: `PDF Compressor`
+- Version: `0.2.0`
+- Author: `cosct`
+- Identifier: `com.cosct.pdfcompressor`
 
 ## Runtime Details
 
 ### Analysis pass
 
-The analysis step in `src-tauri/src/pdf/analyzer.rs` is a lightweight preflight pass that helps the UI answer a practical question: is this file likely to shrink enough to be worth exporting?
+The analysis step in `src-tauri/src/pdf/analyzer.rs` is a lightweight preflight pass. It evaluates:
 
-It currently evaluates:
+- File size
+- Exact page count from the PDF page tree
+- Embedded image signals from page resources and XObjects
+- Extracted text density across sampled pages
+- Fallback structural text signals from page content operators and font resources
+- Scanned-document confidence and estimated image coverage
 
-- file size
-- exact page count from the PDF page tree
-- embedded image signals from page resources and XObjects when available
-- extracted text density across pages when `lopdf` can decode it
-- fallback structural text signals from page content operators and font resources
-- scanned-document confidence
-- estimated image coverage
-
-From that, the backend returns:
-
-- `documentKind`
-- `recommendedPreset`
-- `estimatedSavingsPercent`
-- warnings and notes for the UI
-
-This is heuristic-based guidance, not an exact guarantee of compression output.
-
-Because this pass is now pure Rust and renderer-free, it is intentionally conservative when a PDF has unusual encodings, partial OCR layers, or complex resource graphs. Ambiguous documents are more likely to land in `mixed` than to be overstated as `scan-heavy`.
+The backend returns `documentKind`, `recommendedPreset`, `estimatedSavingsPercent`, and notices. This is heuristic-based guidance, not an exact guarantee.
 
 ### Compression pass
 
-The compressor in `src-tauri/src/pdf/compressor.rs` works at the PDF object level.
+The compressor in `src-tauri/src/pdf/compressor.rs` works at the PDF object level:
 
-Current behavior:
+- Image streams are inspected and recompressed only when safe
+- Supported images may be resized using a two-pass strategy (Nearest + CatmullRom)
+- Recompressed images are encoded as JPEG
+- Eligible non-image streams may be deflate-compressed
+- Metadata can be removed from document info and root metadata entries
+- The compressor explicitly preserves text and vector instructions
 
-- image streams are inspected and recompressed only when the stream looks safe to rewrite
-- supported image content may be resized down to the configured maximum edge
-- recompressed images are encoded as JPEG
-- eligible non-image streams may be compressed if not already compressed
-- metadata can be removed from document info and root metadata entries
+### Theme system
 
-The compressor explicitly tries to preserve text and vector instructions whenever it cannot safely rewrite an object.
-
-## Using the App
-
-### Step 1: Add one PDF
-
-From the intake panel you can:
-
-- drag and drop a PDF into the window
-- use the native desktop browse button when running inside the Tauri shell
-- paste a full path to a `.pdf` file manually
-
-If the current path does not end with `.pdf`, analysis and compression remain disabled in the frontend.
-
-### Step 2: Analyze the file
-
-Click `Analyze PDF` to run the native analysis pass.
-
-The analysis view shows:
-
-- source size
-- page count
-- embedded image count
-- detected document fit
-- estimated savings
-- recommended preset
-- warnings and notes
-
-The recommended preset is surfaced in the settings panel.
-
-### Step 3: Adjust settings and compress
-
-The settings panel exposes:
-
-- preset
-- image quality
-- max image edge
-- optimize images toggle
-- compress streams toggle
-- remove metadata toggle
-
-Once analysis is complete, click `Compress PDF` to generate the optimized copy.
-
-### Workflow states
-
-The frontend models these states in `src/types/pdf.ts` and `src/composables/usePdfCompressor.ts`:
-
-- `idle`
-- `selected`
-- `analyzing`
-- `ready`
-- `compressing`
-- `success`
-- `error`
+The theme system uses CSS custom properties with two complete token sets (dark and light). Theme switching is instant with no page reload. The `data-theme` attribute on `<html>` controls which token set is active. On first launch, the theme defaults to following the OS preference (`system` mode). A synchronous script in `index.html` prevents flash-of-wrong-theme on startup, with a CSS `prefers-color-scheme` media query as an additional fallback.
 
 ## Output Behavior
 
 The app writes a new file beside the original source PDF. It does not overwrite the input file.
 
-Current naming format:
+Naming format: `<original-name>__optimized-<preset>.pdf`
 
-```text
-<original-name>__optimized-<preset>.pdf
-```
-
-Example:
-
-```text
-report.pdf
-report__optimized-balanced.pdf
-```
-
-If that name already exists, the backend appends a numeric suffix such as `-1`, `-2`, and so on until it finds a free name.
-
-The result panel reports:
-
-- output path
-- elapsed time
-- original size
-- compressed size
-- bytes saved
-- percent saved
-- images optimized
-- images skipped
-- streams packed
-
-If the output is not smaller than the source, the UI warns about that explicitly so you can inspect the result before deciding what to keep.
+If that name exists, the backend appends a numeric suffix (`-1`, `-2`, etc.) until it finds a free name.
 
 ## Localization
 
-Localization is initialized in `src/i18n/index.ts`.
-
-Current locales:
-
-- `en`
-- `zh-CN`
+Current locales: `en` and `zh-CN`
 
 Behavior:
-
-- locale is read from local storage first
-- otherwise the app checks the browser language
+- Reads from localStorage first
+- Falls back to browser language detection
 - Chinese browser locales default to `zh-CN`
-- everything else falls back to `en`
-- the selected locale is stored in local storage under `pdf-compressor-locale`
-
-Translation content currently lives in:
-
-- `src/locales/en.ts`
-- `src/locales/zh-CN.ts`
+- Everything else falls back to `en`
 
 ## Troubleshooting
 
 ### The browse button is disabled
 
-That is expected in browser preview mode. Native browse is only available inside the Tauri desktop shell.
-
-Use one of these instead:
-
-- run `npm run tauri dev`
-- paste a full `.pdf` path manually into the input field
-
-### Analysis or compression says the path is invalid
-
-Check that:
-
-- the file exists
-- the path ends with `.pdf`
-- the app can access the file from the current desktop session
-
-The backend validates both existence and the `.pdf` extension before processing.
+Expected in browser preview mode. Run `npm run tauri dev` for native browse.
 
 ### Compression finished but the file did not get smaller
 
-That can happen with:
-
-- text-native PDFs
-- already-optimized PDFs
-- files with few or no embedded images
-- image filters the compressor intentionally skips
-
-Try a stronger preset or lower image quality only if additional loss is acceptable.
+Possible causes: text-native PDFs, already-optimized files, few/no embedded images, or unsupported image filters. Try a stronger preset or lower image quality.
 
 ### Some images were skipped
 
-This is expected for some image objects. The current backend skips streams it does not yet safely rewrite, including cases such as:
-
-- transparency or image masks
-- unsupported filters like `JPXDecode`, `JBIG2Decode`, `CCITTFaxDecode`, or `Crypt`
-- unsupported raw image layouts
-- image data that fails safe decoding
+Expected for certain image objects. The backend skips streams it cannot safely rewrite (transparency, masks, JPX/JBIG2/CCITT/Crypt filters, unsupported color spaces).
 
 ### Large PDFs feel slow
 
-The analyzer already warns when page count is high. Large or image-heavy PDFs take longer because the backend must inspect and sometimes rewrite many objects.
+The analyzer warns when page count is high. Large or image-heavy PDFs require inspecting and rewriting many objects. The compressor uses parallel workers when multiple images are present.
 
 ## Limitations
 
-This release is intentionally focused and has several clear limits.
-
-- The app is built around one PDF at a time. There is no batch workflow.
-- Compression quality is heuristic-based. Estimated savings are guidance, not a guarantee.
-- The analysis pass is pure-Rust and structure-based. It does not render pages, so text extraction and scan detection are approximate for some PDFs.
-- Some embedded image formats and protected or complex structures are skipped on purpose to avoid damaging the document.
-- Only safe object-level optimizations are attempted. The app does not promise aggressive rewriting of every PDF structure.
-- The frontend depends on the desktop shell for native commands. Browser preview mode is useful for UI work, not full PDF processing.
-- A `compress_scanned_pdf` command exists in the backend command surface, but the current Vue workflow uses `analyze_pdf` and `compress_pdf`.
+- Compression quality is heuristic-based; estimated savings are guidance, not guarantees
+- Analysis is pure-Rust and structure-based — no page rendering
+- Some embedded image formats and protected structures are intentionally skipped
+- Only safe object-level optimizations are attempted
+- Frontend depends on the desktop shell for native commands
+- `compress_scanned_pdf` exists in the backend but is not used by the current Vue workflow
 
 ## Tech Stack
 
-- Vue 3
-- TypeScript
-- Vite
-- Tauri 2
-- Rust
-- `lopdf`
-- `image`
-- `printpdf`
+- Vue 3 + TypeScript + Vite
+- Tauri 2 + Rust
+- `lopdf` (PDF parsing and writing)
+- `image` (image decode, resize, JPEG encode)
+- `vue-i18n` (internationalization)
 
-## Release Notes for v0.1.0
+## Release History
 
-Version `0.1.0` establishes the first complete desktop workflow for this project:
+### v0.2.0 (2026-04-16)
 
-- Vue + Tauri app shell
-- native PDF path intake
-- preflight PDF analysis
-- object-level compression pipeline
-- localized English and Simplified Chinese UI
-- packaged desktop metadata for `PDF Compressor`
+- Fluent Design UI overhaul with dark/light/system theme support
+- Theme defaults to system preference on first launch (no hardcoded dark fallback)
+- PDF upload panel promoted to primary view with improved layout
+- Acrylic header with backdrop-filter effects
+- Custom window chrome with integrated titlebar controls
+- Splash screen during initial app load
+- Compression speed optimization: CatmullRom resize, earlier two-pass threshold, wider channel buffer, lower parallel threshold
+- User preset persistence: per-preset overrides saved to disk with install-dir-first strategy
+- Compression cancellation with per-task cancel flag propagation
+- Output directory selection for compressed files
+- Open and reveal compressed output files via system handler
+- Error toast viewport for surfacing backend and dialog errors
+- Percentage-based max image size slider with reference edge from analysis
+- Toggle switches for boolean settings
+- Inline SVG panel icons
+- Production build outputs portable executable alongside NSIS installer
+- Updated README with detailed architecture and change documentation
+
+### v0.1.0 (2026-03-27)
+
+- Initial desktop workflow: Vue + Tauri app shell, native PDF intake, preflight analysis, object-level compression, English and Chinese UI

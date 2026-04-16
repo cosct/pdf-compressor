@@ -10,6 +10,60 @@
     />
     <meta name="author" content="cosct" />
     <title>PDF Compressor</title>
+    <style>
+      /* Fallback theme based on OS preference (before inline script sets data-theme) */
+      :root { color-scheme: light dark; }
+      @media (prefers-color-scheme: dark) { :root:not([data-theme]) { background: #0f1319; color-scheme: dark; } }
+      @media (prefers-color-scheme: light) { :root:not([data-theme]) { background: #eef1f6; color-scheme: light; } }
+      [data-theme='dark'] { color-scheme: dark; background: #0f1319; }
+      [data-theme='light'] { color-scheme: light; background: #eef1f6; }
+
+      html, body, #app {
+        min-height: 100%;
+        margin: 0;
+      }
+
+      body {
+        min-height: 100vh;
+      }
+
+      [data-theme='dark'] body,
+      [data-theme='dark'] #app {
+        background: #0f1319;
+        color: #eef1f8;
+      }
+
+      [data-theme='light'] body,
+      [data-theme='light'] #app {
+        background: #eef1f6;
+        color: #0f1720;
+      }
+
+      #app:empty::before {
+        content: 'Loading PDF Compressor\2026';
+        position: fixed;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        font: 500 14px/1.4 'Segoe UI Variable', 'Segoe UI', -apple-system, sans-serif;
+        letter-spacing: 0.04em;
+        opacity: 0.6;
+      }
+    </style>
+    <script>
+      // Apply theme before first paint to avoid flash
+      (function() {
+        var stored = null;
+        try { stored = localStorage.getItem('pdf-compressor-theme'); } catch(e) {}
+        var theme = stored || 'system';
+        if (theme === 'system') {
+          theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        }
+        document.documentElement.setAttribute('data-theme', theme);
+        document.documentElement.style.colorScheme = theme;
+      })();
+    </script>
   </head>
   <body>
     <div id="app"></div>

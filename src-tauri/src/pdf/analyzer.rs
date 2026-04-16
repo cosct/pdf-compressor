@@ -1,64 +1,104 @@
-use std::{collections::HashSet, fs, path::PathBuf};
+//! Preflight PDF analysis engine — heuristic-based document classification.
+//! PDF 预检分析引擎 — 基于启发式的文档分类。
+//!
+//! Inspects page structure, text density, image signals, and font resources
+//! to classify documents as text-native, mixed, or scan-heavy, and recommends
+//! a compression preset with estimated savings.
+//! 检查页面结构、文本密度、图片信号和字体资源，
+//! 将文档分类为 text-native、mixed 或 scan-heavy，并推荐压缩预设和预估节省比例。
+
+use std::{
+    collections::{BTreeMap, HashSet},
+    fs,
+    path::PathBuf,
+};
 
 use lopdf::{Dictionary, Document, Object, ObjectId, Stream};
 
-use crate::{error::AppError, models::AnalysisResponse, pdf::settings::CompressionPreset};
+use crate::{
+    error::AppError,
+    models::{AnalysisResponse, BackendNotice, ProgressUpdate},
+    pdf::settings::CompressionPreset,
+};
+
+use super::optional_integer;
 
 const TEXT_NATIVE_KIND: &str = "text-native";
 const MIXED_KIND: &str = "mixed";
 const SCAN_HEAVY_KIND: &str = "scan-heavy";
+const MAX_ANALYSIS_SAMPLE_PAGES: usize = 24;
 
 #[derive(Debug, Default)]
 struct AnalysisSignals {
-    // Count non-whitespace characters from directly extractable text as the
-    // strongest signal that the PDF still contains searchable text.
+    inspected_pages: usize,
     extracted_text_characters: usize,
-    // Track multiple structural text signals because the pure-Rust analysis
-    // path cannot render pages and must cross-check the document structure.
     pages_with_extractable_text: usize,
     pages_with_text_showing_ops: usize,
     pages_with_font_resources: usize,
     pages_with_images: usize,
     total_page_image_references: usize,
-    // Extraction failures lower confidence, but they are not treated as proof
-    // that the document is scan-heavy.
     text_extraction_failures: usize,
 }
 
-/// Performs a lightweight preflight pass so the UI can estimate how much of the
-/// document can be optimized without flattening text and vector content.
-pub fn analyze_pdf(path: &str) -> Result<AnalysisResponse, AppError> {
+#[derive(Debug, Default)]
+struct ImageDimensionStats {
+    image_object_count: usize,
+    longest_edges: Vec<u32>,
+}
+
+pub fn analyze_pdf_with_progress<F>(
+    path: &str,
+    mut report_progress: F,
+) -> Result<AnalysisResponse, AppError>
+where
+    F: FnMut(ProgressUpdate),
+{
+    report_progress(ProgressUpdate::new("analyzing", 5.0));
+
     let input_path = validate_input_path(path)?;
     let file_size_bytes = fs::metadata(&input_path)?.len();
 
     let document = Document::load(&input_path)
         .map_err(|error| AppError::PdfBuild(format!("Failed to inspect PDF structure: {error}")))?;
+
+    report_progress(ProgressUpdate::new("analyzing", 20.0));
+
     let page_map = document.get_pages();
     let page_count = page_map.len();
-    let image_object_count = count_image_stream_objects(&document);
+    let image_stats = collect_image_stream_stats(&document);
+
+    report_progress(ProgressUpdate::new("analyzing", 45.0));
+
     let signals = collect_analysis_signals(&document, &page_map);
+    let inspected_page_count = signals.inspected_pages.max(1);
+
+    report_progress(ProgressUpdate::new("analyzing", 80.0));
 
     let average_bytes_per_page = average_per_page(file_size_bytes as f32, page_count);
-    let average_text_per_page =
-        average_per_page(signals.extracted_text_characters as f32, page_count);
+    let average_text_per_page = average_per_page(
+        signals.extracted_text_characters as f32,
+        inspected_page_count,
+    );
     let average_images_per_page = if signals.total_page_image_references > 0 {
-        average_per_page(signals.total_page_image_references as f32, page_count)
+        average_per_page(
+            signals.total_page_image_references as f32,
+            inspected_page_count,
+        )
     } else {
-        average_per_page(image_object_count as f32, page_count)
+        average_per_page(image_stats.image_object_count as f32, page_count)
     };
-    let text_page_ratio = ratio(signals.pages_with_extractable_text, page_count);
+    let text_page_ratio = ratio(signals.pages_with_extractable_text, inspected_page_count);
     let structural_text_ratio = ratio(
         signals
             .pages_with_extractable_text
             .max(signals.pages_with_text_showing_ops)
             .max(signals.pages_with_font_resources),
-        page_count,
+        inspected_page_count,
     );
-    let image_page_ratio = ratio(signals.pages_with_images, page_count);
-    let extraction_uncertainty_ratio = ratio(signals.text_extraction_failures, page_count);
+    let image_page_ratio = ratio(signals.pages_with_images, inspected_page_count);
+    let extraction_uncertainty_ratio =
+        ratio(signals.text_extraction_failures, inspected_page_count);
 
-    // Stay conservative here: if the structure is ambiguous, prefer `mixed`
-    // over overstating a still-editable document as `scan-heavy`.
     let image_coverage = ((average_bytes_per_page / 180_000.0).min(1.0) * 45.0
         + image_page_ratio * 35.0
         + (average_images_per_page.min(3.0) / 3.0) * 20.0
@@ -100,61 +140,112 @@ pub fn analyze_pdf(path: &str) -> Result<AnalysisResponse, AppError> {
         CompressionPreset::Conservative => 10.0,
     };
 
-    let mut warnings = Vec::new();
-    let mut notes = vec![
-        "This analysis uses pure-Rust PDF structure inspection with lopdf, so text density and image coverage are estimated from extractable text and page resources rather than a renderer.".to_string(),
-        "The compression workflow still preserves text and vector instructions whenever possible and focuses first on embedded image streams, metadata, and compressible PDF streams.".to_string(),
+    let recommended_max_image_size_px =
+        recommend_max_image_size_px(recommended_preset, &image_stats.longest_edges);
+    let recommended_image_quality = recommended_preset.default_quality();
+    let max_image_edge_px = if image_stats.longest_edges.is_empty() {
+        0
+    } else {
+        *image_stats.longest_edges.iter().max().unwrap_or(&0) as u16
+    };
+
+    let mut notices = vec![
+        BackendNotice::new(
+            "analysis.note.structureBased",
+            "neutral",
+            "Analysis uses PDF structure inspection instead of page rendering.",
+        ),
+        BackendNotice::new(
+            "analysis.note.safeOptimization",
+            "neutral",
+            "Compression focuses on image streams, metadata, and compressible PDF streams.",
+        ),
     ];
 
-    if signals.text_extraction_failures > 0 {
-        warnings.push(
-            "Some pages expose text or font structure that could not be fully decoded, so this recommendation stays intentionally conservative."
-                .to_string(),
+    if inspected_page_count < page_count {
+        notices.push(
+            BackendNotice::new(
+                "analysis.note.sampledPages",
+                "neutral",
+                format!(
+                    "Large PDF detected, so detailed page inspection sampled {inspected_page_count} of {page_count} pages."
+                ),
+            )
+            .with_value("inspectedPages", inspected_page_count.to_string())
+            .with_value("pageCount", page_count.to_string()),
         );
+    }
+
+    if signals.text_extraction_failures > 0 {
+        notices.push(BackendNotice::new(
+            "analysis.warning.textExtractionFallback",
+            "warning",
+            "Some pages could not be fully decoded, so the recommendation stays conservative.",
+        ));
     }
 
     if document_kind == TEXT_NATIVE_KIND {
-        warnings.push(
-            "This file looks mostly text-native, so the optimizer will likely preserve structure but may only save a modest amount of space."
-                .to_string(),
-        );
+        notices.push(BackendNotice::new(
+            "analysis.warning.textNative",
+            "warning",
+            "This file looks mostly text-native, so savings may stay modest.",
+        ));
     }
 
     if page_count > 150 {
-        warnings.push(
-            "This PDF has many pages, so compression may take noticeably longer than small documents.".to_string(),
-        );
+        notices.push(BackendNotice::new(
+            "analysis.warning.largePageCount",
+            "warning",
+            "This PDF has many pages, so preparation and compression may take longer.",
+        ));
     }
 
-    if image_object_count == 0 {
-        warnings.push(
-            "No embedded image objects were detected, so most savings will depend on stream compression and metadata cleanup.".to_string(),
-        );
+    if image_stats.image_object_count == 0 {
+        notices.push(BackendNotice::new(
+            "analysis.warning.noImages",
+            "warning",
+            "No embedded image objects were detected, so savings may rely on stream compression and metadata cleanup.",
+        ));
     }
 
     if document_kind == MIXED_KIND && text_page_ratio > 0.25 && image_page_ratio > 0.25 {
-        notes.push(
-            "This PDF mixes readable text structure with image-heavy pages, so the suggested preset favors a safer first pass over aggressive rewriting."
-                .to_string(),
-        );
+        notices.push(BackendNotice::new(
+            "analysis.note.mixedDocument",
+            "neutral",
+            "This PDF mixes readable text structure with image-heavy pages, so the recommendation favors a safer first pass.",
+        ));
     }
 
     if file_size_bytes < 1_000_000 {
-        notes.push("Small PDFs often have less room to shrink dramatically.".to_string());
+        notices.push(BackendNotice::new(
+            "analysis.note.smallPdf",
+            "neutral",
+            "Small PDFs often have less room to shrink dramatically.",
+        ));
     }
+
+    report_progress(
+        ProgressUpdate::new("done", 100.0).with_message(BackendNotice::new(
+            "analysis.progress.done",
+            "success",
+            "Preparation finished.",
+        )),
+    );
 
     Ok(AnalysisResponse {
         file_size_bytes,
-        page_count: page_count.into(),
-        image_object_count,
+        page_count,
+        image_object_count: image_stats.image_object_count,
         document_kind: document_kind.to_string(),
         scanned_confidence,
         image_coverage,
         estimated_savings_percent,
         recommended_preset: recommended_preset.as_label().to_string(),
+        max_image_edge_px,
+        recommended_max_image_size_px,
+        recommended_image_quality,
         is_likely_scanned,
-        warnings,
-        notes,
+        notices,
     })
 }
 
@@ -179,13 +270,13 @@ fn validate_input_path(path: &str) -> Result<PathBuf, AppError> {
 
 fn collect_analysis_signals(
     document: &Document,
-    page_map: &std::collections::BTreeMap<u32, ObjectId>,
+    page_map: &BTreeMap<u32, ObjectId>,
 ) -> AnalysisSignals {
     let mut signals = AnalysisSignals::default();
+    let sampled_pages = build_analysis_page_sample(page_map);
+    signals.inspected_pages = sampled_pages.len();
 
-    for (&page_number, &page_id) in page_map {
-        // Collect text, image, font, and operator signals together so a single
-        // parser limitation does not collapse the whole page classification.
+    for (page_number, page_id) in sampled_pages {
         let (page_text_characters, had_text_extraction_error) =
             extract_page_text_characters(document, page_number);
         let (page_image_references, direct_image_references) =
@@ -222,6 +313,83 @@ fn collect_analysis_signals(
     signals
 }
 
+fn build_analysis_page_sample(page_map: &BTreeMap<u32, ObjectId>) -> Vec<(u32, ObjectId)> {
+    let pages: Vec<(u32, ObjectId)> = page_map
+        .iter()
+        .map(|(&page_number, &page_id)| (page_number, page_id))
+        .collect();
+
+    if pages.len() <= MAX_ANALYSIS_SAMPLE_PAGES {
+        return pages;
+    }
+
+    let sample_slots = MAX_ANALYSIS_SAMPLE_PAGES.saturating_sub(1).max(1);
+    let last_index = pages.len().saturating_sub(1);
+    let mut sampled_indexes = HashSet::new();
+
+    for slot in 0..MAX_ANALYSIS_SAMPLE_PAGES {
+        let ratio = slot as f32 / sample_slots as f32;
+        let index = ((last_index as f32) * ratio).round() as usize;
+        sampled_indexes.insert(index.min(last_index));
+    }
+
+    let mut sampled_indexes: Vec<usize> = sampled_indexes.into_iter().collect();
+    sampled_indexes.sort_unstable();
+    sampled_indexes
+        .into_iter()
+        .map(|index| pages[index])
+        .collect()
+}
+
+fn collect_image_stream_stats(document: &Document) -> ImageDimensionStats {
+    let mut stats = ImageDimensionStats::default();
+
+    for object in document.objects.values() {
+        let Object::Stream(stream) = object else {
+            continue;
+        };
+
+        if !stream_has_subtype(stream, b"Image") {
+            continue;
+        }
+
+        stats.image_object_count += 1;
+
+        let Some(width) = optional_integer(stream, b"Width") else {
+            continue;
+        };
+        let Some(height) = optional_integer(stream, b"Height") else {
+            continue;
+        };
+
+        if width > 0 && height > 0 {
+            stats.longest_edges.push((width.max(height)) as u32);
+        }
+    }
+
+    stats
+}
+
+fn recommend_max_image_size_px(preset: CompressionPreset, longest_edges: &[u32]) -> u16 {
+    if longest_edges.is_empty() {
+        return preset.default_max_image_size_px();
+    }
+
+    let mut sorted = longest_edges.to_vec();
+    sorted.sort_unstable();
+
+    let index = ((sorted.len().saturating_sub(1)) as f32 * 0.75).round() as usize;
+    let base_edge = sorted[index].clamp(800, 3200) as f32;
+    let scaled = match preset {
+        CompressionPreset::Conservative => base_edge,
+        CompressionPreset::Balanced => base_edge * 0.85,
+        CompressionPreset::Maximum => base_edge * 0.7,
+    };
+
+    let rounded = ((scaled / 100.0).round() * 100.0).clamp(800.0, 3200.0);
+    rounded as u16
+}
+
 fn extract_page_text_characters(document: &Document, page_number: u32) -> (usize, bool) {
     let mut character_count = 0usize;
     let mut had_error = false;
@@ -251,8 +419,6 @@ fn collect_page_image_references(
     let mut direct_image_count = 0usize;
 
     if let Ok((resource_dict, resource_ids)) = document.get_page_resources(page_id) {
-        // 先看页面直接资源，再递归追踪 Form XObject 中继续嵌套的资源字典。
-        // 这样可以尽量覆盖“页面引用了表单，表单里再引用图片”的常见结构。
         if let Some(resources) = resource_dict {
             collect_images_from_resource_dict(
                 document,
@@ -410,8 +576,6 @@ fn page_has_text_showing_operations(document: &Document, page_id: ObjectId) -> b
         .get_and_decode_page_content(page_id)
         .ok()
         .is_some_and(|content| {
-            // 这里只判断是否出现典型文本绘制操作，不尝试重建最终排版。
-            // 它的作用是给“提取不到文本但页面看起来像有文本结构”的 PDF 一个兜底信号。
             content
                 .operations
                 .iter()
@@ -424,16 +588,6 @@ fn page_has_font_resources(document: &Document, page_id: ObjectId) -> bool {
         Ok(fonts) => !fonts.is_empty(),
         Err(_) => false,
     }
-}
-
-fn count_image_stream_objects(document: &Document) -> usize {
-    document
-        .objects
-        .values()
-        .filter(|object| {
-            matches!(object, Object::Stream(stream) if stream_has_subtype(stream, b"Image"))
-        })
-        .count()
 }
 
 fn stream_has_subtype(stream: &Stream, expected: &[u8]) -> bool {

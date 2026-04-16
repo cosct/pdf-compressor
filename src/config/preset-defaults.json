@@ -1,0 +1,18 @@
+{
+  "conservative": {
+    "imageQuality": 72,
+    "maxImageSizePercent": 84
+  },
+  "balanced": {
+    "imageQuality": 60,
+    "maxImageSizePercent": 68
+  },
+  "maximum": {
+    "imageQuality": 46,
+    "maxImageSizePercent": 52
+  },
+  "custom": {
+    "imageQuality": 46,
+    "maxImageSizePercent": 52
+  }
+}

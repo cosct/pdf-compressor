@@ -1,11 +1,20 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import type { AppLocale } from '../i18n'
+import { useTheme, type Theme } from '../composables/useTheme'
+import {
+  closeAppWindow,
+  isAppWindowMaximized,
+  minimizeAppWindow,
+  startDraggingAppWindow,
+  toggleAppWindowMaximize,
+} from '../lib/tauri'
+
+let unlistenResize: (() => void) | null = null
 
 const props = defineProps<{
-  fileName: string
   nativeAvailable: boolean
   locale: AppLocale
   locales: readonly AppLocale[]
@@ -16,273 +25,525 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const { themePreference, setTheme } = useTheme()
+const windowMaximized = ref(false)
+const openPicker = ref<'theme' | 'locale' | null>(null)
+const headerRoot = ref<HTMLElement | null>(null)
+
+const localeLabels: Record<AppLocale, string> = {
+  en: 'English',
+  'zh-CN': '简体中文',
+}
 
 const localeOptions = computed(() =>
   props.locales.map((locale) => ({
     value: locale,
-    label: t(`locale.${locale}`),
+    label: localeLabels[locale] ?? t(`locale.${locale}`),
   })),
 )
 
-const headerStats = computed(() => [
-  {
-    label: t('header.stats.flow'),
-    value: t('header.stats.flowValue'),
-  },
-  {
-    label: t('header.stats.runtime'),
-    value: props.nativeAvailable ? t('header.nativeReady') : t('header.previewMode'),
-  },
-  {
-    label: t('header.stats.current'),
-    value: props.fileName || t('header.emptyFile'),
-  },
-])
+const themeOptions: { value: Theme; labelKey: string }[] = [
+  { value: 'system', labelKey: 'theme.system' },
+  { value: 'light', labelKey: 'theme.light' },
+  { value: 'dark', labelKey: 'theme.dark' },
+]
+
+async function syncWindowState() {
+  if (!props.nativeAvailable) {
+    windowMaximized.value = false
+    return
+  }
+
+  windowMaximized.value = await isAppWindowMaximized()
+}
+
+async function handleMinimizeClick() {
+  await minimizeAppWindow()
+}
+
+async function handleToggleWindowState() {
+  windowMaximized.value = await toggleAppWindowMaximize()
+}
+
+async function handleCloseClick() {
+  await closeAppWindow()
+}
+
+function handleTitlebarDoubleClick() {
+  if (!props.nativeAvailable) {
+    return
+  }
+
+  void handleToggleWindowState()
+}
+
+function handleTitlebarMouseDown(event: MouseEvent) {
+  if (!props.nativeAvailable || event.button !== 0) {
+    return
+  }
+
+  void startDraggingAppWindow()
+}
+
+function togglePicker(name: 'theme' | 'locale') {
+  openPicker.value = openPicker.value === name ? null : name
+}
+
+function closePickers() {
+  openPicker.value = null
+}
+
+function chooseTheme(value: Theme) {
+  setTheme(value)
+  closePickers()
+}
+
+function chooseLocale(value: AppLocale) {
+  emit('update:locale', value)
+  closePickers()
+}
+
+function handleDocumentPointerDown(event: PointerEvent) {
+  if (!headerRoot.value?.contains(event.target as Node)) {
+    closePickers()
+  }
+}
+
+function handleDocumentKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape') {
+    closePickers()
+  }
+}
+
+onMounted(async () => {
+  void syncWindowState()
+  document.addEventListener('pointerdown', handleDocumentPointerDown)
+  document.addEventListener('keydown', handleDocumentKeydown)
+
+  if (props.nativeAvailable) {
+    try {
+      const { getCurrentWindow } = await import('@tauri-apps/api/window')
+      unlistenResize = await getCurrentWindow().onResized(() => {
+        void syncWindowState()
+      })
+    } catch {
+      // ignore — window events unavailable
+    }
+  }
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('pointerdown', handleDocumentPointerDown)
+  document.removeEventListener('keydown', handleDocumentKeydown)
+  unlistenResize?.()
+  unlistenResize = null
+})
 </script>
 
 <template>
-  <header class="app-header panel-surface">
-    <div class="app-header__topbar">
-      <div class="app-header__brand">
-        <span class="app-header__mark">PX</span>
-        <div>
-          <p class="app-header__eyebrow">{{ t('header.eyebrow') }}</p>
-          <strong class="app-header__microcopy">{{ t('header.localOnly') }}</strong>
+  <header ref="headerRoot" class="app-header">
+    <div class="titlebar">
+      <div class="titlebar__drag" @mousedown="handleTitlebarMouseDown" @dblclick="handleTitlebarDoubleClick">
+        <div class="titlebar__brand">
+          <div class="titlebar__icon" aria-hidden="true">
+            <svg width="20" height="20" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect x="5" y="4" width="22" height="24" rx="6" stroke="currentColor" stroke-width="1.6"/>
+              <path d="M10 11.5h12M10 16h12M10 20.5h7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+              <path d="M21 18.5l3 3-3 3" stroke="var(--fd-accent)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M24 21.5h-8" stroke="var(--fd-accent)" stroke-width="1.8" stroke-linecap="round"/>
+            </svg>
+          </div>
+          <strong>{{ t('header.title') }}</strong>
         </div>
       </div>
 
-      <label class="app-header__locale" for="locale-select">
-        <span class="app-header__locale-label">{{ t('locale.label') }}</span>
-        <select
-          id="locale-select"
-          class="app-select"
-          :value="props.locale"
-          @change="emit('update:locale', ($event.target as HTMLSelectElement).value as AppLocale)"
-        >
-          <option v-for="option in localeOptions" :key="option.value" :value="option.value">
-            {{ option.label }}
-          </option>
-        </select>
-      </label>
-    </div>
+      <div class="titlebar__controls">
+        <div class="titlebar__prefs">
+          <div class="picker picker--theme" :class="{ 'picker--open': openPicker === 'theme' }">
+            <button
+              class="picker__trigger"
+              type="button"
+              :aria-expanded="openPicker === 'theme' ? 'true' : 'false'"
+              :aria-label="t('theme.label')"
+              @click.stop="togglePicker('theme')"
+            >
+              <span class="picker__icon" aria-hidden="true">
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                  <path d="M6 1.5v1.2M6 9.3v1.2M2.82 2.82l.85.85M8.33 8.33l.85.85M1.5 6h1.2M9.3 6h1.2M2.82 9.18l.85-.85M8.33 3.67l.85-.85" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/>
+                  <circle cx="6" cy="6" r="2.15" stroke="currentColor" stroke-width="1.1"/>
+                </svg>
+              </span>
+              <span class="picker__label">{{ t('theme.label') }}</span>
+            </button>
 
-    <div class="app-header__hero">
-      <div class="app-header__copy">
-        <h1>{{ t('header.title') }}</h1>
-        <p class="app-header__body">{{ t('header.body') }}</p>
+            <transition name="picker-menu">
+              <div v-if="openPicker === 'theme'" class="picker__menu" role="listbox" :aria-label="t('theme.label')">
+                <button
+                  v-for="option in themeOptions"
+                  :key="option.value"
+                  class="picker__option"
+                  :class="{ 'picker__option--active': themePreference === option.value }"
+                  type="button"
+                  :aria-selected="themePreference === option.value ? 'true' : 'false'"
+                  @click="chooseTheme(option.value)"
+                >
+                  <span>{{ t(option.labelKey) }}</span>
+                  <svg
+                    v-if="themePreference === option.value"
+                    class="picker__check"
+                    width="12"
+                    height="12"
+                    viewBox="0 0 12 12"
+                    fill="none"
+                    aria-hidden="true"
+                  >
+                    <path d="M2.5 6.2 4.9 8.5 9.5 3.8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                </button>
+              </div>
+            </transition>
+          </div>
 
-        <div class="app-header__chips">
-          <span class="app-chip app-chip--accent app-header__chip">{{ props.nativeAvailable ? t('header.nativeReady') : t('header.previewMode') }}</span>
-          <span class="app-chip app-header__chip">{{ t('header.stats.flowValue') }}</span>
-          <span class="app-chip app-header__chip app-header__chip--file" :title="props.fileName || t('header.emptyFile')">{{ props.fileName || t('header.emptyFile') }}</span>
+          <div class="picker picker--locale" :class="{ 'picker--open': openPicker === 'locale' }">
+            <button
+              class="picker__trigger"
+              type="button"
+              :aria-expanded="openPicker === 'locale' ? 'true' : 'false'"
+              :aria-label="t('locale.label')"
+              @click.stop="togglePicker('locale')"
+            >
+              <span class="picker__icon" aria-hidden="true">
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                  <path d="M2.2 3.2h5.6M5 1.8c0 3-.95 5.23-2.85 6.7M3.8 5.6c.72 1.18 1.72 2.16 3 2.95M8.45 2.05h1.95l1.15 3.15H7.3l1.15-3.15Z" stroke="currentColor" stroke-width="1.05" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </span>
+              <span class="picker__label">{{ t('locale.label') }}</span>
+            </button>
+
+            <transition name="picker-menu">
+              <div v-if="openPicker === 'locale'" class="picker__menu" role="listbox" :aria-label="t('locale.label')">
+                <button
+                  v-for="option in localeOptions"
+                  :key="option.value"
+                  class="picker__option"
+                  :class="{ 'picker__option--active': props.locale === option.value }"
+                  type="button"
+                  :aria-selected="props.locale === option.value ? 'true' : 'false'"
+                  @click="chooseLocale(option.value)"
+                >
+                  <span>{{ option.label }}</span>
+                  <svg
+                    v-if="props.locale === option.value"
+                    class="picker__check"
+                    width="12"
+                    height="12"
+                    viewBox="0 0 12 12"
+                    fill="none"
+                    aria-hidden="true"
+                  >
+                    <path d="M2.5 6.2 4.9 8.5 9.5 3.8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                </button>
+              </div>
+            </transition>
+          </div>
+        </div>
+
+        <div v-if="props.nativeAvailable" class="window-controls">
+          <button class="window-control" type="button" :title="t('header.minimize')" @click.stop="handleMinimizeClick">
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+              <path d="M2 6h8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+            </svg>
+          </button>
+
+          <button
+            class="window-control"
+            type="button"
+            :title="windowMaximized ? t('header.restore') : t('header.maximize')"
+            @click.stop="handleToggleWindowState"
+          >
+            <svg v-if="!windowMaximized" width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+              <rect x="2.5" y="2.5" width="7" height="7" rx="1" stroke="currentColor" stroke-width="1.2"/>
+            </svg>
+            <svg v-else width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+              <path d="M3.5 2.5h5a1 1 0 0 1 1 1v5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+              <rect x="2.5" y="4.5" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.2"/>
+            </svg>
+          </button>
+
+          <button class="window-control window-control--danger" type="button" :title="t('header.close')" @click.stop="handleCloseClick">
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+              <path d="M3 3l6 6M9 3 3 9" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+            </svg>
+          </button>
         </div>
       </div>
-
-      <dl class="app-header__stats">
-        <div v-for="stat in headerStats" :key="stat.label">
-          <dt>{{ stat.label }}</dt>
-          <dd>{{ stat.value }}</dd>
-        </div>
-      </dl>
     </div>
   </header>
 </template>
 
 <style scoped>
-.app-header,
-.app-header__copy,
-.app-header__locale,
-.app-header__chips,
-.app-header__stats {
-  display: grid;
-  gap: var(--space-4);
-}
-
 .app-header {
-  align-content: space-between;
-  min-height: 100%;
-  gap: var(--space-5);
+  position: relative;
+  z-index: 20;
+  padding: 0 var(--fd-space-20);
+  border-bottom: 1px solid var(--fd-stroke-card);
+  background: var(--fd-bg-acrylic);
+  backdrop-filter: blur(16px) saturate(120%);
+  -webkit-backdrop-filter: blur(16px) saturate(120%);
 }
 
-.app-header__topbar,
-.app-header__brand,
-.app-header__hero {
+.titlebar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  width: 100%;
+  min-height: 40px;
+  gap: var(--fd-space-10);
+}
+
+.titlebar__drag {
   display: flex;
-  gap: var(--space-4);
-}
-
-.app-header__topbar {
-  justify-content: space-between;
   align-items: center;
+  min-width: 0;
+  min-height: 40px;
+  padding: 0;
+  user-select: none;
 }
 
-.app-header__brand {
+.titlebar__brand {
+  display: inline-flex;
   align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--fd-text-secondary);
 }
 
-.app-header__mark {
+.titlebar__brand strong {
+  font: var(--fd-text-body-strong);
+  white-space: nowrap;
+}
+
+.titlebar__icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 3.5rem;
-  height: 3.5rem;
-  border-radius: 1.1rem;
-  background:
-    radial-gradient(circle at top left, rgba(120, 211, 203, 0.34), transparent 42%),
-    linear-gradient(135deg, rgba(255, 157, 87, 0.22), rgba(8, 18, 28, 0.95));
-  border: 1px solid rgba(255, 157, 87, 0.22);
-  color: var(--color-ink-strong);
-  font-family: var(--font-display);
-  font-size: 1.25rem;
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  color: var(--fd-text-primary);
+  background: var(--fd-control-bg);
+  border: 1px solid var(--fd-control-stroke);
 }
 
-.app-header__eyebrow,
-.app-header__body,
-.app-header__locale-label,
-.app-header__stats dt,
-.app-header__microcopy {
-  margin: 0;
-}
-
-.app-header__eyebrow,
-.app-header__microcopy,
-.app-header__stats dt {
-  font-size: var(--font-size-0);
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-}
-
-.app-header__eyebrow,
-.app-header__stats dt {
-  color: var(--color-accent-secondary);
-}
-
-.app-header__microcopy,
-.app-header__locale-label,
-.app-header__body {
-  color: var(--color-ink-muted);
-}
-
-.app-header__microcopy {
-  font-weight: 600;
-}
-
-.app-header__locale {
-  justify-items: end;
-}
-
-.app-header__hero {
-  align-items: end;
-  justify-content: space-between;
-}
-
-.app-header__copy {
-  max-width: 36rem;
-}
-
-h1 {
-  margin: 0;
-  max-width: 11ch;
-}
-
-.app-header__body {
-  max-width: 48ch;
-  font-size: var(--font-size-3);
-}
-
-.app-header__chips {
+.window-controls {
   display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
+  align-items: stretch;
+  margin-left: var(--fd-space-8);
+  border-left: 1px solid var(--fd-stroke-soft);
+}
+
+.window-control {
+  display: inline-flex;
   align-items: center;
-  max-width: 32rem;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--fd-text-secondary);
+  cursor: pointer;
+  transition:
+    background-color var(--fd-duration-fast) var(--fd-easing-standard),
+    color var(--fd-duration-fast) var(--fd-easing-standard);
 }
 
-.app-header__chip {
-  min-height: 2rem;
-  padding-inline: var(--space-2);
+.window-control:hover {
+  background: var(--fd-subtle-bg-hover);
+  color: var(--fd-text-primary);
 }
 
-.app-header__chip--file {
-  max-width: min(100%, 17rem);
+.window-control--danger:hover {
+  background: #c42b1c;
+  color: #fff;
+}
+
+.titlebar__controls {
+  display: flex;
+  align-items: center;
+  gap: var(--fd-space-8);
+  min-height: 40px;
+}
+
+.titlebar__prefs {
+  display: flex;
+  align-items: center;
+  gap: var(--fd-space-8);
+}
+
+.picker {
+  position: relative;
+  min-width: 0;
+}
+
+.picker--theme {
+  min-width: 88px;
+}
+
+.picker--locale {
+  min-width: 88px;
+}
+
+.picker__trigger {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--fd-space-6);
+  min-height: var(--fd-control-height-sm);
+  min-width: 0;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  padding: 0 12px 0 9px;
+  border: 1px solid var(--fd-control-stroke);
+  border-radius: 999px;
+  background: var(--fd-control-bg);
+  color: var(--fd-text-primary);
+  cursor: pointer;
+  transition:
+    border-color var(--fd-duration-fast) var(--fd-easing-standard),
+    background-color var(--fd-duration-fast) var(--fd-easing-standard),
+    box-shadow var(--fd-duration-fast) var(--fd-easing-standard);
 }
 
-.app-header__stats {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  min-width: min(100%, 24rem);
-  align-self: stretch;
-  gap: var(--space-2);
+.picker__trigger:hover {
+  background: var(--fd-control-bg-hover);
 }
 
-.app-header__stats div {
-  display: grid;
-  gap: var(--space-1);
-  align-content: start;
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-2);
-  border: 1px solid var(--color-line);
-  background: linear-gradient(180deg, rgba(7, 17, 26, 0.34), rgba(18, 36, 54, 0.62));
+.picker__trigger:focus-visible {
+  outline: none;
+  box-shadow: var(--fd-shadow-focus);
 }
 
-.app-header__stats dd {
-  margin: 0;
-  color: var(--color-ink-strong);
+.picker--open .picker__trigger {
+  border-color: var(--fd-accent);
+  box-shadow: var(--fd-shadow-focus);
+}
+
+.picker__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  color: var(--fd-text-secondary);
+  background: var(--fd-layer-1);
+  border: 1px solid var(--fd-stroke-soft);
+}
+
+.picker__label {
+  white-space: nowrap;
+  font: var(--fd-text-caption);
   font-weight: 600;
-  line-height: 1.3;
 }
 
-.app-header__stats div:last-child dd {
+.picker__menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  min-width: 124px;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid var(--fd-stroke-card);
+  border-radius: 16px;
+  background: var(--fd-flyout-bg);
+  box-shadow: var(--fd-shadow-8);
+  backdrop-filter: blur(24px) saturate(150%);
+  -webkit-backdrop-filter: blur(24px) saturate(150%);
+}
+
+.picker__option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--fd-space-10);
+  min-height: var(--fd-control-height-md);
+  padding: 0 10px;
+  border: none;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--fd-text-primary);
+  cursor: pointer;
+  text-align: left;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
-@media (max-width: 80rem) {
-  .app-header__hero {
-    flex-direction: column;
-    align-items: flex-start;
+.picker__option:hover,
+.picker__option--active {
+  background: var(--fd-subtle-bg-hover);
+}
+
+.picker__option--active {
+  color: var(--fd-accent);
+}
+
+.picker__check {
+  color: inherit;
+  flex-shrink: 0;
+}
+
+.picker-menu-enter-active,
+.picker-menu-leave-active {
+  transition:
+    opacity var(--fd-duration-normal) var(--fd-easing-standard),
+    transform var(--fd-duration-normal) var(--fd-easing-standard);
+}
+
+.picker-menu-enter-from,
+.picker-menu-leave-to {
+  opacity: 0;
+  transform: translateY(-6px);
+}
+
+@media (max-width: 980px) {
+  .titlebar {
+    grid-template-columns: 1fr;
+    padding: var(--fd-space-8) 0;
+    gap: var(--fd-space-8);
   }
 
-  .app-header__stats {
+  .titlebar__controls,
+  .titlebar__prefs {
     width: 100%;
   }
+
+  .picker {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .picker__trigger {
+    width: 100%;
+  }
+
+  .window-controls {
+    margin-left: 0;
+    border-left: none;
+  }
 }
 
-@media (max-width: 62rem) {
-  .app-header__topbar,
-  .app-header__hero {
+@media (max-width: 768px) {
+  .app-header {
+    padding: 0 var(--fd-space-12);
+  }
+
+  .titlebar__controls,
+  .titlebar__prefs {
     flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .app-header__locale {
-    justify-items: start;
-  }
-
-  .app-header__stats {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .app-header__chip--file {
-    max-width: 100%;
-    flex-basis: 100%;
-  }
-}
-
-@media (max-width: 48rem) {
-  .app-header__topbar {
-    align-items: stretch;
-  }
-
-  .app-header__brand {
-    gap: var(--space-3);
-  }
-
-  .app-header__stats {
-    grid-template-columns: repeat(1, minmax(0, 1fr));
   }
 }
 </style>

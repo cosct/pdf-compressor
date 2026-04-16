@@ -1,3 +1,10 @@
+/**
+ * Internationalization setup — vue-i18n bootstrap with locale detection.
+ * 国际化初始化 — vue-i18n 引导与语言检测。
+ *
+ * Supported locales: en, zh-CN. Persists selection in localStorage.
+ * 支持语言：en、zh-CN。选择结果持久化在 localStorage 中。
+ */
 import { createI18n } from 'vue-i18n'
 
 import en from '../locales/en'
@@ -12,13 +19,33 @@ function isSupportedLocale(value: string): value is AppLocale {
   return (appLocales as readonly string[]).includes(value)
 }
 
+function readStoredLocale(): string | null {
+  try {
+    return window.localStorage.getItem(STORAGE_KEY)
+  } catch {
+    return null
+  }
+}
+
+function readNavigatorLocale(): string {
+  try {
+    return window.navigator.languages?.[0] || window.navigator.language
+  } catch {
+    try {
+      return Intl.DateTimeFormat().resolvedOptions().locale
+    } catch {
+      return 'en'
+    }
+  }
+}
+
 function detectInitialLocale(): AppLocale {
-  const savedLocale = window.localStorage.getItem(STORAGE_KEY)
+  const savedLocale = readStoredLocale()
   if (savedLocale && isSupportedLocale(savedLocale)) {
     return savedLocale
   }
 
-  const browserLocale = window.navigator.language
+  const browserLocale = readNavigatorLocale()
   if (browserLocale.toLowerCase().startsWith('zh')) {
     return 'zh-CN'
   }
@@ -38,5 +65,9 @@ export const i18n = createI18n({
 
 export function setAppLocale(locale: AppLocale) {
   i18n.global.locale.value = locale
-  window.localStorage.setItem(STORAGE_KEY, locale)
+  try {
+    window.localStorage.setItem(STORAGE_KEY, locale)
+  } catch {
+    // Ignore storage failures and keep the in-memory locale.
+  }
 }

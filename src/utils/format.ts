@@ -1,3 +1,8 @@
+/**
+ * Display formatting helpers for the UI layer.
+ * UI 层的显示格式化工具函数。
+ */
+
 export function formatBytes(bytes?: number): string {
   if (bytes === undefined || !Number.isFinite(bytes)) {
     return '--'
