@@ -1,0 +1,18 @@
+pkgbase = pdf-compressor
+	pkgdesc = Local-first desktop PDF compressor built with Vue, Tauri, and Rust
+	pkgver = 0.2.0
+	pkgrel = 1
+	url = https://github.com/cosct/pdf-compressor
+	arch = x86_64
+	license = MIT
+	makedepends = cargo
+	makedepends = nodejs
+	makedepends = npm
+	makedepends = pkgconf
+	depends = gtk3
+	depends = libappindicator
+	depends = webkit2gtk-4.1
+	source = pdf-compressor-0.2.0.tar.gz::https://github.com/cosct/pdf-compressor/archive/refs/tags/v0.2.0.tar.gz
+	sha256sums = SKIP
+
+pkgname = pdf-compressor

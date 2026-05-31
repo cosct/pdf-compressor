@@ -19,6 +19,22 @@ PDF Compressor 是一个本地优先的桌面 PDF 压缩应用，后端使用 Ru
 
 本应用以桌面优先、本地优先为前提。没有上传到云端的流程，没有远程处理。桌面版支持本地队列，可以批量分析和压缩多个 PDF。
 
+## 安装
+
+### Arch Linux（AUR）
+
+AUR 源码包文件位于 [`aur/pdf-compressor/`](aur/pdf-compressor/)。包发布到 AUR 后，可使用任意 AUR 助手安装：
+
+```bash
+yay -S pdf-compressor      # 或：paru -S pdf-compressor
+```
+
+若要基于提供的文件在本地构建，请参考 [`aur/pdf-compressor/README.md`](aur/pdf-compressor/README.md)，其中说明了如何替换源码校验和、重新生成 `.SRCINFO`，以及在发布归档之前创建本地源码 tarball 进行测试。
+
+### 其他平台
+
+目前尚未发布预编译安装包。请按照[构建与发布](#构建与发布)从源码构建。在 Windows 上会生成 NSIS 安装包和便携版可执行文件。
+
 ## v0.2.0 新增内容
 
 ### Fluent Design 界面重设计
@@ -192,6 +208,8 @@ Vue UI -> Tauri bridge -> Rust commands -> PDF analysis/compression engine -> ou
 │        ├─ analyzer.rs             # 预检分析引擎
 │        ├─ compressor.rs           # 压缩引擎
 │        └─ settings.rs             # 设置规范化
+├─ aur/
+│  └─ pdf-compressor/                # Arch Linux（AUR）源码包（PKGBUILD、.SRCINFO）
 ├─ package.json                     # 前端脚本与 JS 依赖
 ├─ README.md
 └─ README.zh-CN.md
@@ -204,6 +222,8 @@ Vue UI -> Tauri bridge -> Rust commands -> PDF analysis/compression engine -> ou
 - Node.js 和 npm
 - Rust 工具链
 - 对应操作系统所需的 Tauri 构建前置依赖
+
+在 Arch Linux 上，系统依赖为 `webkit2gtk-4.1` 和 `gtk3`（构建还需 `cargo`、`nodejs`、`npm` 和 `pkgconf`）；完整列表以 `aur/pdf-compressor/PKGBUILD` 为准。其他发行版需要安装等价的 WebKit2GTK 4.1 与 GTK 3 软件包。
 
 ## 开发
 
@@ -259,6 +279,10 @@ npm run tauri:build
 - 版本：`0.2.0`
 - 作者：`cosct`
 - 标识符：`com.cosct.pdfcompressor`
+
+### Linux 打包（Arch / AUR）
+
+针对基于 Arch 的发行版，通过 `aur/pdf-compressor/` 中的 AUR 源码包提供打包支持。`PKGBUILD` 会执行 `npm ci && npm run build`，用 `cargo build --release --locked` 构建发布二进制，并将其作为 `/usr/bin/pdf-compressor` 连同桌面入口和图标一起安装。用法见[安装](#安装)，发布流程见 `aur/pdf-compressor/README.md`。
 
 ## 运行时细节
 

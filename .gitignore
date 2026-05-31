@@ -13,6 +13,9 @@ dist-ssr
 src-tauri/target
 *.local
 
+# Local cross-platform git safe.directory helper
+.gitconfig.tmp
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

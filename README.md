@@ -19,6 +19,22 @@ This project is designed for selective PDF optimization rather than blind whole-
 
 The application is desktop-first and local-first. There is no upload flow and no cloud processing. The desktop release supports a local queue so multiple PDFs can be analyzed and compressed in batch.
 
+## Installation
+
+### Arch Linux (AUR)
+
+AUR source-package files are provided in [`aur/pdf-compressor/`](aur/pdf-compressor/). Once the package is published to the AUR, it can be installed with any AUR helper:
+
+```bash
+yay -S pdf-compressor      # or: paru -S pdf-compressor
+```
+
+To build the package locally from the provided files, follow [`aur/pdf-compressor/README.md`](aur/pdf-compressor/README.md). It covers replacing the source checksum, regenerating `.SRCINFO`, and creating a local source tarball for testing before a release archive is published.
+
+### Other platforms
+
+No prebuilt installers are published yet. Build from source as described in [Build and Release](#build-and-release). On Windows this produces an NSIS installer and a portable executable.
+
 ## What's New in v0.2.0
 
 ### Fluent Design UI
@@ -231,6 +247,8 @@ Vue UI -> Tauri bridge -> Rust commands -> PDF analysis/compression engine -> ou
 │        ├─ analyzer.rs             # Preflight analysis engine
 │        ├─ compressor.rs           # Compression engine
 │        └─ settings.rs             # Settings normalization
+├─ aur/
+│  └─ pdf-compressor/                # Arch Linux (AUR) source package (PKGBUILD, .SRCINFO)
 ├─ package.json                     # Frontend scripts and JS dependencies
 ├─ README.md
 └─ README.zh-CN.md
@@ -243,6 +261,8 @@ You need the usual toolchain for a Vue + Tauri desktop app:
 - Node.js and npm
 - Rust toolchain
 - Tauri build prerequisites for your operating system
+
+On Arch Linux the system dependencies are `webkit2gtk-4.1` and `gtk3` (plus `cargo`, `nodejs`, `npm`, and `pkgconf` to build); see `aur/pdf-compressor/PKGBUILD` for the authoritative list. Other distributions need the equivalent WebKit2GTK 4.1 and GTK 3 packages.
 
 ## Development
 
@@ -305,6 +325,10 @@ Release metadata:
 - Version: `0.2.0`
 - Author: `cosct`
 - Identifier: `com.cosct.pdfcompressor`
+
+### Linux packaging (Arch / AUR)
+
+For Arch-based distributions, packaging is provided via the AUR source package in `aur/pdf-compressor/`. The `PKGBUILD` runs `npm ci && npm run build`, builds the release binary with `cargo build --release --locked`, and installs it as `/usr/bin/pdf-compressor` along with a desktop entry and icons. See [Installation](#installation) for usage and `aur/pdf-compressor/README.md` for the publishing checklist.
 
 ## Runtime Details
 

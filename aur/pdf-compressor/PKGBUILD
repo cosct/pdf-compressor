@@ -1,0 +1,55 @@
+# Maintainer: cosct
+
+pkgname=pdf-compressor
+pkgver=0.2.0
+pkgrel=1
+pkgdesc='Local-first desktop PDF compressor built with Vue, Tauri, and Rust'
+arch=('x86_64')
+url='https://github.com/cosct/pdf-compressor'
+license=('MIT')
+depends=(
+  'gtk3'
+  'libappindicator'
+  'webkit2gtk-4.1'
+)
+makedepends=(
+  'cargo'
+  'nodejs'
+  'npm'
+  'pkgconf'
+)
+source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cd "${pkgname}-${pkgver}"
+
+  npm ci
+  npm run build
+
+  cd src-tauri
+  cargo build --release --locked
+}
+
+package() {
+  cd "${pkgname}-${pkgver}"
+
+  install -Dm755 src-tauri/target/release/app "${pkgdir}/usr/bin/pdf-compressor"
+  install -Dm644 src-tauri/icons/128x128.png "${pkgdir}/usr/share/icons/hicolor/128x128/apps/pdf-compressor.png"
+  install -Dm644 src-tauri/icons/32x32.png "${pkgdir}/usr/share/icons/hicolor/32x32/apps/pdf-compressor.png"
+  install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+  install -Dm644 README.zh-CN.md "${pkgdir}/usr/share/doc/${pkgname}/README.zh-CN.md"
+
+  install -Dm644 /dev/stdin "${pkgdir}/usr/share/applications/pdf-compressor.desktop" <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=PDF Compressor
+Comment=Compress PDF files locally
+Exec=pdf-compressor
+Icon=pdf-compressor
+Terminal=false
+Categories=Office;Utility;
+MimeType=application/pdf;
+StartupNotify=true
+EOF
+}
