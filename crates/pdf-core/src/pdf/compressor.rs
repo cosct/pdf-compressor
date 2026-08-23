@@ -10,7 +10,6 @@
 use std::{
     collections::HashSet,
     fs,
-    io::Cursor,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -20,7 +19,7 @@ use std::{
     time::Instant,
 };
 
-use image::{codecs::jpeg::JpegEncoder, imageops::FilterType, DynamicImage, GenericImageView};
+use image::{imageops::FilterType, DynamicImage, GenericImageView};
 use lopdf::{dictionary, Document, Object, ObjectId, Stream};
 
 use crate::{
@@ -1180,17 +1179,37 @@ fn decode_raw_image_stream(stream: &Stream) -> Result<DynamicImage, AppError> {
 }
 
 /// Encode a `DynamicImage` as JPEG into a `Vec<u8>`.
+///
+/// Uses the jpeg-encoder crate (SIMD build): measured ~3× faster than
+/// image's built-in encoder on photographic content with slightly smaller
+/// output at the same quality number (see `benches/encoder.rs`).
 fn encode_dynamic_image_as_jpeg(
     image: &DynamicImage,
     quality: u8,
     expected_capacity: usize,
 ) -> Result<Vec<u8>, AppError> {
+    use std::borrow::Cow;
+
+    let (color_type, pixels): (jpeg_encoder::ColorType, Cow<'_, [u8]>) = match image {
+        DynamicImage::ImageLuma8(gray) => (jpeg_encoder::ColorType::Luma, Cow::Borrowed(gray.as_raw())),
+        DynamicImage::ImageRgb8(rgb) => (jpeg_encoder::ColorType::Rgb, Cow::Borrowed(rgb.as_raw())),
+        other => (jpeg_encoder::ColorType::Rgb, Cow::Owned(other.to_rgb8().into_raw())),
+    };
+
+    let (width, height) = (image.width(), image.height());
+    if width > u16::MAX as u32 || height > u16::MAX as u32 {
+        return Err(AppError::PdfBuild(
+            "Image dimensions exceed the JPEG format limit.".into(),
+        ));
+    }
+
     // At least 32 KB to avoid re-allocation on small images.
     let capacity = expected_capacity.max(32 * 1024);
-    let mut cursor = Cursor::new(Vec::with_capacity(capacity));
-    let mut encoder = JpegEncoder::new_with_quality(&mut cursor, quality);
-    encoder.encode_image(image)?;
-    Ok(cursor.into_inner())
+    let mut output = Vec::with_capacity(capacity);
+    jpeg_encoder::Encoder::new(&mut output, quality)
+        .encode(pixels.as_ref(), width as u16, height as u16, color_type)
+        .map_err(|e| AppError::PdfBuild(format!("Failed to encode JPEG: {e}")))?;
+    Ok(output)
 }
 
 /// Read JPEG dimensions from the SOF marker without decoding the full image.

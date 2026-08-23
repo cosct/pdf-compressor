@@ -9,7 +9,7 @@ use std::{
     sync::{atomic::AtomicBool, Arc},
 };
 
-use image::{codecs::jpeg::JpegEncoder, DynamicImage, Rgb, RgbImage};
+use image::{codecs::jpeg::JpegEncoder, DynamicImage, GenericImageView, Rgb, RgbImage};
 use lopdf::{dictionary, Document, Object, Stream};
 
 use super::analyzer::analyze_pdf_with_progress;
@@ -334,6 +334,56 @@ fn compress_dedupes_identical_images() {
     let reloaded = Document::load(&output).expect("output must be a valid PDF");
     assert_eq!(reloaded.get_pages().len(), 1);
     assert_eq!(original_text.trim(), extracted_text(&output).trim());
+}
+
+// ---------------------------------------------------------------------------
+// JPEG encoder evaluation (image crate vs jpeg-encoder SIMD)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn jpeg_encoder_candidate_produces_valid_comparable_output() {
+    let (width, height) = (1600u32, 1200u32);
+    let rgb = deterministic_rgb_image(width, height);
+    let dynamic = DynamicImage::ImageRgb8(rgb.clone());
+
+    for quality in [58u8, 72, 82] {
+        let mut current_cursor = Cursor::new(Vec::new());
+        let mut current_encoder = JpegEncoder::new_with_quality(&mut current_cursor, quality);
+        current_encoder
+            .encode_image(&dynamic)
+            .expect("image-crate encode");
+        let current_bytes = current_cursor.into_inner();
+
+        let mut candidate_bytes = Vec::new();
+        let candidate_encoder = jpeg_encoder::Encoder::new(&mut candidate_bytes, quality);
+        candidate_encoder
+            .encode(
+                rgb.as_raw(),
+                width as u16,
+                height as u16,
+                jpeg_encoder::ColorType::Rgb,
+            )
+            .expect("jpeg-encoder encode");
+
+        // The candidate's output must decode back through the image crate
+        // (the pipeline's decoder) to identical dimensions.
+        let decoded = image::load_from_memory(&candidate_bytes)
+            .expect("candidate JPEG must be decodable by the image crate");
+        assert_eq!(decoded.dimensions(), (width, height));
+
+        // Sizes are recorded with --nocapture; require the candidate to stay
+        // within 30% of the current encoder at the same quality number.
+        println!(
+            "q{quality}: image-crate {} bytes, jpeg-encoder {} bytes ({:+.1}%)",
+            current_bytes.len(),
+            candidate_bytes.len(),
+            (candidate_bytes.len() as f64 / current_bytes.len() as f64 - 1.0) * 100.0
+        );
+        assert!(
+            candidate_bytes.len() <= current_bytes.len() + current_bytes.len() / 3,
+            "candidate output at q{quality} is disproportionately larger"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
