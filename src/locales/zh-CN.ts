@@ -11,11 +11,6 @@ const zhCN = {
     dark: '深色',
   },
   app: {
-    workflow: '状态',
-    source: '当前文件',
-    profile: '压缩预设',
-    expected: '预计缩减',
-    size: '大小',
     alertTitle: '提示',
     emptySource: '未选择',
     preset: {
@@ -27,23 +22,15 @@ const zhCN = {
   },
   header: {
     title: 'PDF 压缩器',
-    body: '本地处理，快速压缩 PDF 文件。',
-    currentFile: '当前文件',
     minimize: '最小化',
     maximize: '最大化',
     restore: '还原',
     close: '关闭',
   },
   intake: {
-    eyebrow: '上传',
-    title: '拖入 PDF 文件',
-    dropIdle: '拖放或浏览选择',
-    dropTag: '拖放区域',
     browse: '选择文件',
     browseDisabledPreview: '选择文件（仅桌面版）',
-    selectedLabel: '当前文件',
     invalidDrop: '仅支持 .pdf 文件',
-    clear: '清空',
   },
   upload: {
     eyebrow: 'PDF 上传',
@@ -53,32 +40,33 @@ const zhCN = {
     queueHint: '整个区域都支持继续拖入 PDF',
     queueTitle: '文件队列',
     lockedTag: '压缩中',
+    lockedHint: '压缩进行中，队列已锁定',
   },
   settings: {
     eyebrow: '压缩参数预设',
-    recommendedLabel: '推荐',
     recommendedBadge: '推荐',
     presetGroupLabel: '压缩预设',
     advancedToggle: '高级设置',
     quality: '图片质量',
-    qualityShort: 'Q',
     maxEdge: '最大边长',
-    edgeShort: 'E',
     optimizeImages: '优化图片',
     compressStreams: '压缩流',
     stripMetadata: '移除元数据',
     outputDir: '输出目录',
     outputDirDefault: '与原文件相同',
     outputDirBrowse: '选择',
+    targetSize: '目标大小（MB）',
+    targetSizeHint: '例如 5 — 自动压缩到该体积以内',
+    targetSizeOff: '关闭',
     savePreset: '保存预设',
     resetPresets: '恢复默认',
     applyToAll: '应用到全部',
   },
   queue: {
     count: '{count} 项',
-    currentTag: '当前',
     overrideTag: '已覆盖推荐参数',
     delete: '删除',
+    contextMenuLabel: '队列项操作',
     openCompressedFile: '打开压缩后 PDF',
     openCompressedFolder: '打开压缩文件所在文件夹',
     pages: '页',
@@ -98,47 +86,26 @@ const zhCN = {
       success: '压缩完成',
       error: '需要处理',
     },
-    emptyTitle: '队列为空',
-    emptyBody: '添加 PDF 文件后开始使用',
   },
   activity: {
     eyebrow: '活动',
-    title: '执行区',
     liveLabel: '状态',
-    recommendedPrefix: '推荐',
-    metricPreset: '预设',
-    metricSize: '大小',
     metricSavings: '节省',
-    metricRuntime: '耗时',
     metricProgress: '进度',
     metricQueued: '队列',
     metricCompleted: '完成',
-    primaryCompress: '压缩',
-    primaryCompressAll: '压缩全部 ({count})',
-    primaryRecompress: '重新压缩',
-    compressSelected: '压缩选中',
-    compressAll: '压缩全部',
     startCompression: '开始压缩',
-    primaryBusy: '处理中...',
-    primaryNeedsSource: '请先添加文件',
     noSourcePlaceholder: '没有添加文件',
     cancel: '取消压缩',
     outputLocked: '压缩进行中，输出目录已锁定。',
     states: {
       idleTitle: '等待文件',
-      idleBody: '添加 PDF 后开始',
       selectedTitle: '文件已就绪',
-      selectedBody: '分析后可调整设置',
       analyzingTitle: '分析中',
-      analyzingBody: '正在检查文档结构',
       readyTitle: '可以压缩',
-      readyBody: '点击开始压缩',
       compressingTitle: '压缩中',
-      compressingBody: '正在处理图片和流',
       successTitle: '完成',
-      successBody: '压缩已完成',
       errorTitle: '错误',
-      errorBody: '请检查后重试',
     },
   },
   composable: {
@@ -151,18 +118,90 @@ const zhCN = {
     errors: {
       backendFallback: '桌面服务返回了未知错误。',
       browseRequiresDesktop: '文件浏览仅在 Tauri 桌面应用中可用。',
-    },
-    pathState: {
-      empty: '请选择一个 PDF 文件。',
-      invalid: '请选择 .pdf 文件。',
-      ready: '已准备好分析或压缩。',
+      queueLocked: '压缩任务进行期间无法添加文件。',
     },
   },
-  backend: {},
+  backend: {
+    'analysis.note.structureBased': {
+      body: '分析基于 PDF 结构检查，而非页面渲染。',
+    },
+    'analysis.note.safeOptimization': {
+      body: '压缩针对图片流、元数据和可压缩的 PDF 流。',
+    },
+    'analysis.note.sampledPages': {
+      body: '检测到大体积 PDF，详细检查抽样了 {pageCount} 页中的 {inspectedPages} 页。',
+    },
+    'analysis.warning.textExtractionFallback': {
+      body: '部分页面无法完全解码，因此推荐保持保守。',
+    },
+    'analysis.warning.textNative': {
+      body: '该文件以原生文本为主，压缩空间可能有限。',
+    },
+    'analysis.warning.largePageCount': {
+      body: '该 PDF 页数较多，准备和压缩可能需要更长时间。',
+    },
+    'analysis.warning.noImages': {
+      body: '未检测到内嵌图片对象，压缩收益可能依赖流压缩和元数据清理。',
+    },
+    'analysis.note.mixedDocument': {
+      body: '该 PDF 混合了可读文本结构与图片密集页面，推荐先采用更稳妥的设置。',
+    },
+    'analysis.note.smallPdf': {
+      body: '小体积 PDF 通常难以大幅缩减。',
+    },
+    'compress.note.appliedProfile': {
+      body: '已应用“{preset}”预设：JPEG 质量 {quality}，图片最大边长 {maxImageSizePx} px。',
+    },
+    'compress.note.safeRewrite': {
+      body: '当重写不安全时，优化器会保留文本与矢量指令。',
+    },
+    'compress.note.imageSkipSummary': {
+      body: '为保持报告简洁，已合并 {count} 条额外的图片跳过提示。',
+    },
+    'compress.note.metadataKept': {
+      body: '因元数据清理已禁用或不可用，文档元数据保持原样。',
+    },
+    'compress.note.imageDedupe': {
+      body: '已将 {count} 个重复图片对象合并为共享引用。',
+    },
+    'compress.note.targetAttempt': {
+      body: '正在逼近目标大小：尝试 JPEG 质量 {quality}（第 {attempt} 次）。',
+    },
+    'compress.note.targetSizeMet': {
+      body: '已以 JPEG 质量 {quality} 达成 {targetKb} KB 的目标大小。',
+    },
+    'compress.warning.targetSizeMissed': {
+      body: '无法达到 {targetKb} KB 的目标；已生成当前可达的最小结果。',
+    },
+    'compress.warning.imageSkipped': {
+      body: '已跳过图片对象 {objectId}：{reason}',
+    },
+  },
   error: {
-    cancelled: {
+    'error.missingInput': {
+      body: '所选文件不存在：{path}',
+    },
+    'error.invalidPdfPath': {
+      body: '所选文件不是 PDF：{path}',
+    },
+    'error.image': {
+      body: '图片处理失败：{detail}',
+    },
+    'error.io': {
+      body: '文件系统操作失败：{detail}',
+    },
+    'error.cancelled': {
       title: '已取消',
       body: '当前压缩任务已取消。',
+    },
+    'error.config': {
+      body: '配置操作失败：{detail}',
+    },
+    'error.opener': {
+      body: '调用系统程序打开路径失败：{detail}',
+    },
+    'error.pdfBuild': {
+      body: '生成输出 PDF 失败：{detail}',
     },
   },
 }

@@ -26,6 +26,9 @@ export interface CompressionSettings {
   compressStreams: boolean
   stripMetadata: boolean
   outputDir: string | null
+  /** Optional target output size in MB — the backend searches quality/edge
+   * parameters until the output fits (best effort). `null` disables. */
+  targetFileSizeMb: number | null
 }
 
 export interface PresetDefaults {
@@ -90,6 +93,7 @@ export interface CompressionResult {
   elapsedMs?: number
   imagesRecompressed?: number
   imagesSkipped?: number
+  imagesDeduplicated?: number
   streamsCompressed?: number
   metadataRemoved?: boolean
   outputWasSmaller?: boolean

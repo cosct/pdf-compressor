@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import ActivityPanel from './components/ActivityPanel.vue'
@@ -9,6 +9,7 @@ import ErrorToastViewport from './components/ErrorToastViewport.vue'
 import PdfUploadPanel from './components/PdfUploadPanel.vue'
 import { usePdfCompressor } from './composables/usePdfCompressor'
 import { appLocales, setAppLocale, type AppLocale } from './i18n'
+import { listenForOpenPdf } from './lib/tauri'
 import { formatBytes, formatPercent } from './utils/format'
 
 const {
@@ -37,6 +38,7 @@ const {
   openCompressedFile,
   openCompressedFileFolder,
   dismissErrorToast,
+  reportError,
 } = usePdfCompressor()
 
 const { t, locale } = useI18n()
@@ -48,43 +50,75 @@ const completedQueueCount = computed(() => jobs.value.filter((job) => job.status
 const canApplySettingsToAll = computed(
   () => Boolean(selectedJobId.value) && activeQueueCount.value > 1 && !compressionLoading.value,
 )
+const selectedJobProgressPercent = computed(
+  () => jobs.value.find((job) => job.id === selectedJobId.value)?.progress.percent ?? 0,
+)
+
+function formatSizeChange(original?: number, compressed?: number): string {
+  const from = formatBytes(original)
+  const to = formatBytes(compressed)
+  if (from === '--' || to === '--') {
+    return ''
+  }
+  return `${from} -> ${to}`
+}
 
 const queueItems = computed(() =>
   jobs.value
     .filter((job) => job.sourcePath.trim())
-    .map((job) => ({
-      id: job.id,
-      fileName: job.fileName || t('app.emptySource'),
-      path: job.sourcePath,
-      status: job.status === 'idle' ? 'selected' : job.status,
-      presetLabel: t(`app.preset.${job.settings.preset}`),
-      detail:
-        job.error && job.status === 'error'
-          ? job.error.body
-          : t(`queue.detail.${job.status === 'idle' ? 'selected' : job.status}`),
-      meta: [
-        job.result
-          ? [
-              formatBytes(job.result.originalSizeBytes ?? job.analysis?.fileSizeBytes),
-              formatBytes(job.result.compressedSizeBytes),
-            ].every((entry) => entry !== '--')
-            ? `${formatBytes(job.result.originalSizeBytes ?? job.analysis?.fileSizeBytes)} -> ${formatBytes(job.result.compressedSizeBytes)}`
-            : ''
-          : formatBytes(job.analysis?.fileSizeBytes) !== '--'
-            ? formatBytes(job.analysis?.fileSizeBytes)
-            : '',
-        job.analysis?.pageCount ? `${job.analysis.pageCount} ${t('queue.pages')}` : '',
-        job.result ? formatPercent(job.result.savingsPercent) : '',
-      ].filter(Boolean),
-      progressPercent: job.progress.percent,
-      overrideLabel: job.analysis && !job.useRecommendedSettings ? t('queue.overrideTag') : '',
-      outputPath: job.result?.outputPath ?? null,
-    })),
+    .map((job) => {
+      const sizeMeta = job.result
+        ? formatSizeChange(
+            job.result.originalSizeBytes ?? job.analysis?.fileSizeBytes,
+            job.result.compressedSizeBytes,
+          )
+        : formatBytes(job.analysis?.fileSizeBytes) !== '--'
+          ? formatBytes(job.analysis?.fileSizeBytes)
+          : ''
+
+      return {
+        id: job.id,
+        fileName: job.fileName || t('app.emptySource'),
+        path: job.sourcePath,
+        status: job.status === 'idle' ? 'selected' : job.status,
+        presetLabel: t(`app.preset.${job.settings.preset}`),
+        detail:
+          job.error && job.status === 'error'
+            ? job.error.body
+            : t(`queue.detail.${job.status === 'idle' ? 'selected' : job.status}`),
+        meta: [
+          sizeMeta,
+          job.analysis?.pageCount ? `${job.analysis.pageCount} ${t('queue.pages')}` : '',
+          job.result ? formatPercent(job.result.savingsPercent) : '',
+        ].filter(Boolean),
+        progressPercent: job.progress.percent,
+        overrideLabel: job.analysis && !job.useRecommendedSettings ? t('queue.overrideTag') : '',
+        outputPath: job.result?.outputPath ?? null,
+      }
+    }),
 )
 
 function updateLocale(nextLocale: AppLocale) {
   setAppLocale(nextLocale)
 }
+
+// PDFs handed to an already-running instance ("Open with…") join the queue.
+let stopListeningOpenPdf: (() => void) | null = null
+
+onMounted(async () => {
+  try {
+    stopListeningOpenPdf = await listenForOpenPdf((paths) => {
+      addSourcePaths(paths)
+    })
+  } catch (error) {
+    console.warn('open-pdf event listener unavailable:', error)
+  }
+})
+
+onBeforeUnmount(() => {
+  stopListeningOpenPdf?.()
+  stopListeningOpenPdf = null
+})
 </script>
 
 <template>
@@ -126,6 +160,7 @@ function updateLocale(nextLocale: AppLocale) {
               :analysis="analysis"
               @update:settings="updateSettings"
               @apply-settings-to-all="applySettingsToAll"
+              @preset-config-error="reportError"
             />
           </div>
 
@@ -142,7 +177,7 @@ function updateLocale(nextLocale: AppLocale) {
               :can-cancel="canCancelCompression"
               :queue-count="activeQueueCount"
               :completed-count="completedQueueCount"
-              :progress-percent="jobs.find((job) => job.id === selectedJobId)?.progress.percent ?? 0"
+              :progress-percent="selectedJobProgressPercent"
               :output-dir="settings.outputDir"
               :native-available="nativeAvailable"
               :queue-locked="compressionLoading"

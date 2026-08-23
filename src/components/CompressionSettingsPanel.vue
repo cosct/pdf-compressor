@@ -38,6 +38,7 @@ const props = withDefaults(
 const emit = defineEmits<{
   'update:settings': [value: CompressionSettings]
   'apply-settings-to-all': []
+  'preset-config-error': [error: unknown]
 }>()
 
 const { t } = useI18n()
@@ -100,6 +101,8 @@ async function refreshPresetProfiles() {
     ])
     presetProfiles.value = profiles
     hasCustomPresets.value = hasCustomConfig
+  } catch (error) {
+    emit('preset-config-error', error)
   } finally {
     presetConfigBusy.value = false
   }
@@ -117,6 +120,8 @@ async function saveCurrentAsPreset() {
       maxImageSizePercent: percent,
     })
     await refreshPresetProfiles()
+  } catch (error) {
+    emit('preset-config-error', error)
   } finally {
     presetConfigBusy.value = false
   }
@@ -145,6 +150,8 @@ async function resetToDefaults() {
       compressStreams: true,
       stripMetadata: true,
     }))
+  } catch (error) {
+    emit('preset-config-error', error)
   } finally {
     presetConfigBusy.value = false
   }
@@ -185,6 +192,17 @@ function updateMaxImageSizePercent(percent: number) {
 
 function updateSetting<K extends keyof CompressionSettings>(key: K, value: CompressionSettings[K]) {
   emit('update:settings', normalizeSettings({ ...props.settings, [key]: value }))
+}
+
+function updateTargetSizeMb(raw: string) {
+  const trimmed = raw.trim()
+  if (!trimmed) {
+    updateSetting('targetFileSizeMb', null)
+    return
+  }
+
+  const parsed = Number(trimmed)
+  updateSetting('targetFileSizeMb', Number.isFinite(parsed) && parsed > 0 ? parsed : null)
 }
 
 function handlePresetKeydown(event: KeyboardEvent, index: number) {
@@ -349,6 +367,32 @@ function presetSnapshotLabel(preset: CompressionPreset): string {
               :value="displayMaxImagePercent"
               :disabled="props.disabled"
               @input="updateMaxImageSizePercent(Number(($event.target as HTMLInputElement).value))"
+            />
+          </label>
+        </div>
+
+        <div class="target-size-row">
+          <label class="target-size-control">
+            <span class="slider-label">
+              <span>{{ t('settings.targetSize') }}</span>
+              <span class="slider-label__value">
+                <strong v-if="props.settings.targetFileSizeMb">
+                  {{ props.settings.targetFileSizeMb }} MB
+                </strong>
+                <span v-else class="slider-label__hint">{{ t('settings.targetSizeOff') }}</span>
+              </span>
+            </span>
+            <input
+              class="target-size-input"
+              type="number"
+              :min="0.1"
+              :max="2048"
+              step="0.1"
+              inputmode="decimal"
+              :placeholder="t('settings.targetSizeHint')"
+              :value="props.settings.targetFileSizeMb ?? ''"
+              :disabled="props.disabled"
+              @change="updateTargetSizeMb(($event.target as HTMLInputElement).value)"
             />
           </label>
         </div>
@@ -659,6 +703,36 @@ input[type='range'] {
 }
 
 input[type='range']:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.target-size-row {
+  display: grid;
+  grid-template-columns: 1fr;
+}
+
+.target-size-control {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fd-space-6);
+  padding: 10px 12px;
+  border: 1px solid var(--fd-stroke-card);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--fd-layer-1) 88%, transparent);
+}
+
+.target-size-input {
+  width: 100%;
+  padding: 4px 8px;
+  border: 1px solid var(--fd-control-stroke);
+  border-radius: 8px;
+  background: var(--fd-layer-2);
+  color: var(--fd-text-primary);
+  font: var(--fd-text-body);
+}
+
+.target-size-input:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }

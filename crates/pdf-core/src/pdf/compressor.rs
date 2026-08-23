@@ -8,6 +8,7 @@
 //! 压缩符合条件的非图片流，可选移除文档元数据。支持通过原子标志取消。
 
 use std::{
+    collections::HashSet,
     fs,
     io::Cursor,
     path::{Path, PathBuf},
@@ -20,7 +21,7 @@ use std::{
 };
 
 use image::{codecs::jpeg::JpegEncoder, imageops::FilterType, DynamicImage, GenericImageView};
-use lopdf::{Document, Object, ObjectId, Stream};
+use lopdf::{dictionary, Document, Object, ObjectId, Stream};
 
 use crate::{
     error::AppError,
@@ -28,7 +29,7 @@ use crate::{
 };
 
 use super::settings::CompressionSettings;
-use super::optional_integer;
+use super::{optional_integer, validate_input_path};
 
 /// Progress range: object scan phase.
 const OBJECT_SCAN_PROGRESS_START: f32 = 15.0;
@@ -76,6 +77,21 @@ const TWO_PASS_RESIZE_PIXEL_THRESHOLD: u64 = 4_000_000;
 /// Lowered from 128 to 64 bytes — deflate can still win on repetitive short streams.
 const MIN_COMPRESSIBLE_STREAM_BYTES: usize = 64;
 
+/// Inputs above this size are rejected: the whole document is loaded into
+/// memory, so a hard ceiling protects against OOM on multi-gigabyte files.
+const MAX_INPUT_BYTES: u64 = 2 * 1024 * 1024 * 1024; // 2 GiB
+
+/// Guard against OOM on oversized inputs. Shared by analyze and compress.
+pub(crate) fn ensure_input_size_supported(size_bytes: u64) -> Result<(), AppError> {
+    if size_bytes > MAX_INPUT_BYTES {
+        return Err(AppError::PdfBuild(format!(
+            "Input file is too large to process safely ({size_bytes} bytes; the limit is {MAX_INPUT_BYTES} bytes)."
+        )));
+    }
+
+    Ok(())
+}
+
 /// Maximum number of per-image skip notices included in the response.
 /// Additional skips are counted but not individually reported.
 const MAX_IMAGE_SKIP_NOTICES: usize = 6;
@@ -92,6 +108,7 @@ const CHANNEL_BUFFER_MULTIPLIER: usize = 4;
 struct CompressionStats {
     images_recompressed: usize,
     images_skipped: usize,
+    images_deduplicated: usize,
     streams_compressed: usize,
     metadata_removed: bool,
     notices: Vec<BackendNotice>,
@@ -103,6 +120,9 @@ struct CompressionStats {
 struct ImageTask {
     object_id: ObjectId,
     stream: Stream,
+    /// Cloned soft-mask stream referenced by `/SMask`, resolved on the main
+    /// thread (workers have no document access). `None` when absent.
+    smask: Option<Stream>,
     /// Cached stream byte length — avoids re-reading during scheduling.
     stream_size: usize,
 }
@@ -128,7 +148,12 @@ struct CompressionRuntime<'a> {
 
 #[derive(Debug)]
 enum ImageOptimization {
-    Recompressed(Stream),
+    /// Recompressed stream plus, for images with transparency, the rebuilt
+    /// soft-mask stream to attach as a new indirect object.
+    Recompressed {
+        stream: Stream,
+        smask: Option<Stream>,
+    },
     Skipped { stream: Stream, reason: String },
 }
 
@@ -154,6 +179,7 @@ where
     // --- Validate input & read file metadata ---
     let input_path = validate_input_path(path)?;
     let original_size_bytes = fs::metadata(&input_path)?.len();
+    ensure_input_size_supported(original_size_bytes)?;
     let output_path = build_output_path(&input_path, &settings)?;
 
     // --- Load the PDF document ---
@@ -230,6 +256,19 @@ where
             .with_value("count", stats.suppressed_skip_notices.to_string()),
         );
     }
+    if stats.images_deduplicated > 0 {
+        stats.notices.push(
+            BackendNotice::new(
+                "compress.note.imageDedupe",
+                "neutral",
+                format!(
+                    "Merged {} duplicate image objects into shared references.",
+                    stats.images_deduplicated
+                ),
+            )
+            .with_value("count", stats.images_deduplicated.to_string()),
+        );
+    }
     if !stats.metadata_removed {
         stats.notices.push(BackendNotice::new(
             "compress.note.metadataKept",
@@ -248,14 +287,15 @@ where
 
     Ok(CompressionResponse {
         output_path: output_path.to_string_lossy().to_string(),
-        original_size_bytes,
-        compressed_size_bytes,
-        saved_bytes,
+        original_size_bytes: original_size_bytes as f64,
+        compressed_size_bytes: compressed_size_bytes as f64,
+        saved_bytes: saved_bytes as f64,
         savings_percent,
-        elapsed_ms: started_at.elapsed().as_millis(),
-        images_recompressed: stats.images_recompressed,
-        images_skipped: stats.images_skipped,
-        streams_compressed: stats.streams_compressed,
+        elapsed_ms: started_at.elapsed().as_millis().min(u32::MAX as u128) as u32,
+        images_recompressed: stats.images_recompressed as u32,
+        images_skipped: stats.images_skipped as u32,
+        images_deduplicated: stats.images_deduplicated as u32,
+        streams_compressed: stats.streams_compressed as u32,
         metadata_removed: stats.metadata_removed,
         output_was_smaller: compressed_size_bytes < original_size_bytes,
         notices: stats.notices,
@@ -285,6 +325,26 @@ where
         cancel_flag,
         task_id,
     };
+
+    // --- Lossless pass: merge byte-identical image objects (logos, stamps) ---
+    stats.images_deduplicated = dedupe_identical_images(document) as usize;
+
+    // Soft-mask streams carry Subtype /Image too — collect the ids referenced
+    // as /SMask so the scan treats them as alpha auxiliaries of their parent
+    // image instead of standalone optimization targets.
+    let smask_object_ids: HashSet<ObjectId> = document
+        .objects
+        .values()
+        .filter_map(|object| match object {
+            Object::Stream(stream) if is_image_stream(stream) => stream
+                .dict
+                .get(b"SMask")
+                .ok()
+                .and_then(|entry| entry.as_reference().ok()),
+            _ => None,
+        })
+        .collect();
+
     let object_ids: Vec<ObjectId> = document.objects.keys().copied().collect();
     let total_objects = object_ids.len().max(1);
     let mut image_object_ids = Vec::new();
@@ -293,6 +353,17 @@ where
     // --- Single-pass scan: classify each object ---
     for (index, object_id) in object_ids.into_iter().enumerate() {
         ensure_not_cancelled(runtime.cancel_flag, runtime.task_id)?;
+        if smask_object_ids.contains(&object_id) {
+            report_progress_if_needed(
+                report_progress,
+                &mut last_reported_percent,
+                OBJECT_SCAN_PROGRESS_START,
+                OBJECT_SCAN_PROGRESS_END,
+                index + 1,
+                total_objects,
+            );
+            continue;
+        }
         let Some(object) = document.objects.get_mut(&object_id) else {
             continue;
         };
@@ -351,6 +422,96 @@ where
 }
 
 // ---------------------------------------------------------------------------
+// Lossless image deduplication
+// ---------------------------------------------------------------------------
+
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    bytes
+        .iter()
+        .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01B3)
+        })
+}
+
+/// Merge byte-identical image streams into a single canonical object,
+/// replacing duplicates with indirect references. Fully lossless: headers,
+/// filters, and pixel data must match exactly. Images carrying masks or
+/// `DecodeParms` are excluded to keep the equivalence check airtight.
+fn dedupe_identical_images(document: &mut Document) -> u32 {
+    use std::collections::HashMap;
+
+    let candidate_ids: Vec<ObjectId> = document
+        .objects
+        .iter()
+        .filter_map(|(&id, object)| match object {
+            Object::Stream(stream)
+                if is_image_stream(stream)
+                    && !has_mask(stream)
+                    && stream.dict.get(b"DecodeParms").is_err() =>
+            {
+                Some(id)
+            }
+            _ => None,
+        })
+        .collect();
+
+    let mut first_by_hash: HashMap<u64, ObjectId> = HashMap::new();
+    let mut replacements: Vec<(ObjectId, ObjectId)> = Vec::new();
+
+    for id in candidate_ids {
+        let Some(Object::Stream(stream)) = document.objects.get(&id) else {
+            continue;
+        };
+
+        let mut signature = Vec::with_capacity(64);
+        if let Ok(Object::Name(filter)) = stream.dict.get(b"Filter") {
+            signature.extend_from_slice(filter);
+        }
+        for key in [b"Width".as_slice(), b"Height".as_slice(), b"BitsPerComponent".as_slice()] {
+            signature.extend_from_slice(
+                &optional_integer(stream, key).unwrap_or_default().to_le_bytes(),
+            );
+        }
+        if let Ok(Object::Name(color_space)) = stream.dict.get(b"ColorSpace") {
+            signature.extend_from_slice(color_space);
+        }
+        signature.push(0);
+        signature.extend_from_slice(&stream.content);
+
+        let hash = fnv1a64(&signature);
+        match first_by_hash.get(&hash) {
+            Some(&first_id) => {
+                // Verify exact equality — a hash alone must never merge images.
+                let identical = matches!(
+                    (document.objects.get(&first_id), document.objects.get(&id)),
+                    (Some(Object::Stream(first)), Some(Object::Stream(dup)))
+                        if first.content == dup.content
+                            && optional_integer(first, b"Width")
+                                == optional_integer(dup, b"Width")
+                            && optional_integer(first, b"Height")
+                                == optional_integer(dup, b"Height")
+                );
+                if identical {
+                    replacements.push((id, first_id));
+                }
+            }
+            None => {
+                first_by_hash.insert(hash, id);
+            }
+        }
+    }
+
+    let count = replacements.len() as u32;
+    for (duplicate_id, first_id) in replacements {
+        document
+            .objects
+            .insert(duplicate_id, Object::Reference(first_id));
+    }
+
+    count
+}
+
+// ---------------------------------------------------------------------------
 // Image stream batch optimization
 // ---------------------------------------------------------------------------
 
@@ -381,13 +542,20 @@ where
     if worker_count <= 1 {
         for (index, task) in image_tasks.into_iter().enumerate() {
             ensure_not_cancelled(runtime.cancel_flag, runtime.task_id)?;
+            let ImageTask {
+                object_id,
+                stream,
+                smask,
+                ..
+            } = task;
             let optimization = optimize_image_stream(
-                task.stream,
+                stream,
+                smask,
                 settings,
                 runtime.cancel_flag,
                 runtime.task_id,
             )?;
-            apply_image_optimization(document, task.object_id, optimization, stats);
+            apply_image_optimization(document, object_id, optimization, stats);
             report_progress_if_needed(
                 report_progress,
                 last_reported_percent,
@@ -429,15 +597,22 @@ where
                     };
                     let Ok(task) = task else { return };
 
+                    let ImageTask {
+                        object_id,
+                        stream,
+                        smask,
+                        ..
+                    } = task;
                     let result = optimize_image_stream(
-                        task.stream,
+                        stream,
+                        smask,
                         &worker_settings,
                         &worker_cancel_flag,
                         &worker_task_id,
                     );
                     if tx
                         .send(ImageTaskOutcome {
-                            object_id: task.object_id,
+                            object_id,
                             result,
                         })
                         .is_err()
@@ -499,9 +674,21 @@ fn take_image_tasks(document: &mut Document, image_object_ids: &[ObjectId]) -> V
         match object {
             Object::Stream(stream) => {
                 let stream_size = stream.content.len();
+                // Resolve /SMask here — workers have no document access.
+                let smask = stream
+                    .dict
+                    .get(b"SMask")
+                    .ok()
+                    .and_then(|entry| entry.as_reference().ok())
+                    .and_then(|smask_id| document.objects.get(&smask_id).cloned())
+                    .and_then(|entry| match entry {
+                        Object::Stream(smask_stream) => Some(smask_stream),
+                        _ => None,
+                    });
                 tasks.push(ImageTask {
                     object_id,
                     stream,
+                    smask,
                     stream_size,
                 });
             }
@@ -512,7 +699,7 @@ fn take_image_tasks(document: &mut Document, image_object_ids: &[ObjectId]) -> V
     }
 
     // Largest first → heavy tasks start immediately, reducing tail latency.
-    tasks.sort_unstable_by(|a, b| b.stream_size.cmp(&a.stream_size));
+    tasks.sort_unstable_by_key(|task| std::cmp::Reverse(task.stream_size));
     tasks
 }
 
@@ -523,7 +710,11 @@ fn apply_image_optimization(
     stats: &mut CompressionStats,
 ) {
     match optimization {
-        ImageOptimization::Recompressed(stream) => {
+        ImageOptimization::Recompressed { mut stream, smask } => {
+            if let Some(smask_stream) = smask {
+                let smask_id = document.add_object(smask_stream);
+                stream.dict.set("SMask", Object::Reference(smask_id));
+            }
             document.objects.insert(object_id, Object::Stream(stream));
             stats.images_recompressed += 1;
         }
@@ -559,19 +750,37 @@ fn record_image_skip(stats: &mut CompressionStats, object_id: ObjectId, reason: 
 // ---------------------------------------------------------------------------
 
 /// Decide whether to recompress a single image stream. Returns quickly for
-/// images that cannot benefit from recompression (fast-path skips).
+/// images that cannot benefit from recompression (fast-path skips). Decode and
+/// encode failures are reported as skips with a reason; only cancellation
+/// propagates as an error. Images with an 8-bit grayscale `/SMask` keep their
+/// transparency: the color plane is re-encoded as JPEG and the alpha plane as
+/// a flate-compressed grayscale soft mask.
 fn optimize_image_stream(
     mut stream: Stream,
+    smask: Option<Stream>,
     settings: &CompressionSettings,
     cancel_flag: &Arc<AtomicBool>,
     task_id: &str,
 ) -> Result<ImageOptimization, AppError> {
     ensure_not_cancelled(cancel_flag, task_id)?;
-    // --- Skip: transparency / masks are not safely rewritable ---
-    if has_mask(&stream) {
+    // --- Skip: stencil image masks and color-key masks stay untouched ---
+    if stream.dict.get(b"ImageMask").is_ok() {
         return Ok(ImageOptimization::Skipped {
             stream,
-            reason: "transparency or image masks are not rewritten yet".into(),
+            reason: "image masks (stencils) are not rewritten".into(),
+        });
+    }
+    if stream.dict.get(b"Mask").is_ok() {
+        return Ok(ImageOptimization::Skipped {
+            stream,
+            reason: "color-key masks are not rewritten".into(),
+        });
+    }
+    let has_smask = stream.dict.get(b"SMask").is_ok();
+    if has_smask && smask.is_none() {
+        return Ok(ImageOptimization::Skipped {
+            stream,
+            reason: "soft mask could not be resolved for a safe rewrite".into(),
         });
     }
 
@@ -653,12 +862,30 @@ fn optimize_image_stream(
     let original_len = stream.content.len();
 
     // --- Decode the image ---
+    // Decode/encode failures are treated as skips, not fatal errors: one
+    // malformed image stream in a hostile or damaged PDF must not abort the
+    // whole file. Only cancellation propagates as `Err`.
     ensure_not_cancelled(cancel_flag, task_id)?;
     let dynamic_image = if filter_info.has_jpeg {
-        image::load_from_memory(&stream.content)
-            .map_err(|e| AppError::PdfBuild(format!("Failed to decode JPEG image stream: {e}")))?
+        match image::load_from_memory(&stream.content) {
+            Ok(image) => image,
+            Err(e) => {
+                return Ok(ImageOptimization::Skipped {
+                    stream,
+                    reason: format!("failed to decode JPEG image stream: {e}"),
+                })
+            }
+        }
     } else {
-        decode_raw_image_stream(&stream)?
+        match decode_raw_image_stream(&stream) {
+            Ok(image) => image,
+            Err(e) => {
+                return Ok(ImageOptimization::Skipped {
+                    stream,
+                    reason: format!("failed to decode raw image stream: {e}"),
+                })
+            }
+        }
     };
 
     // --- Resize if needed (two-pass for large images) ---
@@ -670,12 +897,34 @@ fn optimize_image_stream(
         "DeviceGray"
     };
 
+    // --- Decode + resize the alpha plane to match the color plane ---
+    let new_smask = if has_smask {
+        let Some(raw_smask) = smask.as_ref().and_then(decode_smask_gray) else {
+            return Ok(ImageOptimization::Skipped {
+                stream,
+                reason: "soft mask uses an unsupported shape for a safe rewrite".into(),
+            });
+        };
+        Some(resize_smask_to(raw_smask, optimized.width(), optimized.height()))
+    } else {
+        None
+    };
+
     // --- Encode as JPEG ---
     // Pre-allocate based on conservative compression ratio estimate.
     ensure_not_cancelled(cancel_flag, task_id)?;
     let estimated_output_size = (original_len as f32 * 0.65) as usize;
     let encoded =
-        encode_dynamic_image_as_jpeg(&optimized, settings.image_quality, estimated_output_size)?;
+        match encode_dynamic_image_as_jpeg(&optimized, settings.image_quality, estimated_output_size)
+        {
+            Ok(encoded) => encoded,
+            Err(e) => {
+                return Ok(ImageOptimization::Skipped {
+                    stream,
+                    reason: format!("failed to re-encode image as JPEG: {e}"),
+                })
+            }
+        };
 
     // --- Skip if the new encoding is not smaller AND we didn't resize ---
     if encoded.len() >= original_len
@@ -705,7 +954,28 @@ fn optimize_image_stream(
     );
     stream.set_content(encoded);
 
-    Ok(ImageOptimization::Recompressed(stream))
+    // The rebuilt soft mask ships as a separate flate-compressed grayscale
+    // stream; `apply_image_optimization` attaches it as an indirect object.
+    let smask_stream = new_smask.map(|alpha| {
+        let mut soft_mask = Stream::new(
+            dictionary! {
+                "Type" => "XObject",
+                "Subtype" => "Image",
+                "Width" => i64::from(alpha.width()),
+                "Height" => i64::from(alpha.height()),
+                "ColorSpace" => "DeviceGray",
+                "BitsPerComponent" => 8,
+            },
+            alpha.into_raw(),
+        );
+        let _ = soft_mask.compress();
+        soft_mask
+    });
+
+    Ok(ImageOptimization::Recompressed {
+        stream,
+        smask: smask_stream,
+    })
 }
 
 fn ensure_not_cancelled(cancel_flag: &Arc<AtomicBool>, task_id: &str) -> Result<(), AppError> {
@@ -714,6 +984,51 @@ fn ensure_not_cancelled(cancel_flag: &Arc<AtomicBool>, task_id: &str) -> Result<
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Soft-mask (transparency) helpers
+// ---------------------------------------------------------------------------
+
+/// Decode an `/SMask` stream into an 8-bit grayscale image. Returns `None`
+/// for any shape we cannot rewrite safely (non-gray, non-8bit, mismatched
+/// byte counts, undecodable filter).
+fn decode_smask_gray(smask: &Stream) -> Option<image::GrayImage> {
+    let width = optional_integer(smask, b"Width")? as u32;
+    let height = optional_integer(smask, b"Height")? as u32;
+    if width == 0 || height == 0 {
+        return None;
+    }
+
+    if optional_integer(smask, b"BitsPerComponent").unwrap_or(8) != 8 {
+        return None;
+    }
+
+    if let Ok(Object::Name(color_space)) = smask.dict.get(b"ColorSpace") {
+        if color_space.as_slice() != b"DeviceGray" {
+            return None;
+        }
+    }
+
+    // A mask without /Filter is spec-legal (raw bytes); get_plain_content
+    // handles both raw and flate-encoded shapes.
+    let data = smask.get_plain_content().ok()?;
+    image::GrayImage::from_raw(width, height, data)
+}
+
+/// Resize the alpha plane to exactly match the color plane dimensions.
+fn resize_smask_to(alpha: image::GrayImage, width: u32, height: u32) -> image::GrayImage {
+    let dynamic = DynamicImage::ImageLuma8(alpha);
+    let resized = if dynamic.width() == width && dynamic.height() == height {
+        dynamic
+    } else {
+        dynamic.resize_exact(width, height, FilterType::CatmullRom)
+    };
+
+    match resized {
+        DynamicImage::ImageLuma8(gray) => gray,
+        other => other.to_luma8(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -754,13 +1069,23 @@ fn raw_recompression_skip_reason(stream: &Stream, filter_info: StreamFilterInfo)
         ));
     }
 
-    let color_space =
-        optional_name(stream, b"ColorSpace").unwrap_or_else(|| "DeviceRGB".to_string());
-    match color_space.as_str() {
-        "DeviceGray" | "DeviceRGB" => None,
-        other => Some(format!(
-            "raw image uses unsupported color space for safe recompression: {other}"
-        )),
+    // Only name-valued DeviceGray/DeviceRGB color spaces are safely decodable.
+    // An absent ColorSpace defaults to DeviceRGB per the PDF spec; anything
+    // else (arrays such as [/ICCBased …] or [/Indexed …]) is skipped because
+    // the raw bytes would be misinterpreted.
+    match stream.dict.get(b"ColorSpace") {
+        Ok(Object::Name(name)) => match name.as_slice() {
+            b"DeviceGray" | b"DeviceRGB" => None,
+            other => Some(format!(
+                "raw image uses unsupported color space for safe recompression: {}",
+                String::from_utf8_lossy(other)
+            )),
+        },
+        Ok(_) => Some(
+            "raw image uses a non-name color space (ICC, indexed, …) that is not safely rewritable"
+                .to_string(),
+        ),
+        Err(_) => None,
     }
 }
 
@@ -1142,21 +1467,84 @@ fn build_output_path(input_path: &Path, settings: &CompressionSettings) -> Resul
     ))
 }
 
-fn validate_input_path(path: &str) -> Result<PathBuf, AppError> {
-    let candidate = PathBuf::from(path);
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    if !candidate.exists() {
-        return Err(AppError::MissingInput(candidate));
+    /// Build a minimal JPEG byte stream carrying an SOF0 header with the given
+    /// dimensions (values before the SOF marker are an APP0 segment).
+    fn minimal_jpeg_with_dimensions(width: u16, height: u16) -> Vec<u8> {
+        let mut bytes = vec![0xFF, 0xD8];
+        bytes.extend_from_slice(&[0xFF, 0xE0, 0x00, 0x04, 0x41, 0x42]);
+        bytes.extend_from_slice(&[0xFF, 0xC0, 0x00, 0x11, 0x08]);
+        bytes.extend_from_slice(&height.to_be_bytes());
+        bytes.extend_from_slice(&width.to_be_bytes());
+        bytes.extend_from_slice(&[0x03, 0x01, 0x11, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01]);
+        bytes
     }
 
-    let is_pdf = candidate
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"));
-
-    if !is_pdf {
-        return Err(AppError::InvalidPdfPath(candidate));
+    #[test]
+    fn jpeg_header_reader_extracts_dimensions() {
+        let jpeg = minimal_jpeg_with_dimensions(640, 480);
+        assert_eq!(jpeg_dimensions_from_header(&jpeg), Some((640, 480)));
     }
 
-    Ok(candidate)
+    #[test]
+    fn jpeg_header_reader_rejects_non_jpeg_input() {
+        assert_eq!(jpeg_dimensions_from_header(&[0x25, 0x50, 0x44, 0x46]), None);
+        assert_eq!(jpeg_dimensions_from_header(&[]), None);
+        assert_eq!(jpeg_dimensions_from_header(&[0xFF, 0xD8]), None);
+    }
+
+    #[test]
+    fn jpeg_header_reader_returns_none_for_zero_dimensions() {
+        let jpeg = minimal_jpeg_with_dimensions(0, 0);
+        assert_eq!(jpeg_dimensions_from_header(&jpeg), None);
+    }
+
+    #[test]
+    fn worker_count_stays_serial_below_parallel_threshold() {
+        assert_eq!(image_worker_count(0), 1);
+        assert_eq!(image_worker_count(1), 1);
+        assert_eq!(image_worker_count(MIN_PARALLEL_IMAGE_OBJECTS - 1), 1);
+    }
+
+    #[test]
+    fn worker_count_is_bounded_by_tasks_and_cap() {
+        for count in [3usize, 16, 512] {
+            let workers = image_worker_count(count);
+            assert!(workers >= 1, "workers must be at least 1");
+            assert!(workers <= count, "workers must not exceed the task count");
+            assert!(workers <= MAX_IMAGE_WORKERS, "workers must respect the cap");
+        }
+    }
+
+    #[test]
+    fn resize_skips_images_within_tolerance() {
+        let image = DynamicImage::ImageRgb8(image::RgbImage::new(1000, 500));
+        let resized = resize_if_needed_fast(image, 1000);
+        // 1000 <= 1000 * 1.08 tolerance → returned untouched.
+        assert_eq!(resized.dimensions(), (1000, 500));
+    }
+
+    #[test]
+    fn resize_downscales_longest_edge_to_target() {
+        let image = DynamicImage::ImageRgb8(image::RgbImage::new(2000, 1000));
+        let resized = resize_if_needed_fast(image, 1000);
+        assert_eq!(resized.dimensions(), (1000, 500));
+    }
+
+    #[test]
+    fn resize_never_produces_empty_images() {
+        let image = DynamicImage::ImageRgb8(image::RgbImage::new(3, 2));
+        let resized = resize_if_needed_fast(image, 8000);
+        // Already within tolerance of the (huge) target — unchanged.
+        assert_eq!(resized.dimensions(), (3, 2));
+    }
+
+    #[test]
+    fn input_size_guard_rejects_oversized_files() {
+        assert!(ensure_input_size_supported(1024).is_ok());
+        assert!(ensure_input_size_supported(3 * 1024 * 1024 * 1024).is_err());
+    }
 }

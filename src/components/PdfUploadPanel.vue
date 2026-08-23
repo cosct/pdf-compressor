@@ -79,6 +79,11 @@ function normalizeDroppedValue(rawValue: string): string {
 }
 
 function applyDroppedPaths(paths: string[]) {
+  if (props.queueLocked) {
+    dropFeedback.value = t('upload.lockedHint')
+    return
+  }
+
   const pdfPaths = paths.filter((path) => isPdfPath(path))
 
   if (!pdfPaths.length) {
@@ -222,7 +227,11 @@ function statusLabel(status: QueueItemStatus) {
 }
 
 onMounted(async () => {
-  stopListening = await listenForNativePdfDrop(handleNativeDropEvent)
+  try {
+    stopListening = await listenForNativePdfDrop(handleNativeDropEvent)
+  } catch (error) {
+    console.warn('Native drag-and-drop listener unavailable:', error)
+  }
   window.addEventListener('click', closeContextMenu)
   window.addEventListener('blur', closeContextMenu)
   window.addEventListener('keydown', handleGlobalKeydown)
@@ -334,6 +343,7 @@ onBeforeUnmount(() => {
                 class="queue-item__delete"
                 type="button"
                 :title="t('queue.delete')"
+                :aria-label="t('queue.delete')"
                 :disabled="props.queueLocked"
                 @click.stop="emit('delete', item.id)"
               >
@@ -342,7 +352,14 @@ onBeforeUnmount(() => {
                 </svg>
               </button>
             </div>
-            <div class="fd-progress fd-progress--sm" aria-hidden="true">
+            <div
+              class="fd-progress fd-progress--sm"
+              role="progressbar"
+              :aria-label="item.fileName"
+              :aria-valuemin="0"
+              :aria-valuemax="100"
+              :aria-valuenow="Math.round(item.progressPercent)"
+            >
               <span
                 class="fd-progress__bar"
                 :style="{ width: `${Math.max(item.progressPercent, item.status === 'success' ? 100 : 2)}%` }"
@@ -354,13 +371,15 @@ onBeforeUnmount(() => {
         <div
           v-if="contextMenu"
           class="queue-context-menu"
+          role="menu"
+          :aria-label="t('queue.contextMenuLabel')"
           :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }"
           @click.stop
         >
-          <button class="queue-context-menu__item" type="button" @click="openQueueItemResult">
+          <button class="queue-context-menu__item" type="button" role="menuitem" @click="openQueueItemResult">
             {{ t('queue.openCompressedFile') }}
           </button>
-          <button class="queue-context-menu__item" type="button" @click="openQueueItemResultFolder">
+          <button class="queue-context-menu__item" type="button" role="menuitem" @click="openQueueItemResultFolder">
             {{ t('queue.openCompressedFolder') }}
           </button>
         </div>

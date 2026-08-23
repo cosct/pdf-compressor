@@ -8,4 +8,6 @@ const app = createApp(App)
 app.use(i18n)
 app.mount('#app')
 
-void notifyAppReady()
+void notifyAppReady().catch((error) => {
+  console.warn('Failed to signal app_ready to the backend:', error)
+})

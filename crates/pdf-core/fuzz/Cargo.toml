@@ -1,0 +1,25 @@
+[package]
+name = "pdf-core-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+# Standalone crate outside the main workspace — cargo-fuzz builds it with its
+# own sanitizer flags and lockfile.
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.pdf-core]
+path = ".."
+
+[[bin]]
+name = "pipeline"
+path = "fuzz_targets/pipeline.rs"
+test = false
+doc = false
+bench = false

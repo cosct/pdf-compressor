@@ -1,5 +1,6 @@
-//! Shared request/response structures serialized between Rust and Vue via Tauri IPC.
-//! Rust 与 Vue 之间通过 Tauri IPC 序列化传输的共享请求/响应结构。
+//! Shared request/response structures serialized between the engine and its
+//! clients (Tauri IPC, CLI output).
+//! 引擎与客户端（Tauri IPC、CLI 输出）之间序列化传输的共享请求/响应结构。
 
 use std::collections::BTreeMap;
 
@@ -10,6 +11,7 @@ fn default_preset_config_version() -> u32 {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
 pub struct CompressionSettingsPayload {
     pub preset: Option<String>,
@@ -22,6 +24,7 @@ pub struct CompressionSettingsPayload {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
 pub struct CompressPdfRequest {
     pub path: Option<String>,
@@ -36,9 +39,13 @@ pub struct CompressPdfRequest {
     pub strip_metadata: Option<bool>,
     pub remove_metadata: Option<bool>,
     pub output_dir: Option<String>,
+    /// When set, the engine searches quality/edge parameters until the output
+    /// fits this byte budget (best effort otherwise).
+    pub target_size_bytes: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
 pub struct CompressScannedPdfRequest {
     pub path: Option<String>,
@@ -53,9 +60,13 @@ pub struct CompressScannedPdfRequest {
     pub strip_metadata: Option<bool>,
     pub remove_metadata: Option<bool>,
     pub output_dir: Option<String>,
+    /// When set, the engine searches quality/edge parameters until the output
+    /// fits this byte budget (best effort otherwise).
+    pub target_size_bytes: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
 pub struct PresetProfilePayload {
     pub image_quality: u8,
@@ -63,6 +74,7 @@ pub struct PresetProfilePayload {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
 pub struct PresetUserConfigPayload {
     #[serde(default = "default_preset_config_version")]
@@ -81,6 +93,7 @@ impl Default for PresetUserConfigPayload {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
 pub struct BackendNotice {
     pub code: String,
@@ -110,6 +123,7 @@ impl BackendNotice {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
 pub struct ProgressUpdate {
     pub phase: String,
@@ -132,12 +146,16 @@ impl ProgressUpdate {
     }
 }
 
+/// Wire types follow JSON/JS number semantics: byte sizes as `f64` (JSON
+/// numbers are doubles; exact up to 2^53) and counts as `u32`, because the
+/// TypeScript bindings forbid BigInt-style integers to avoid precision loss.
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
 pub struct AnalysisResponse {
-    pub file_size_bytes: u64,
-    pub page_count: usize,
-    pub image_object_count: usize,
+    pub file_size_bytes: f64,
+    pub page_count: u32,
+    pub image_object_count: u32,
     pub document_kind: String,
     pub scanned_confidence: f32,
     pub image_coverage: f32,
@@ -151,17 +169,19 @@ pub struct AnalysisResponse {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
 pub struct CompressionResponse {
     pub output_path: String,
-    pub original_size_bytes: u64,
-    pub compressed_size_bytes: u64,
-    pub saved_bytes: u64,
+    pub original_size_bytes: f64,
+    pub compressed_size_bytes: f64,
+    pub saved_bytes: f64,
     pub savings_percent: f32,
-    pub elapsed_ms: u128,
-    pub images_recompressed: usize,
-    pub images_skipped: usize,
-    pub streams_compressed: usize,
+    pub elapsed_ms: u32,
+    pub images_recompressed: u32,
+    pub images_skipped: u32,
+    pub images_deduplicated: u32,
+    pub streams_compressed: u32,
     pub metadata_removed: bool,
     pub output_was_smaller: bool,
     pub notices: Vec<BackendNotice>,

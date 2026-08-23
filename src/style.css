@@ -37,6 +37,7 @@
   --fd-danger: #ff99a4;
   --fd-danger-subtle: rgba(255, 153, 164, 0.16);
   --fd-danger-border: rgba(255, 153, 164, 0.34);
+  --fd-danger-strong: #c42b1c;
   --fd-accent-border: rgba(96, 205, 255, 0.3);
 
   --fd-stroke-card: rgba(255, 255, 255, 0.08);
@@ -102,6 +103,7 @@
   --fd-danger: #d13438;
   --fd-danger-subtle: rgba(209, 52, 56, 0.12);
   --fd-danger-border: rgba(209, 52, 56, 0.24);
+  --fd-danger-strong: #c42b1c;
   --fd-accent-border: rgba(15, 108, 189, 0.26);
 
   --fd-stroke-card: rgba(0, 0, 0, 0.08);

@@ -53,6 +53,10 @@ function detectInitialLocale(): AppLocale {
   return 'en'
 }
 
+function applyDocumentLocale(locale: AppLocale) {
+  document.documentElement.lang = locale
+}
+
 export const i18n = createI18n({
   legacy: false,
   locale: detectInitialLocale(),
@@ -63,8 +67,11 @@ export const i18n = createI18n({
   },
 })
 
+applyDocumentLocale(i18n.global.locale.value)
+
 export function setAppLocale(locale: AppLocale) {
   i18n.global.locale.value = locale
+  applyDocumentLocale(locale)
   try {
     window.localStorage.setItem(STORAGE_KEY, locale)
   } catch {

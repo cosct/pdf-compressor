@@ -2,15 +2,13 @@
  * Core workflow composable — single source of truth for the PDF compression pipeline.
  * 核心工作流 composable — PDF 压缩流水线的唯一状态来源。
  *
- * Manages the job queue, per-job settings, analysis results, compression results,
- * loading/error states, and concurrent compression scheduling.
- * 管理任务队列、逐任务设置、分析结果、压缩结果、加载/错误状态和并发压缩调度。
- *
- * Enforces the analyze-first-then-compress rule: each file must finish analysis
- * before its compression task is dispatched.
- * 强制执行"先分析再压缩"规则：每个文件必须先完成分析才能开始压缩。
+ * Manages the job queue, per-job settings, loading/error states, and concurrent
+ * compression scheduling. Message sanitization/localization lives in
+ * `backendMessages.ts`; toast state lives in `useErrorToasts.ts`.
+ * 管理任务队列、逐任务设置、加载/错误状态和并发压缩调度。
+ * 消息净化/本地化位于 backendMessages.ts；提示状态位于 useErrorToasts.ts。
  */
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 import { getPresetDefaults } from '../config/presets'
 import { i18n } from '../i18n'
@@ -26,13 +24,8 @@ import {
 } from '../lib/tauri'
 import type {
   AnalysisSummary,
-  BackendMessage,
   CompressionPreset,
-  CompressionResult,
   CompressionSettings,
-  DocumentKind,
-  NoticeItem,
-  NoticeTone,
   PdfQueueJob,
   ProgressUpdate,
   WorkflowState,
@@ -43,20 +36,18 @@ import {
   normalizeReferenceMaxImageEdgePx,
 } from '../utils/compressionSettings'
 import { fileNameFromPath } from '../utils/format'
-
-type ErrorPayload = {
-  code?: string
-  values?: Record<string, string>
-  fallback?: string
-  message?: string
-}
+import {
+  clampPercent,
+  createNotice,
+  isCancellationError,
+  mapAnalysisSummary,
+  mapCompressionResult,
+  normalizeError,
+} from './backendMessages'
+import { useErrorToasts } from './useErrorToasts'
 
 function translate(key: string, values?: Record<string, unknown>): string {
   return values ? i18n.global.t(key, values) : i18n.global.t(key)
-}
-
-function formatTemplate(template: string, values: Record<string, string>): string {
-  return template.replace(/\{(\w+)\}/g, (_, key: string) => values[key] ?? `{${key}}`)
 }
 
 function createSettingsForPreset(
@@ -64,7 +55,7 @@ function createSettingsForPreset(
   referenceMaxImageEdgePx?: number | null,
   overrides?: Partial<Omit<CompressionSettings, 'preset'>>,
 ): CompressionSettings {
-  const presetDefaults = getPresetDefaults(preset, referenceMaxImageEdgePx ?? undefined)
+  const presetDefaults = getPresetDefaults(preset)
   const normalizedReferenceMaxImageEdgePx = normalizeReferenceMaxImageEdgePx(
     overrides?.referenceMaxImageEdgePx ?? referenceMaxImageEdgePx,
   )
@@ -78,327 +69,46 @@ function createSettingsForPreset(
     compressStreams: overrides?.compressStreams ?? true,
     stripMetadata: overrides?.stripMetadata ?? true,
     outputDir: overrides?.outputDir ?? null,
+    targetFileSizeMb: overrides?.targetFileSizeMb ?? null,
   })
 }
 
-function createDefaultSettings(): CompressionSettings {
-  return createSettingsForPreset('balanced')
+function normalizeTargetFileSizeMb(value: number | null | undefined): number | null {
+  if (value === null || value === undefined || !Number.isFinite(value) || value <= 0) {
+    return null
+  }
+  return Math.min(2048, Math.max(0.1, value))
 }
 
-function clampPercent(value: number): number {
-  return Math.max(0, Math.min(100, value))
-}
-
-function normalizeImageQuality(value: number | undefined, preset: CompressionPreset): number {
-  const fallback = getPresetDefaults(preset).imageQuality
-  const candidate = Number.isFinite(value) ? (value as number) : fallback
-  return clampImageQuality(candidate)
-}
-
-function normalizeMaxImageSizePercent(value: number | undefined, preset: CompressionPreset): number {
-  const fallback = getPresetDefaults(preset).maxImageSizePercent
-  const candidate = Number.isFinite(value) ? (value as number) : fallback
-  return clampMaxImageSizePercent(candidate)
-}
-
-function normalizeSettings(settings: CompressionSettings): CompressionSettings {
+export function normalizeSettings(settings: CompressionSettings): CompressionSettings {
   const preset = settings.preset ?? 'balanced'
 
   return {
     ...settings,
     preset,
-    imageQuality: normalizeImageQuality(settings.imageQuality, preset),
-    maxImageSizePercent: normalizeMaxImageSizePercent(settings.maxImageSizePercent, preset),
+    imageQuality: clampImageQuality(
+      Number.isFinite(settings.imageQuality)
+        ? settings.imageQuality
+        : getPresetDefaults(preset).imageQuality,
+    ),
+    maxImageSizePercent: clampMaxImageSizePercent(
+      Number.isFinite(settings.maxImageSizePercent)
+        ? settings.maxImageSizePercent
+        : getPresetDefaults(preset).maxImageSizePercent,
+    ),
     referenceMaxImageEdgePx: normalizeReferenceMaxImageEdgePx(settings.referenceMaxImageEdgePx),
     outputDir: settings.outputDir?.trim() ? settings.outputDir.trim() : null,
+    targetFileSizeMb: normalizeTargetFileSizeMb(settings.targetFileSizeMb),
   }
 }
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value !== null && typeof value === 'object' ? (value as Record<string, unknown>) : null
-}
-
-function readString(record: Record<string, unknown>, keys: string[]): string | undefined {
-  for (const key of keys) {
-    const value = record[key]
-    if (typeof value === 'string' && value.trim()) {
-      return value
-    }
+export function getCompressionConcurrency(jobCount: number): number {
+  const cpu = typeof navigator !== 'undefined' ? navigator.hardwareConcurrency || 4 : 4
+  if (jobCount <= 1) {
+    return 1
   }
 
-  return undefined
-}
-
-function readNumber(record: Record<string, unknown>, keys: string[]): number | undefined {
-  for (const key of keys) {
-    const value = record[key]
-    if (typeof value === 'number' && Number.isFinite(value)) {
-      return value
-    }
-
-    if (typeof value === 'string' && value.trim()) {
-      const parsed = Number(value)
-      if (Number.isFinite(parsed)) {
-        return parsed
-      }
-    }
-  }
-
-  return undefined
-}
-
-function readBoolean(record: Record<string, unknown>, keys: string[]): boolean | undefined {
-  for (const key of keys) {
-    const value = record[key]
-    if (typeof value === 'boolean') {
-      return value
-    }
-  }
-
-  return undefined
-}
-
-function readStringArray(record: Record<string, unknown>, keys: string[]): string[] {
-  for (const key of keys) {
-    const value = record[key]
-    if (Array.isArray(value)) {
-      return value.filter(
-        (entry): entry is string => typeof entry === 'string' && entry.trim().length > 0,
-      )
-    }
-  }
-
-  return []
-}
-
-function normalizePreset(value?: string): CompressionPreset | null {
-  if (!value) {
-    return null
-  }
-
-  const normalized = value.toLowerCase()
-
-  if (normalized.includes('max') || normalized.includes('aggressive') || normalized.includes('strong')) {
-    return 'maximum'
-  }
-
-  if (normalized.includes('light') || normalized.includes('gentle') || normalized.includes('conservative')) {
-    return 'conservative'
-  }
-
-  return 'balanced'
-}
-
-function normalizeDocumentKind(value?: string): DocumentKind | null {
-  if (!value) {
-    return null
-  }
-
-  const normalized = value.toLowerCase()
-
-  if (normalized.includes('text')) {
-    return 'text-native'
-  }
-
-  if (normalized.includes('scan')) {
-    return 'scan-heavy'
-  }
-
-  return 'mixed'
-}
-
-function normalizeMessage(input: unknown, fallbackLevel: NoticeTone = 'neutral'): BackendMessage | null {
-  const record = asRecord(input)
-  if (!record) {
-    return null
-  }
-
-  const code = readString(record, ['code'])
-  const fallback = readString(record, ['fallback', 'message'])
-  if (!code && !fallback) {
-    return null
-  }
-
-  const level = (readString(record, ['level', 'severity']) as NoticeTone | undefined) ?? fallbackLevel
-  const valuesRecord = asRecord(record.values)
-  const values = valuesRecord
-    ? Object.fromEntries(
-        Object.entries(valuesRecord)
-          .filter(([, value]) => ['string', 'number', 'boolean'].includes(typeof value))
-          .map(([key, value]) => [key, String(value)]),
-      )
-    : undefined
-
-  return {
-    code: code ?? 'backend.unknown',
-    level,
-    values,
-    fallback,
-  }
-}
-
-function createNotice(id: string, tone: NoticeTone, title: string, body: string): NoticeItem {
-  return { id, tone, title, body }
-}
-
-function dedupeNotices(notices: NoticeItem[]): NoticeItem[] {
-  const seen = new Set<string>()
-  return notices.filter((notice) => {
-    const key = `${notice.tone}:${notice.title}:${notice.body}`
-    if (seen.has(key)) {
-      return false
-    }
-    seen.add(key)
-    return true
-  })
-}
-
-function localizeBackendMessage(message: BackendMessage, prefix: 'backend' | 'error'): NoticeItem {
-  const values = message.values ?? {}
-  const bucket = i18n.global.tm(prefix) as Record<string, { title?: string; body?: string }>
-  const entry = bucket?.[message.code]
-
-  const title = entry?.title
-    ? formatTemplate(entry.title, values)
-    : prefix === 'error'
-      ? translate('app.alertTitle')
-      : translate('composable.notices.backendNoteTitle')
-  const body = entry?.body ? formatTemplate(entry.body, values) : message.fallback ?? message.code
-
-  return createNotice(`${message.code}:${JSON.stringify(values)}`, message.level, title, body)
-}
-
-function normalizeLegacyMessages(messages: string[], tone: NoticeTone, titleKey: string): NoticeItem[] {
-  return messages.map((message, index) =>
-    createNotice(`${tone}-${index}`, tone, translate(titleKey), message),
-  )
-}
-
-function normalizeAnalysis(input: unknown, sourcePath: string): AnalysisSummary {
-  const record = asRecord(input) ?? {}
-  const notices = Array.isArray(record.notices)
-    ? record.notices
-        .map((item) => normalizeMessage(item))
-        .filter((item): item is BackendMessage => item !== null)
-        .map((item) => localizeBackendMessage(item, 'backend'))
-    : [
-        ...normalizeLegacyMessages(readStringArray(record, ['warnings', 'issues']), 'warning', 'composable.notices.checkTitle'),
-        ...normalizeLegacyMessages(readStringArray(record, ['notes', 'recommendations', 'messages']), 'neutral', 'composable.notices.analysisNoteTitle'),
-      ]
-
-  return {
-    sourcePath,
-    fileName: fileNameFromPath(sourcePath),
-    fileSizeBytes: readNumber(record, ['fileSizeBytes', 'file_size_bytes', 'inputSizeBytes', 'sizeBytes']),
-    pageCount: readNumber(record, ['pageCount', 'page_count', 'pages']),
-    imageObjectCount: readNumber(record, ['imageObjectCount', 'image_object_count']),
-    documentKind: normalizeDocumentKind(readString(record, ['documentKind', 'document_kind', 'kind'])),
-    imageCoverage: readNumber(record, ['imageCoverage', 'image_coverage']),
-    scannedConfidence: readNumber(record, ['scannedConfidence', 'scanned_confidence']),
-    estimatedSavingsPercent: readNumber(record, [
-      'estimatedSavingsPercent',
-      'estimated_savings_percent',
-      'estimatedReductionPercent',
-      'estimated_reduction_percent',
-    ]),
-    recommendedPreset: normalizePreset(readString(record, ['recommendedPreset', 'recommended_preset', 'preset'])),
-    maxImageEdgePx: readNumber(record, ['maxImageEdgePx', 'max_image_edge_px']),
-    recommendedMaxImageSizePx: readNumber(record, ['recommendedMaxImageSizePx', 'recommended_max_image_size_px']),
-    recommendedImageQuality: readNumber(record, ['recommendedImageQuality', 'recommended_image_quality']),
-    isLikelyScanned: readBoolean(record, ['isLikelyScanned', 'is_likely_scanned', 'scanned']),
-    notes: dedupeNotices(notices),
-  }
-}
-
-function normalizeCompressionResult(input: unknown, sourcePath: string): CompressionResult {
-  const record = asRecord(input) ?? {}
-  const originalSizeBytes = readNumber(record, [
-    'originalSizeBytes',
-    'original_size_bytes',
-    'inputSizeBytes',
-    'input_size_bytes',
-  ])
-  const compressedSizeBytes = readNumber(record, [
-    'compressedSizeBytes',
-    'compressed_size_bytes',
-    'outputSizeBytes',
-    'output_size_bytes',
-  ])
-  const savedBytes =
-    readNumber(record, ['savedBytes', 'saved_bytes', 'bytesSaved']) ??
-    (originalSizeBytes !== undefined && compressedSizeBytes !== undefined
-      ? originalSizeBytes - compressedSizeBytes
-      : undefined)
-  const savingsPercent =
-    readNumber(record, ['savingsPercent', 'savings_percent', 'reductionPercent']) ??
-    (savedBytes !== undefined && originalSizeBytes && originalSizeBytes > 0
-      ? (savedBytes / originalSizeBytes) * 100
-      : undefined)
-
-  const notices = Array.isArray(record.notices)
-    ? record.notices
-        .map((item) => normalizeMessage(item))
-        .filter((item): item is BackendMessage => item !== null)
-        .map((item) => localizeBackendMessage(item, 'backend'))
-    : [
-        ...normalizeLegacyMessages(readStringArray(record, ['warnings', 'issues']), 'warning', 'composable.notices.followUpTitle'),
-        ...normalizeLegacyMessages(readStringArray(record, ['notes', 'messages']), 'neutral', 'composable.notices.backendNoteTitle'),
-      ]
-
-  return {
-    inputPath: sourcePath,
-    outputPath:
-      readString(record, ['outputPath', 'output_path', 'destinationPath', 'destination_path']) ??
-      sourcePath,
-    originalSizeBytes,
-    compressedSizeBytes,
-    savedBytes,
-    savingsPercent,
-    elapsedMs: readNumber(record, ['elapsedMs', 'elapsed_ms', 'durationMs', 'duration_ms']),
-    imagesRecompressed: readNumber(record, ['imagesRecompressed', 'images_recompressed']),
-    imagesSkipped: readNumber(record, ['imagesSkipped', 'images_skipped']),
-    streamsCompressed: readNumber(record, ['streamsCompressed', 'streams_compressed']),
-    metadataRemoved: readBoolean(record, ['metadataRemoved', 'metadata_removed']),
-    outputWasSmaller: readBoolean(record, ['outputWasSmaller', 'output_was_smaller']),
-    notes: dedupeNotices(notices),
-  }
-}
-
-function normalizeError(error: unknown): NoticeItem {
-  const payload = asRecord(error) as ErrorPayload | null
-  if (payload?.code) {
-    return localizeBackendMessage(
-      {
-        code: payload.code,
-        level: 'danger',
-        values: payload.values,
-        fallback: payload.fallback,
-      },
-      'error',
-    )
-  }
-
-  if (error instanceof Error && error.message) {
-    return createNotice('error:fallback', 'danger', translate('app.alertTitle'), error.message)
-  }
-
-  return createNotice(
-    'error:unknown',
-    'danger',
-    translate('app.alertTitle'),
-    translate('composable.errors.backendFallback'),
-  )
-}
-
-function isCancellationError(error: unknown): boolean {
-  const payload = asRecord(error)
-  const code = payload ? readString(payload, ['code']) : undefined
-  if (code === 'error.cancelled') {
-    return true
-  }
-
-  const fallback = payload ? readString(payload, ['fallback', 'message']) : undefined
-  return Boolean(fallback?.toLowerCase().includes('cancel'))
+  return Math.min(2, Math.max(1, Math.floor(cpu / 2)))
 }
 
 function isPdfPath(path: string): boolean {
@@ -423,7 +133,7 @@ function mapProgressPhaseToWorkflow(phase: ProgressUpdate['phase']): WorkflowSta
 
 function createJob(path: string): PdfQueueJob {
   const normalizedPath = path.trim()
-  const defaults = createDefaultSettings()
+  const defaults = createSettingsForPreset('balanced')
 
   return {
     id: `${normalizedPath}::${Date.now()}::${Math.random().toString(36).slice(2, 8)}`,
@@ -458,23 +168,60 @@ function comparableCompressionSettings(settings: CompressionSettings) {
     optimizeImages: normalized.optimizeImages,
     compressStreams: normalized.compressStreams,
     stripMetadata: normalized.stripMetadata,
+    targetFileSizeMb: normalized.targetFileSizeMb,
   }
 }
 
-function getCompressionConcurrency(jobCount: number): number {
-  const cpu = typeof navigator !== 'undefined' ? navigator.hardwareConcurrency || 4 : 4
-  if (jobCount <= 1) {
-    return 1
-  }
+// ---------------------------------------------------------------------------
+// Queue persistence — remember source paths + per-job settings across restarts
+// 队列持久化 — 重启后恢复文件列表与逐任务设置
+// ---------------------------------------------------------------------------
 
-  return Math.min(2, Math.max(1, Math.floor(cpu / 2)))
+const QUEUE_STORAGE_KEY = 'pdf-compressor-queue'
+
+type PersistedQueueEntry = {
+  sourcePath: string
+  settings: CompressionSettings
+}
+
+function persistQueue(entries: PersistedQueueEntry[]) {
+  try {
+    window.localStorage.setItem(QUEUE_STORAGE_KEY, JSON.stringify(entries))
+  } catch {
+    // Storage unavailable — persistence is best-effort only.
+  }
+}
+
+function readPersistedQueue(): PersistedQueueEntry[] {
+  try {
+    const raw = window.localStorage.getItem(QUEUE_STORAGE_KEY)
+    if (!raw) {
+      return []
+    }
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) {
+      return []
+    }
+    return parsed.filter(
+      (entry): entry is PersistedQueueEntry =>
+        entry !== null &&
+        typeof entry === 'object' &&
+        typeof entry.sourcePath === 'string' &&
+        entry.sourcePath.trim().length > 0 &&
+        entry.settings !== null &&
+        typeof entry.settings === 'object',
+    )
+  } catch {
+    return []
+  }
 }
 
 export function usePdfCompressor() {
+  const { errorToasts, pushErrorToast, dismissErrorToast, reportError } = useErrorToasts()
+
   const jobs = ref<PdfQueueJob[]>([])
-  const errorToasts = ref<NoticeItem[]>([])
   const selectedJobId = ref<string | null>(null)
-  const draftSettings = ref(createDefaultSettings())
+  const draftSettings = ref(createSettingsForPreset('balanced'))
   const draftUsesRecommended = ref(false)
   const nativeAvailable = hasNativeCommands()
   const analysisQueue = ref<string[]>([])
@@ -496,12 +243,6 @@ export function usePdfCompressor() {
   const result = computed(() => selectedJob.value?.result ?? null)
   const analysisLoading = computed(() => jobs.value.some((job) => job.status === 'analyzing'))
   const compressionLoading = computed(() => jobs.value.some((job) => job.status === 'compressing'))
-  const analysisError = computed(() =>
-    selectedJob.value?.lastAction === 'analyze' ? selectedJob.value.error?.body ?? '' : '',
-  )
-  const compressionError = computed(() =>
-    selectedJob.value?.lastAction === 'compress' ? selectedJob.value.error?.body ?? '' : '',
-  )
   const workflowState = computed<WorkflowState>(() => selectedJob.value?.status ?? 'idle')
   const jobsPendingCompression = computed(() =>
     jobs.value.filter(
@@ -530,37 +271,7 @@ export function usePdfCompressor() {
       !compressionRunning.value &&
       (allCompressionTargetIds.value.length > 0 || selectedCompressionTargetIds.value.length > 0),
   )
-  const canCompressSelected = computed(
-    () => !compressionRunning.value && selectedCompressionTargetIds.value.length > 0,
-  )
-  const canCompressAll = computed(
-    () => !compressionRunning.value && allCompressionTargetIds.value.length > 0,
-  )
   const canCancelCompression = computed(() => compressionRunning.value)
-
-  function pushErrorToast(notice: NoticeItem) {
-    const duplicate = errorToasts.value.some(
-      (item) =>
-        item.tone === notice.tone &&
-        item.title === notice.title &&
-        item.body === notice.body,
-    )
-    if (duplicate) {
-      return
-    }
-
-    errorToasts.value = [
-      ...errorToasts.value,
-      {
-        ...notice,
-        id: `${notice.id}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
-      },
-    ]
-  }
-
-  function dismissErrorToast(id: string) {
-    errorToasts.value = errorToasts.value.filter((item) => item.id !== id)
-  }
 
   function findJob(jobId: string): PdfQueueJob | undefined {
     return jobs.value.find((job) => job.id === jobId)
@@ -623,6 +334,18 @@ export function usePdfCompressor() {
   }
 
   function addSourcePaths(paths: string[]) {
+    if (compressionRunning.value) {
+      pushErrorToast(
+        createNotice(
+          'queue:locked',
+          'warning',
+          translate('upload.lockedTag'),
+          translate('composable.errors.queueLocked'),
+        ),
+      )
+      return
+    }
+
     const normalized = paths.map((path) => path.trim()).filter(Boolean)
     if (!normalized.length) {
       return
@@ -718,7 +441,7 @@ export function usePdfCompressor() {
     try {
       addSourcePaths(await openPdfDialog(true))
     } catch (error) {
-      pushErrorToast(normalizeError(error))
+      reportError(error)
     }
   }
 
@@ -765,7 +488,7 @@ export function usePdfCompressor() {
     job.lastAction = 'analyze'
     job.error = null
     job.result = null
-    applyProgress(job, { phase: 'analyzing', percent: 0 })
+    applyProgress(job, { phase: 'analyzing', percent: 0, message: null })
 
     try {
       const response = await analyzePdf(requestedPath, (update) => {
@@ -778,9 +501,9 @@ export function usePdfCompressor() {
         return
       }
 
-      job.analysis = normalizeAnalysis(response, requestedPath)
+      job.analysis = mapAnalysisSummary(response, requestedPath)
       applyRecommendedSettings(job)
-      job.progress = { phase: 'done', percent: 100 }
+      job.progress = { phase: 'done', percent: 100, message: null }
       setJobStatus(job, 'ready')
     } catch (error) {
       if (job.sourcePath !== requestedPath) {
@@ -789,7 +512,7 @@ export function usePdfCompressor() {
 
       job.error = normalizeError(error)
       pushErrorToast(job.error)
-      job.progress = { phase: 'error', percent: 100 }
+      job.progress = { phase: 'error', percent: 100, message: null }
       setJobStatus(job, 'error')
     }
   }
@@ -817,7 +540,7 @@ export function usePdfCompressor() {
     job.error = null
     job.result = null
     activeCompressionTaskIds.set(job.id, taskId)
-    applyProgress(job, { phase: 'compressing', percent: 0 })
+    applyProgress(job, { phase: 'compressing', percent: 0, message: null })
 
     try {
       const response = await compressPdf(requestedPath, job.settings, taskId, (update) => {
@@ -833,13 +556,13 @@ export function usePdfCompressor() {
       if (cancelledCompressionRuns.has(runId) || cancellationRequested.value) {
         job.error = null
         job.result = null
-        job.progress = { phase: 'queued', percent: 0 }
+        job.progress = { phase: 'queued', percent: 0, message: null }
         setJobStatus(job, job.analysis ? 'ready' : 'selected')
         return
       }
 
-      job.result = normalizeCompressionResult(response, requestedPath)
-      job.progress = { phase: 'done', percent: 100 }
+      job.result = mapCompressionResult(response, requestedPath)
+      job.progress = { phase: 'done', percent: 100, message: null }
       setJobStatus(job, 'success')
     } catch (error) {
       if (job.sourcePath !== requestedPath || !isActiveCompressionTask(job.id, taskId)) {
@@ -848,14 +571,14 @@ export function usePdfCompressor() {
 
       if (isCancellationError(error)) {
         job.error = null
-        job.progress = { phase: 'queued', percent: 0 }
+        job.progress = { phase: 'queued', percent: 0, message: null }
         setJobStatus(job, job.analysis ? 'ready' : 'selected')
         return
       }
 
       job.error = normalizeError(error)
       pushErrorToast(job.error)
-      job.progress = { phase: 'error', percent: 100 }
+      job.progress = { phase: 'error', percent: 100, message: null }
       setJobStatus(job, 'error')
     } finally {
       if (isActiveCompressionTask(job.id, taskId)) {
@@ -907,22 +630,6 @@ export function usePdfCompressor() {
     }
   }
 
-  async function compressSelectedPdf() {
-    if (!canCompressSelected.value) {
-      return
-    }
-
-    await runCompressionTargets(getSelectedCompressionTargetIds())
-  }
-
-  async function compressAllPdfs() {
-    if (!canCompressAll.value) {
-      return
-    }
-
-    await runCompressionTargets(getAllCompressionTargetIds())
-  }
-
   async function compressCurrentPdf() {
     if (!canCompress.value) {
       return
@@ -947,7 +654,7 @@ export function usePdfCompressor() {
       if (job.status === 'compressing') {
         job.error = null
         job.result = null
-        job.progress = { phase: 'queued', percent: 0 }
+        job.progress = { phase: 'queued', percent: 0, message: null }
         setJobStatus(job, job.analysis ? 'ready' : 'selected')
       }
     }
@@ -995,8 +702,10 @@ export function usePdfCompressor() {
         selectedJob.value.settings,
         selectedJob.value.recommendedSettings,
       )
-    } catch {
-      // ignore dialog cancellation
+    } catch (error) {
+      // The dialog itself signals cancellation by resolving with null;
+      // a rejection here is a genuine backend failure worth surfacing.
+      reportError(error)
     }
   }
 
@@ -1010,7 +719,7 @@ export function usePdfCompressor() {
     try {
       await openPath(outputPath)
     } catch (error) {
-      pushErrorToast(normalizeError(error))
+      reportError(error)
     }
   }
 
@@ -1024,7 +733,46 @@ export function usePdfCompressor() {
     try {
       await revealPathInFolder(outputPath)
     } catch (error) {
-      pushErrorToast(normalizeError(error))
+      reportError(error)
+    }
+  }
+
+  // --- Queue persistence: throttle writes (progress ticks mutate jobs often) ---
+  let persistTimer: ReturnType<typeof setTimeout> | null = null
+  watch(
+    jobs,
+    (list) => {
+      if (persistTimer) {
+        clearTimeout(persistTimer)
+      }
+      persistTimer = setTimeout(() => {
+        persistTimer = null
+        persistQueue(
+          list
+            .filter((job) => job.sourcePath.trim() && isPdfPath(job.sourcePath))
+            .map((job) => ({
+              sourcePath: job.sourcePath,
+              settings: { ...normalizeSettings(job.settings) },
+            })),
+        )
+      }, 800)
+    },
+    { deep: true },
+  )
+
+  // --- Restore the previous session's queue (paths + settings only) ---
+  if (!jobs.value.length) {
+    const persisted = readPersistedQueue()
+    if (persisted.length) {
+      addSourcePaths(persisted.map((entry) => entry.sourcePath))
+      for (const entry of persisted) {
+        const job = jobs.value.find(
+          (item) => item.sourcePath.toLowerCase() === entry.sourcePath.toLowerCase(),
+        )
+        if (job) {
+          job.settings = normalizeSettings({ ...entry.settings })
+        }
+      }
     }
   }
 
@@ -1039,12 +787,8 @@ export function usePdfCompressor() {
     nativeAvailable,
     analysisLoading,
     compressionLoading,
-    analysisError,
-    compressionError,
     workflowState,
     canCompress,
-    canCompressSelected,
-    canCompressAll,
     canCancelCompression,
     updateSettings,
     applySettingsToAll,
@@ -1053,10 +797,9 @@ export function usePdfCompressor() {
     selectJob,
     removeJobById,
     compressCurrentPdf,
-    compressSelectedPdf,
-    compressAllPdfs,
     cancelCompressionRun,
     dismissErrorToast,
+    reportError,
     selectOutputDir,
     openCompressedFile,
     openCompressedFileFolder,

@@ -125,7 +125,14 @@ const metrics = computed(() => [
           </div>
         </div>
 
-        <div class="fd-progress" aria-hidden="true">
+        <div
+          class="fd-progress"
+          role="progressbar"
+          :aria-label="statusCopy.title"
+          :aria-valuemin="0"
+          :aria-valuemax="100"
+          :aria-valuenow="Math.round(props.progressPercent ?? 0)"
+        >
           <span
             class="fd-progress__bar"
             :style="{ width: `${Math.max(props.progressPercent ?? 0, props.workflowState === 'success' ? 100 : 2)}%` }"

@@ -9,8 +9,8 @@ url='https://github.com/cosct/pdf-compressor'
 license=('MIT')
 depends=(
   'gtk3'
-  'libappindicator'
   'webkit2gtk-4.1'
+  'hicolor-icon-theme'
 )
 makedepends=(
   'cargo'
@@ -27,14 +27,13 @@ build() {
   npm ci
   npm run build
 
-  cd src-tauri
-  cargo build --release --locked
+  cargo build --release --locked --manifest-path src-tauri/Cargo.toml
 }
 
 package() {
   cd "${pkgname}-${pkgver}"
 
-  install -Dm755 src-tauri/target/release/app "${pkgdir}/usr/bin/pdf-compressor"
+  install -Dm755 target/release/app "${pkgdir}/usr/bin/pdf-compressor"
   install -Dm644 src-tauri/icons/128x128.png "${pkgdir}/usr/share/icons/hicolor/128x128/apps/pdf-compressor.png"
   install -Dm644 src-tauri/icons/32x32.png "${pkgdir}/usr/share/icons/hicolor/32x32/apps/pdf-compressor.png"
   install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"

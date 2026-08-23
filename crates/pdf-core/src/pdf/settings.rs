@@ -119,3 +119,90 @@ impl CompressionSettings {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn payload(preset: Option<&str>, quality: Option<u8>, max_px: Option<u16>) -> Option<CompressionSettingsPayload> {
+        Some(CompressionSettingsPayload {
+            preset: preset.map(str::to_string),
+            image_quality: quality,
+            max_image_size_px: max_px,
+            optimize_images: None,
+            compress_streams: None,
+            strip_metadata: None,
+            output_dir: None,
+        })
+    }
+
+    #[test]
+    fn preset_parsing_matches_known_labels() {
+        assert!(matches!(
+            CompressionPreset::from_optional_str(Some("Maximum")),
+            CompressionPreset::Maximum
+        ));
+        assert!(matches!(
+            CompressionPreset::from_optional_str(Some("aggressive-v2")),
+            CompressionPreset::Maximum
+        ));
+        assert!(matches!(
+            CompressionPreset::from_optional_str(Some("light")),
+            CompressionPreset::Conservative
+        ));
+        assert!(matches!(
+            CompressionPreset::from_optional_str(Some("unknown-preset")),
+            CompressionPreset::Balanced
+        ));
+        assert!(matches!(
+            CompressionPreset::from_optional_str(None),
+            CompressionPreset::Balanced
+        ));
+    }
+
+    #[test]
+    fn from_sources_applies_preset_defaults() {
+        let settings = CompressionSettings::from_sources(None, CompressionSettingsOverrides::default());
+        assert_eq!(settings.preset.as_label(), "balanced");
+        assert_eq!(settings.image_quality, CompressionPreset::Balanced.default_quality());
+        assert_eq!(
+            settings.max_image_size_px,
+            CompressionPreset::Balanced.default_max_image_size_px()
+        );
+        assert!(settings.optimize_images);
+        assert!(settings.compress_streams);
+        assert!(settings.strip_metadata);
+        assert!(settings.output_dir.is_none());
+    }
+
+    #[test]
+    fn from_sources_prefers_overrides_over_payload() {
+        let settings = CompressionSettings::from_sources(
+            payload(Some("conservative"), Some(60), Some(1200)),
+            CompressionSettingsOverrides {
+                image_quality: Some(75),
+                ..Default::default()
+            },
+        );
+        assert_eq!(settings.preset.as_label(), "conservative");
+        assert_eq!(settings.image_quality, 75);
+        assert_eq!(settings.max_image_size_px, 1200);
+    }
+
+    #[test]
+    fn from_sources_clamps_out_of_range_values() {
+        let low = CompressionSettings::from_sources(
+            payload(None, Some(5), Some(50)),
+            CompressionSettingsOverrides::default(),
+        );
+        assert_eq!(low.image_quality, 10);
+        assert_eq!(low.max_image_size_px, 100);
+
+        let high = CompressionSettings::from_sources(
+            payload(None, Some(200), Some(65_000)),
+            CompressionSettingsOverrides::default(),
+        );
+        assert_eq!(high.image_quality, 100);
+        assert_eq!(high.max_image_size_px, 8_000);
+    }
+}

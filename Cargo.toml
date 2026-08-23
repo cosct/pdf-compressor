@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = ["crates/pdf-core", "src-tauri"]
+
+[workspace.lints.rust]
+future-incompatible = "warn"
+nonstandard-style = "warn"
+rust-2018-idioms = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = 10 }
+perf = { level = "warn", priority = 9 }
+redundant_clone = { level = "deny", priority = 8 }
+needless_borrow = { level = "deny", priority = 8 }
+ptr_arg = { level = "deny", priority = 8 }
+too_many_arguments = { level = "deny", priority = 8 }
+useless_conversion = { level = "deny", priority = 8 }
+manual_ok_or = { level = "deny", priority = 8 }
+
+[profile.dev]
+opt-level = 2

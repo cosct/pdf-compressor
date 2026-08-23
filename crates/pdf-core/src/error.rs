@@ -2,8 +2,8 @@
 //! 集中式后端错误类型，包含 i18n 兼容的错误码。
 //!
 //! `AppError` is the internal error enum; `AppErrorPayload` is the serializable
-//! representation sent to the frontend with a code, values map, and fallback message.
-//! `AppError` 是内部错误枚举；`AppErrorPayload` 是发送到前端的可序列化表示，
+//! representation sent to clients with a code, values map, and fallback message.
+//! `AppError` 是内部错误枚举；`AppErrorPayload` 是发送给客户端的可序列化表示，
 //! 包含错误码、值映射和回退消息。
 
 use std::{collections::BTreeMap, io, path::PathBuf};
@@ -32,11 +32,15 @@ pub enum AppError {
     #[error("Configuration operation failed: {0}")]
     Config(String),
 
+    #[error("Failed to open the path with the system handler: {0}")]
+    Opener(String),
+
     #[error("Failed to build the output PDF: {0}")]
     PdfBuild(String),
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
 pub struct AppErrorPayload {
     pub code: String,
@@ -79,6 +83,11 @@ impl From<AppError> for AppErrorPayload {
                 code: "error.config".to_string(),
                 values: BTreeMap::from([("detail".to_string(), detail.clone())]),
                 fallback: format!("Configuration operation failed: {detail}"),
+            },
+            AppError::Opener(detail) => Self {
+                code: "error.opener".to_string(),
+                values: BTreeMap::from([("detail".to_string(), detail.clone())]),
+                fallback: format!("Failed to open the path with the system handler: {detail}"),
             },
             AppError::PdfBuild(detail) => Self {
                 code: "error.pdfBuild".to_string(),

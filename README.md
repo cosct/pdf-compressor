@@ -13,6 +13,9 @@ Author: `cosct`
 This project is designed for selective PDF optimization rather than blind whole-file rewriting. The current pipeline tries to preserve text and vector instructions whenever possible, then reduces size by working on areas that are usually safer to optimize:
 
 - Embedded image streams can be recompressed as JPEG and resized when needed
+- Images carrying transparency (`/SMask`) are rewritten with their alpha plane preserved
+- Byte-identical duplicate images (logos, stamps) are losslessly merged into shared references
+- A target-size mode searches quality/resolution parameters until the output fits a byte budget (UI, CLI `--target-size`, and IPC)
 - Eligible non-image PDF streams can be compressed
 - Document metadata can be removed
 - The UI runs an analysis pass first so the user can review likely savings and a suggested preset before export
@@ -294,6 +297,36 @@ npm run tauri dev
 ```
 
 This starts the Vue dev server and launches the Tauri shell. Use this mode when you want to verify native file browsing, drag-and-drop, backend analysis, compression output, and theme switching in the desktop environment.
+
+### Tests
+
+```bash
+npm test                    # Frontend unit tests (Vitest)
+cargo test --workspace      # Rust unit + pipeline integration tests
+cargo bench -p pdf-core     # Compression benchmarks (criterion)
+```
+
+The Rust code is a Cargo workspace: `crates/pdf-core` is the pure PDF engine (analyzer, compressor, models, a `pdf-cli` binary, benchmarks, and the cargo-fuzz target), and `src-tauri` is the desktop shell. The Rust test suite includes an `export_bindings` test that regenerates `src/lib/bindings.ts` (the typed IPC layer produced by tauri-specta). Whenever a Tauri command signature changes, run `cargo test --workspace` and commit the regenerated bindings alongside the change.
+
+A small CLI is available for shell use and debugging:
+
+```bash
+cargo run -p pdf-core --bin pdf-cli -- analyze <file.pdf>
+cargo run -p pdf-core --bin pdf-cli -- compress <file.pdf> --preset maximum
+cargo run -p pdf-core --bin pdf-cli -- compress <file.pdf> --target-size 5MB
+```
+
+The PDF engine also has a cargo-fuzz target (`crates/pdf-core/fuzz`) — run it from `crates/pdf-core` with `cargo +nightly fuzz run pipeline`.
+
+### Versioning
+
+`package.json` is the single source of truth for the app version. After bumping it, run:
+
+```bash
+npm run sync-version
+```
+
+This propagates the version to `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml`.
 
 ## Build and Release
 

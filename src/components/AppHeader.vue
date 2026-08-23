@@ -30,15 +30,10 @@ const windowMaximized = ref(false)
 const openPicker = ref<'theme' | 'locale' | null>(null)
 const headerRoot = ref<HTMLElement | null>(null)
 
-const localeLabels: Record<AppLocale, string> = {
-  en: 'English',
-  'zh-CN': '简体中文',
-}
-
 const localeOptions = computed(() =>
   props.locales.map((locale) => ({
     value: locale,
-    label: localeLabels[locale] ?? t(`locale.${locale}`),
+    label: t(`locale.${locale}`),
   })),
 )
 
@@ -58,15 +53,27 @@ async function syncWindowState() {
 }
 
 async function handleMinimizeClick() {
-  await minimizeAppWindow()
+  try {
+    await minimizeAppWindow()
+  } catch (error) {
+    console.warn('Failed to minimize window:', error)
+  }
 }
 
 async function handleToggleWindowState() {
-  windowMaximized.value = await toggleAppWindowMaximize()
+  try {
+    windowMaximized.value = await toggleAppWindowMaximize()
+  } catch (error) {
+    console.warn('Failed to toggle window state:', error)
+  }
 }
 
 async function handleCloseClick() {
-  await closeAppWindow()
+  try {
+    await closeAppWindow()
+  } catch (error) {
+    console.warn('Failed to close window:', error)
+  }
 }
 
 function handleTitlebarDoubleClick() {
@@ -177,14 +184,15 @@ onBeforeUnmount(() => {
             </button>
 
             <transition name="picker-menu">
-              <div v-if="openPicker === 'theme'" class="picker__menu" role="listbox" :aria-label="t('theme.label')">
+              <div v-if="openPicker === 'theme'" class="picker__menu" role="menu" :aria-label="t('theme.label')">
                 <button
                   v-for="option in themeOptions"
                   :key="option.value"
                   class="picker__option"
                   :class="{ 'picker__option--active': themePreference === option.value }"
                   type="button"
-                  :aria-selected="themePreference === option.value ? 'true' : 'false'"
+                  role="menuitemradio"
+                  :aria-checked="themePreference === option.value ? 'true' : 'false'"
                   @click="chooseTheme(option.value)"
                 >
                   <span>{{ t(option.labelKey) }}</span>
@@ -221,14 +229,15 @@ onBeforeUnmount(() => {
             </button>
 
             <transition name="picker-menu">
-              <div v-if="openPicker === 'locale'" class="picker__menu" role="listbox" :aria-label="t('locale.label')">
+              <div v-if="openPicker === 'locale'" class="picker__menu" role="menu" :aria-label="t('locale.label')">
                 <button
                   v-for="option in localeOptions"
                   :key="option.value"
                   class="picker__option"
                   :class="{ 'picker__option--active': props.locale === option.value }"
                   type="button"
-                  :aria-selected="props.locale === option.value ? 'true' : 'false'"
+                  role="menuitemradio"
+                  :aria-checked="props.locale === option.value ? 'true' : 'false'"
                   @click="chooseLocale(option.value)"
                 >
                   <span>{{ option.label }}</span>
@@ -250,7 +259,13 @@ onBeforeUnmount(() => {
         </div>
 
         <div v-if="props.nativeAvailable" class="window-controls">
-          <button class="window-control" type="button" :title="t('header.minimize')" @click.stop="handleMinimizeClick">
+          <button
+            class="window-control"
+            type="button"
+            :title="t('header.minimize')"
+            :aria-label="t('header.minimize')"
+            @click.stop="handleMinimizeClick"
+          >
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
               <path d="M2 6h8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
             </svg>
@@ -260,6 +275,7 @@ onBeforeUnmount(() => {
             class="window-control"
             type="button"
             :title="windowMaximized ? t('header.restore') : t('header.maximize')"
+            :aria-label="windowMaximized ? t('header.restore') : t('header.maximize')"
             @click.stop="handleToggleWindowState"
           >
             <svg v-if="!windowMaximized" width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
@@ -271,7 +287,13 @@ onBeforeUnmount(() => {
             </svg>
           </button>
 
-          <button class="window-control window-control--danger" type="button" :title="t('header.close')" @click.stop="handleCloseClick">
+          <button
+            class="window-control window-control--danger"
+            type="button"
+            :title="t('header.close')"
+            :aria-label="t('header.close')"
+            @click.stop="handleCloseClick"
+          >
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
               <path d="M3 3l6 6M9 3 3 9" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
             </svg>
@@ -365,7 +387,7 @@ onBeforeUnmount(() => {
 }
 
 .window-control--danger:hover {
-  background: #c42b1c;
+  background: var(--fd-danger-strong);
   color: #fff;
 }
 

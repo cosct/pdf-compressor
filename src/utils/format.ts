@@ -34,28 +34,7 @@ export function formatPercent(value?: number | null): string {
   return `${value.toFixed(value >= 10 ? 0 : 1)}%`
 }
 
-export function formatMilliseconds(value?: number): string {
-  if (value === undefined || !Number.isFinite(value)) {
-    return '--'
-  }
-
-  if (value < 1000) {
-    return `${Math.round(value)} ms`
-  }
-
-  return `${(value / 1000).toFixed(1)} s`
-}
-
 export function fileNameFromPath(path: string): string {
   const segments = path.split(/[/\\]/)
   return segments[segments.length - 1] || path
-}
-
-export function directoryFromPath(path: string): string {
-  const segments = path.split(/[/\\]/)
-  if (segments.length <= 1) {
-    return path
-  }
-
-  return segments.slice(0, -1).join(' / ')
 }

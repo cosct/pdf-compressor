@@ -19,13 +19,15 @@ function toneClass(tone: NoticeItem['tone']) {
 </script>
 
 <template>
-  <aside v-if="props.items.length" class="toast-viewport" aria-live="polite" aria-atomic="false">
+  <!-- role="alert" children announce themselves; a container aria-live here
+       would cause every toast to be announced twice. -->
+  <aside v-if="props.items.length" class="toast-viewport">
     <article
       v-for="item in props.items"
       :key="item.id"
       class="toast-card"
       :class="toneClass(item.tone)"
-      role="alert"
+      :role="item.tone === 'danger' ? 'alert' : 'status'"
     >
       <div class="toast-card__body">
         <strong>{{ item.title }}</strong>

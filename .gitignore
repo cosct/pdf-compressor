@@ -10,11 +10,19 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+target
 src-tauri/target
 *.local
 
 # Local cross-platform git safe.directory helper
 .gitconfig.tmp
+
+# Local security-scan / hook state
+.mimosa
+
+# The project locks dependencies with npm (package-lock.json)
+pnpm-lock.yaml
+yarn.lock
 
 # Editor directories and files
 .vscode/*

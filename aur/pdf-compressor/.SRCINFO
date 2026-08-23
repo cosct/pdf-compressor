@@ -10,8 +10,8 @@ pkgbase = pdf-compressor
 	makedepends = npm
 	makedepends = pkgconf
 	depends = gtk3
-	depends = libappindicator
 	depends = webkit2gtk-4.1
+	depends = hicolor-icon-theme
 	source = pdf-compressor-0.2.0.tar.gz::https://github.com/cosct/pdf-compressor/archive/refs/tags/v0.2.0.tar.gz
 	sha256sums = SKIP
 

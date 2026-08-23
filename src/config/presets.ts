@@ -22,7 +22,6 @@ import type {
   PresetUserConfig,
 } from '../types/pdf'
 import {
-  calculateMaxImageSizePx,
   clampImageQuality,
   clampMaxImageSizePercent,
 } from '../utils/compressionSettings'
@@ -157,13 +156,11 @@ export async function hasUserPresetConfig(): Promise<boolean> {
 
 export function getPresetDefaults(
   preset: CompressionPreset,
-  referenceMaxImageEdgePx?: number,
-): PresetDefaults & { maxImageSizePx: number } {
+): PresetDefaults {
   const profile = cachedUserPresetConfig?.presets[preset] ?? defaultPresetProfiles[preset]
   return {
     imageQuality: profile.imageQuality,
     maxImageSizePercent: profile.maxImageSizePercent,
-    maxImageSizePx: calculateMaxImageSizePx(profile.maxImageSizePercent, referenceMaxImageEdgePx),
   }
 }
 

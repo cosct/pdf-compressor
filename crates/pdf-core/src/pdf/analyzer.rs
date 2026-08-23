@@ -10,7 +10,6 @@
 use std::{
     collections::{BTreeMap, HashSet},
     fs,
-    path::PathBuf,
 };
 
 use lopdf::{Dictionary, Document, Object, ObjectId, Stream};
@@ -21,7 +20,8 @@ use crate::{
     pdf::settings::CompressionPreset,
 };
 
-use super::optional_integer;
+use super::compressor::ensure_input_size_supported;
+use super::{optional_integer, validate_input_path};
 
 const TEXT_NATIVE_KIND: &str = "text-native";
 const MIXED_KIND: &str = "mixed";
@@ -44,6 +44,9 @@ struct AnalysisSignals {
 struct ImageDimensionStats {
     image_object_count: usize,
     longest_edges: Vec<u32>,
+    /// Total stored bytes of all image streams — the basis for the savings
+    /// estimate, since image recompression is where the wins come from.
+    total_image_bytes: u64,
 }
 
 pub fn analyze_pdf_with_progress<F>(
@@ -57,6 +60,7 @@ where
 
     let input_path = validate_input_path(path)?;
     let file_size_bytes = fs::metadata(&input_path)?.len();
+    ensure_input_size_supported(file_size_bytes)?;
 
     let document = Document::load(&input_path)
         .map_err(|error| AppError::PdfBuild(format!("Failed to inspect PDF structure: {error}")))?;
@@ -134,11 +138,8 @@ where
         CompressionPreset::Conservative
     };
 
-    let estimated_savings_percent = match recommended_preset {
-        CompressionPreset::Maximum => 28.0,
-        CompressionPreset::Balanced => 18.0,
-        CompressionPreset::Conservative => 10.0,
-    };
+    let estimated_savings_percent =
+        estimate_savings_percent(recommended_preset, image_stats.total_image_bytes, file_size_bytes);
 
     let recommended_max_image_size_px =
         recommend_max_image_size_px(recommended_preset, &image_stats.longest_edges);
@@ -233,9 +234,9 @@ where
     );
 
     Ok(AnalysisResponse {
-        file_size_bytes,
-        page_count,
-        image_object_count: image_stats.image_object_count,
+        file_size_bytes: file_size_bytes as f64,
+        page_count: page_count as u32,
+        image_object_count: image_stats.image_object_count as u32,
         document_kind: document_kind.to_string(),
         scanned_confidence,
         image_coverage,
@@ -247,25 +248,6 @@ where
         is_likely_scanned,
         notices,
     })
-}
-
-fn validate_input_path(path: &str) -> Result<PathBuf, AppError> {
-    let candidate = PathBuf::from(path);
-
-    if !candidate.exists() {
-        return Err(AppError::MissingInput(candidate));
-    }
-
-    let is_pdf = candidate
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"));
-
-    if !is_pdf {
-        return Err(AppError::InvalidPdfPath(candidate));
-    }
-
-    Ok(candidate)
 }
 
 fn collect_analysis_signals(
@@ -354,6 +336,7 @@ fn collect_image_stream_stats(document: &Document) -> ImageDimensionStats {
         }
 
         stats.image_object_count += 1;
+        stats.total_image_bytes += stream.content.len() as u64;
 
         let Some(width) = optional_integer(stream, b"Width") else {
             continue;
@@ -368,6 +351,34 @@ fn collect_image_stream_stats(document: &Document) -> ImageDimensionStats {
     }
 
     stats
+}
+
+/// Estimate savings from what actually shrinks: image bytes re-encoded at the
+/// preset's quality/edge targets, plus a small flat gain from stream
+/// compression and metadata cleanup of the non-image remainder. Falls back to
+/// a modest floor for image-free documents.
+fn estimate_savings_percent(
+    preset: CompressionPreset,
+    total_image_bytes: u64,
+    file_size_bytes: u64,
+) -> f32 {
+    if file_size_bytes == 0 {
+        return 5.0;
+    }
+
+    // Empirical post-recompression ratios for photographic content.
+    let image_ratio = match preset {
+        CompressionPreset::Conservative => 0.62,
+        CompressionPreset::Balanced => 0.48,
+        CompressionPreset::Maximum => 0.34,
+    };
+    let non_image_bytes = file_size_bytes.saturating_sub(total_image_bytes);
+
+    let image_gain = total_image_bytes as f32 * (1.0 - image_ratio);
+    let stream_gain = non_image_bytes as f32 * 0.05;
+    let savings = (image_gain + stream_gain) / file_size_bytes as f32 * 100.0;
+
+    savings.clamp(3.0, 85.0)
 }
 
 fn recommend_max_image_size_px(preset: CompressionPreset, longest_edges: &[u32]) -> u16 {
@@ -607,5 +618,78 @@ fn ratio(count: usize, total: usize) -> f32 {
         0.0
     } else {
         count as f32 / total as f32
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recommend_max_image_size_px_defaults_without_edges() {
+        assert_eq!(
+            recommend_max_image_size_px(CompressionPreset::Balanced, &[]),
+            CompressionPreset::Balanced.default_max_image_size_px()
+        );
+    }
+
+    #[test]
+    fn recommend_max_image_size_px_respects_preset_scaling() {
+        let edges = [2000u32];
+        assert_eq!(recommend_max_image_size_px(CompressionPreset::Conservative, &edges), 2000);
+        assert_eq!(recommend_max_image_size_px(CompressionPreset::Balanced, &edges), 1700);
+        assert_eq!(recommend_max_image_size_px(CompressionPreset::Maximum, &edges), 1400);
+    }
+
+    #[test]
+    fn recommend_max_image_size_px_clamps_outlier_edges() {
+        // A 10 000 px edge is clamped down to the 3200 px ceiling before scaling.
+        let edges = [10_000u32];
+        let maximum = recommend_max_image_size_px(CompressionPreset::Maximum, &edges);
+        assert!((800..=3200).contains(&maximum));
+
+        let tiny = [64u32];
+        let conservative = recommend_max_image_size_px(CompressionPreset::Conservative, &tiny);
+        assert!(conservative >= 800);
+    }
+
+    #[test]
+    fn analysis_page_sample_covers_small_documents_fully() {
+        let page_map: BTreeMap<u32, ObjectId> = (1..=5).map(|i| (i, (i, 0))).collect();
+        let sample = build_analysis_page_sample(&page_map);
+        assert_eq!(sample.len(), 5);
+    }
+
+    #[test]
+    fn analysis_page_sample_is_bounded_and_spread() {
+        let page_map: BTreeMap<u32, ObjectId> = (1..=500).map(|i| (i, (i, 0))).collect();
+        let sample = build_analysis_page_sample(&page_map);
+
+        assert!(sample.len() <= MAX_ANALYSIS_SAMPLE_PAGES);
+        assert!(!sample.is_empty());
+
+        // Pages are returned in ascending order and span the document.
+        let numbers: Vec<u32> = sample.iter().map(|(n, _)| *n).collect();
+        assert!(numbers.windows(2).all(|pair| pair[0] < pair[1]));
+        assert_eq!(*numbers.first().unwrap(), 1);
+        assert_eq!(*numbers.last().unwrap(), 500);
+    }
+
+    #[test]
+    fn savings_estimate_tracks_image_bytes_and_preset() {
+        // Image-free document: near the floor.
+        let text_only = estimate_savings_percent(CompressionPreset::Balanced, 0, 1_000_000);
+        assert!((3.0..=10.0).contains(&text_only));
+
+        // Image-heavy document scales with the preset's re-encode ratio.
+        let maximum = estimate_savings_percent(CompressionPreset::Maximum, 900_000, 1_000_000);
+        let balanced = estimate_savings_percent(CompressionPreset::Balanced, 900_000, 1_000_000);
+        let conservative =
+            estimate_savings_percent(CompressionPreset::Conservative, 900_000, 1_000_000);
+        assert!(conservative < balanced && balanced < maximum);
+        assert!((40.0..=70.0).contains(&maximum));
+
+        // Zero-size input must not divide by zero.
+        assert!(estimate_savings_percent(CompressionPreset::Maximum, 0, 0) >= 3.0);
     }
 }

@@ -11,11 +11,6 @@ const en = {
     dark: 'Dark',
   },
   app: {
-    workflow: 'Status',
-    source: 'Current file',
-    profile: 'Compression preset',
-    expected: 'Estimated reduction',
-    size: 'Size',
     alertTitle: 'Notice',
     emptySource: 'Not selected',
     preset: {
@@ -27,23 +22,15 @@ const en = {
   },
   header: {
     title: 'PDF Compressor',
-    body: 'Local processing for fast PDF compression.',
-    currentFile: 'Current file',
     minimize: 'Minimize',
     maximize: 'Maximize',
     restore: 'Restore',
     close: 'Close',
   },
   intake: {
-    eyebrow: 'Upload',
-    title: 'Drop PDF file',
-    dropIdle: 'Drop or browse',
-    dropTag: 'Drop zone',
     browse: 'Browse',
     browseDisabledPreview: 'Browse (desktop only)',
-    selectedLabel: 'Current file',
     invalidDrop: 'Only .pdf files allowed',
-    clear: 'Clear',
   },
   upload: {
     eyebrow: 'PDF Upload',
@@ -53,32 +40,33 @@ const en = {
     queueHint: 'You can keep dropping PDFs anywhere in this area',
     queueTitle: 'File queue',
     lockedTag: 'Compressing',
+    lockedHint: 'Queue is locked while compression is running',
   },
   settings: {
     eyebrow: 'Compression Preset',
-    recommendedLabel: 'Recommended',
     recommendedBadge: 'Recommended',
     presetGroupLabel: 'Compression presets',
     advancedToggle: 'Advanced settings',
     quality: 'Image quality',
-    qualityShort: 'Q',
     maxEdge: 'Max edge',
-    edgeShort: 'E',
     optimizeImages: 'Optimize images',
     compressStreams: 'Compress streams',
     stripMetadata: 'Remove metadata',
     outputDir: 'Output directory',
     outputDirDefault: 'Same as source',
     outputDirBrowse: 'Browse',
+    targetSize: 'Target size (MB)',
+    targetSizeHint: 'e.g. 5 — auto-fit under a size',
+    targetSizeOff: 'Off',
     savePreset: 'Save preset',
     resetPresets: 'Reset defaults',
     applyToAll: 'Apply to all',
   },
   queue: {
     count: '{count} items',
-    currentTag: 'Current',
     overrideTag: 'Custom settings',
     delete: 'Delete',
+    contextMenuLabel: 'Queue item actions',
     openCompressedFile: 'Open compressed PDF',
     openCompressedFolder: 'Open containing folder',
     pages: 'pages',
@@ -98,47 +86,26 @@ const en = {
       success: 'Compression done',
       error: 'Needs attention',
     },
-    emptyTitle: 'Queue is empty',
-    emptyBody: 'Add a PDF to get started',
   },
   activity: {
     eyebrow: 'Activity',
-    title: 'Execution',
     liveLabel: 'Status',
-    recommendedPrefix: 'Recommended',
-    metricPreset: 'Preset',
-    metricSize: 'Size',
     metricSavings: 'Saved',
-    metricRuntime: 'Time',
     metricProgress: 'Progress',
     metricQueued: 'Queued',
     metricCompleted: 'Done',
-    primaryCompress: 'Compress',
-    primaryCompressAll: 'Compress all ({count})',
-    primaryRecompress: 'Recompress',
-    compressSelected: 'Compress selected',
-    compressAll: 'Compress all',
     startCompression: 'Start compression',
-    primaryBusy: 'Processing...',
-    primaryNeedsSource: 'Add file first',
     noSourcePlaceholder: 'No file added',
     cancel: 'Cancel compression',
     outputLocked: 'Output directory is locked while compression is running.',
     states: {
       idleTitle: 'Waiting for file',
-      idleBody: 'Add a PDF to start',
       selectedTitle: 'File ready',
-      selectedBody: 'Analyze to adjust settings',
       analyzingTitle: 'Analyzing',
-      analyzingBody: 'Checking document structure',
       readyTitle: 'Ready to compress',
-      readyBody: 'Click to start',
       compressingTitle: 'Compressing',
-      compressingBody: 'Processing images and streams',
       successTitle: 'Done',
-      successBody: 'Compression complete',
       errorTitle: 'Error',
-      errorBody: 'Check and retry',
     },
   },
   composable: {
@@ -151,18 +118,90 @@ const en = {
     errors: {
       backendFallback: 'The desktop service returned an unknown error.',
       browseRequiresDesktop: 'Desktop file browsing is only available inside the Tauri app.',
-    },
-    pathState: {
-      empty: 'Select a PDF to begin.',
-      invalid: 'Please choose a .pdf file.',
-      ready: 'Ready to analyze or compress.',
+      queueLocked: 'Files cannot be added while a compression run is in progress.',
     },
   },
-  backend: {},
+  backend: {
+    'analysis.note.structureBased': {
+      body: 'Analysis uses PDF structure inspection instead of page rendering.',
+    },
+    'analysis.note.safeOptimization': {
+      body: 'Compression focuses on image streams, metadata, and compressible PDF streams.',
+    },
+    'analysis.note.sampledPages': {
+      body: 'Large PDF detected, so detailed page inspection sampled {inspectedPages} of {pageCount} pages.',
+    },
+    'analysis.warning.textExtractionFallback': {
+      body: 'Some pages could not be fully decoded, so the recommendation stays conservative.',
+    },
+    'analysis.warning.textNative': {
+      body: 'This file looks mostly text-native, so savings may stay modest.',
+    },
+    'analysis.warning.largePageCount': {
+      body: 'This PDF has many pages, so preparation and compression may take longer.',
+    },
+    'analysis.warning.noImages': {
+      body: 'No embedded image objects were detected, so savings may rely on stream compression and metadata cleanup.',
+    },
+    'analysis.note.mixedDocument': {
+      body: 'This PDF mixes readable text structure with image-heavy pages, so the recommendation favors a safer first pass.',
+    },
+    'analysis.note.smallPdf': {
+      body: 'Small PDFs often have less room to shrink dramatically.',
+    },
+    'compress.note.appliedProfile': {
+      body: "Applied the '{preset}' profile with JPEG quality {quality} and max image edge {maxImageSizePx} px.",
+    },
+    'compress.note.safeRewrite': {
+      body: 'The optimizer preserves text and vector instructions when a rewrite is not safe.',
+    },
+    'compress.note.imageSkipSummary': {
+      body: 'Suppressed {count} additional image skip notices to keep the report concise.',
+    },
+    'compress.note.metadataKept': {
+      body: 'Document metadata stayed in place because metadata cleanup was disabled or unavailable.',
+    },
+    'compress.note.imageDedupe': {
+      body: 'Merged {count} duplicate image objects into shared references.',
+    },
+    'compress.note.targetAttempt': {
+      body: 'Fitting to the target size: trying JPEG quality {quality} (attempt {attempt}).',
+    },
+    'compress.note.targetSizeMet': {
+      body: 'Met the {targetKb} KB target size with JPEG quality {quality}.',
+    },
+    'compress.warning.targetSizeMissed': {
+      body: 'Could not reach the {targetKb} KB target; produced the best achievable result instead.',
+    },
+    'compress.warning.imageSkipped': {
+      body: 'Skipped image object {objectId}: {reason}',
+    },
+  },
   error: {
-    cancelled: {
+    'error.missingInput': {
+      body: 'The selected file does not exist: {path}',
+    },
+    'error.invalidPdfPath': {
+      body: 'The selected file is not a PDF: {path}',
+    },
+    'error.image': {
+      body: 'Image processing failed: {detail}',
+    },
+    'error.io': {
+      body: 'Filesystem operation failed: {detail}',
+    },
+    'error.cancelled': {
       title: 'Cancelled',
       body: 'The active compression task was cancelled.',
+    },
+    'error.config': {
+      body: 'Configuration operation failed: {detail}',
+    },
+    'error.opener': {
+      body: 'Failed to open the path with the system handler: {detail}',
+    },
+    'error.pdfBuild': {
+      body: 'Failed to build the output PDF: {detail}',
     },
   },
 }
