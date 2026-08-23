@@ -19,3 +19,9 @@ manual_ok_or = { level = "deny", priority = 8 }
 
 [profile.dev]
 opt-level = 2
+# Backtraces keep file:line, but variable/type debug info is dropped —
+# dependencies (the bulk of target-dir size) carry no debug info at all.
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

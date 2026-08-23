@@ -28,6 +28,7 @@ import type {
   CompressionSettings,
   PdfQueueJob,
   ProgressUpdate,
+  QueueItemStatus,
   WorkflowState,
 } from '../types/pdf'
 import {
@@ -115,7 +116,7 @@ function isPdfPath(path: string): boolean {
   return path.trim().toLowerCase().endsWith('.pdf')
 }
 
-function mapProgressPhaseToWorkflow(phase: ProgressUpdate['phase']): WorkflowState {
+function mapProgressPhaseToWorkflow(phase: ProgressUpdate['phase']): QueueItemStatus {
   switch (phase) {
     case 'analyzing':
       return 'analyzing'
@@ -139,7 +140,7 @@ function createJob(path: string): PdfQueueJob {
     id: `${normalizedPath}::${Date.now()}::${Math.random().toString(36).slice(2, 8)}`,
     sourcePath: normalizedPath,
     fileName: fileNameFromPath(normalizedPath),
-    status: normalizedPath ? 'selected' : 'idle',
+    status: 'selected',
     progress: {
       phase: 'queued',
       percent: 0,
@@ -217,7 +218,7 @@ function readPersistedQueue(): PersistedQueueEntry[] {
 }
 
 export function usePdfCompressor() {
-  const { errorToasts, pushErrorToast, dismissErrorToast, reportError } = useErrorToasts()
+  const { errorToasts, pushErrorToast, dismissErrorToast, pauseErrorToast, resumeErrorToast, reportError } = useErrorToasts()
 
   const jobs = ref<PdfQueueJob[]>([])
   const selectedJobId = ref<string | null>(null)
@@ -287,7 +288,7 @@ export function usePdfCompressor() {
     }
   }
 
-  function setJobStatus(job: PdfQueueJob, status: WorkflowState) {
+  function setJobStatus(job: PdfQueueJob, status: QueueItemStatus) {
     job.status = status
   }
 
@@ -295,7 +296,6 @@ export function usePdfCompressor() {
     job.progress = {
       phase: update.phase,
       percent: clampPercent(update.percent),
-      message: update.message ?? null,
     }
 
     if (update.phase !== 'done') {
@@ -488,7 +488,7 @@ export function usePdfCompressor() {
     job.lastAction = 'analyze'
     job.error = null
     job.result = null
-    applyProgress(job, { phase: 'analyzing', percent: 0, message: null })
+    applyProgress(job, { phase: 'analyzing', percent: 0 })
 
     try {
       const response = await analyzePdf(requestedPath, (update) => {
@@ -503,7 +503,7 @@ export function usePdfCompressor() {
 
       job.analysis = mapAnalysisSummary(response, requestedPath)
       applyRecommendedSettings(job)
-      job.progress = { phase: 'done', percent: 100, message: null }
+      job.progress = { phase: 'done', percent: 100 }
       setJobStatus(job, 'ready')
     } catch (error) {
       if (job.sourcePath !== requestedPath) {
@@ -512,7 +512,7 @@ export function usePdfCompressor() {
 
       job.error = normalizeError(error)
       pushErrorToast(job.error)
-      job.progress = { phase: 'error', percent: 100, message: null }
+      job.progress = { phase: 'error', percent: 100 }
       setJobStatus(job, 'error')
     }
   }
@@ -540,7 +540,7 @@ export function usePdfCompressor() {
     job.error = null
     job.result = null
     activeCompressionTaskIds.set(job.id, taskId)
-    applyProgress(job, { phase: 'compressing', percent: 0, message: null })
+    applyProgress(job, { phase: 'compressing', percent: 0 })
 
     try {
       const response = await compressPdf(requestedPath, job.settings, taskId, (update) => {
@@ -556,13 +556,13 @@ export function usePdfCompressor() {
       if (cancelledCompressionRuns.has(runId) || cancellationRequested.value) {
         job.error = null
         job.result = null
-        job.progress = { phase: 'queued', percent: 0, message: null }
+        job.progress = { phase: 'queued', percent: 0 }
         setJobStatus(job, job.analysis ? 'ready' : 'selected')
         return
       }
 
       job.result = mapCompressionResult(response, requestedPath)
-      job.progress = { phase: 'done', percent: 100, message: null }
+      job.progress = { phase: 'done', percent: 100 }
       setJobStatus(job, 'success')
     } catch (error) {
       if (job.sourcePath !== requestedPath || !isActiveCompressionTask(job.id, taskId)) {
@@ -571,14 +571,14 @@ export function usePdfCompressor() {
 
       if (isCancellationError(error)) {
         job.error = null
-        job.progress = { phase: 'queued', percent: 0, message: null }
+        job.progress = { phase: 'queued', percent: 0 }
         setJobStatus(job, job.analysis ? 'ready' : 'selected')
         return
       }
 
       job.error = normalizeError(error)
       pushErrorToast(job.error)
-      job.progress = { phase: 'error', percent: 100, message: null }
+      job.progress = { phase: 'error', percent: 100 }
       setJobStatus(job, 'error')
     } finally {
       if (isActiveCompressionTask(job.id, taskId)) {
@@ -654,7 +654,7 @@ export function usePdfCompressor() {
       if (job.status === 'compressing') {
         job.error = null
         job.result = null
-        job.progress = { phase: 'queued', percent: 0, message: null }
+        job.progress = { phase: 'queued', percent: 0 }
         setJobStatus(job, job.analysis ? 'ready' : 'selected')
       }
     }
@@ -799,6 +799,8 @@ export function usePdfCompressor() {
     compressCurrentPdf,
     cancelCompressionRun,
     dismissErrorToast,
+    pauseErrorToast,
+    resumeErrorToast,
     reportError,
     selectOutputDir,
     openCompressedFile,

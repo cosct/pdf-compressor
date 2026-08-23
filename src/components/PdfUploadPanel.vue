@@ -1,14 +1,13 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import { listenForNativePdfDrop, type NativePdfDropEvent } from '../lib/tauri'
+import type { QueueItemStatus } from '../types/pdf'
 
 type FileWithPath = File & {
   path?: string
 }
-
-type QueueItemStatus = 'selected' | 'analyzing' | 'ready' | 'compressing' | 'success' | 'error'
 
 export interface QueueVisualItem {
   id: string
@@ -49,6 +48,8 @@ const { t } = useI18n()
 const dragActive = ref(false)
 const dropFeedback = ref('')
 const contextMenu = ref<{ x: number; y: number; itemId: string } | null>(null)
+const contextMenuRef = ref<HTMLElement | null>(null)
+let contextMenuTrigger: HTMLElement | null = null
 let stopListening: (() => void) | null = null
 
 const browseLabel = computed(() =>
@@ -155,17 +156,85 @@ function handleDrop(event: DragEvent) {
   applyDroppedPaths(readDroppedPaths(event))
 }
 
-function handleQueueItemKeydown(event: KeyboardEvent, id: string) {
+function handleQueueItemKeydown(event: KeyboardEvent, item: QueueVisualItem) {
+  // Menu key (or Shift+F10) mirrors the mouse right-click path for keyboard users.
+  if (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) {
+    const target = event.currentTarget as HTMLElement
+    const rect = target.getBoundingClientRect()
+
+    event.preventDefault()
+    emit('select', item.id)
+    openContextMenu(item, rect.left, rect.bottom + 4, target)
+    return
+  }
+
   if (event.key !== 'Enter' && event.key !== ' ') {
     return
   }
 
   event.preventDefault()
-  emit('select', id)
+  emit('select', item.id)
+}
+
+function openContextMenu(item: QueueVisualItem, x: number, y: number, trigger: HTMLElement | null) {
+  if (!item.outputPath) {
+    closeContextMenu()
+    return
+  }
+
+  contextMenuTrigger = trigger
+  contextMenu.value = { x, y, itemId: item.id }
+  void nextTick(() => {
+    contextMenuRef.value
+      ?.querySelector<HTMLElement>('[role="menuitem"]')
+      ?.focus()
+  })
 }
 
 function closeContextMenu() {
+  // WAI-ARIA menu pattern: if focus sits inside the menu, hand it back to the trigger.
+  const menuEl = contextMenuRef.value
+  if (menuEl && document.activeElement && menuEl.contains(document.activeElement)) {
+    contextMenuTrigger?.focus()
+  }
+
   contextMenu.value = null
+  contextMenuTrigger = null
+}
+
+function handleMenuKeydown(event: KeyboardEvent) {
+  const items = Array.from(
+    contextMenuRef.value?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [],
+  )
+  if (!items.length) {
+    return
+  }
+
+  const currentIndex = items.indexOf(document.activeElement as HTMLElement)
+  let nextIndex: number | null = null
+
+  switch (event.key) {
+    case 'ArrowDown':
+      nextIndex = (currentIndex + 1 + items.length) % items.length
+      break
+    case 'ArrowUp':
+      nextIndex = (currentIndex - 1 + items.length) % items.length
+      break
+    case 'Home':
+      nextIndex = 0
+      break
+    case 'End':
+      nextIndex = items.length - 1
+      break
+    case 'Tab':
+      closeContextMenu()
+      return
+    default:
+      return
+  }
+
+  event.preventDefault()
+  items[nextIndex]?.focus()
 }
 
 function handleGlobalKeydown(event: KeyboardEvent) {
@@ -176,17 +245,7 @@ function handleGlobalKeydown(event: KeyboardEvent) {
 
 function handleQueueItemContextMenu(event: MouseEvent, item: QueueVisualItem) {
   emit('select', item.id)
-
-  if (!item.outputPath) {
-    closeContextMenu()
-    return
-  }
-
-  contextMenu.value = {
-    x: event.clientX,
-    y: event.clientY,
-    itemId: item.id,
-  }
+  openContextMenu(item, event.clientX, event.clientY, event.currentTarget as HTMLElement)
 }
 
 function openQueueItemResult() {
@@ -318,8 +377,9 @@ onBeforeUnmount(() => {
             :class="{ 'queue-item--selected': props.selectedId === item.id }"
             role="button"
             tabindex="0"
+            :aria-haspopup="item.outputPath ? 'menu' : undefined"
             @click="emit('select', item.id)"
-            @keydown="handleQueueItemKeydown($event, item.id)"
+            @keydown="handleQueueItemKeydown($event, item)"
             @contextmenu.prevent="handleQueueItemContextMenu($event, item)"
           >
             <div class="queue-item__row">
@@ -370,11 +430,13 @@ onBeforeUnmount(() => {
 
         <div
           v-if="contextMenu"
+          ref="contextMenuRef"
           class="queue-context-menu"
           role="menu"
           :aria-label="t('queue.contextMenuLabel')"
           :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }"
           @click.stop
+          @keydown="handleMenuKeydown"
         >
           <button class="queue-context-menu__item" type="button" role="menuitem" @click="openQueueItemResult">
             {{ t('queue.openCompressedFile') }}

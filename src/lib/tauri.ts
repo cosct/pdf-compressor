@@ -18,7 +18,6 @@ import type {
 import { commands } from './bindings'
 
 import type { CompressionSettings, PresetUserConfig, ProgressUpdate } from '../types/pdf'
-import { normalizeMessage } from '../composables/backendMessages'
 import { calculateMaxImageSizePx } from '../utils/compressionSettings'
 
 export type { AnalysisResponse, CompressionResponse } from './bindings'
@@ -46,7 +45,6 @@ function normalizeProgressUpdate(message: ProgressUpdateWire | undefined): Progr
   return {
     phase,
     percent: Number.isFinite(percent) ? percent : 0,
-    message: message?.message ? normalizeMessage(message.message) : null,
   }
 }
 

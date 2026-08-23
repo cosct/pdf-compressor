@@ -55,6 +55,7 @@ function detectInitialLocale(): AppLocale {
 
 function applyDocumentLocale(locale: AppLocale) {
   document.documentElement.lang = locale
+  document.title = i18n.global.t('header.title')
 }
 
 export const i18n = createI18n({

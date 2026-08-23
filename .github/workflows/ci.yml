@@ -53,6 +53,52 @@ jobs:
       - name: Tests
         run: cargo test --workspace
 
+  msrv:
+    name: MSRV check (${{ matrix.crate }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # pdf-core's `specta` feature (and the desktop shell) need a newer
+          # toolchain than the engine itself, so only src-tauri checks all features.
+          - crate: crates/pdf-core
+            features: ""
+          - crate: src-tauri
+            features: "--all-features"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev librsvg2-dev patchelf
+
+      - name: Read declared rust-version
+        id: msrv
+        run: |
+          msrv=$(sed -n 's/^rust-version *= *"\(.*\)"/\1/p' ${{ matrix.crate }}/Cargo.toml | head -n1)
+          if [ -z "$msrv" ]; then
+            echo "No rust-version declared in ${{ matrix.crate }}/Cargo.toml" >&2
+            exit 1
+          fi
+          echo "version=$msrv" >> "$GITHUB_OUTPUT"
+
+      # Building with the pinned declared toolchain catches dependencies whose
+      # MSRV slipped past Cargo's semver resolution (e.g. jpeg-encoder 0.7).
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: msrv
+          workspaces: ${{ matrix.crate }}
+
+      - name: cargo check --locked at declared MSRV
+        working-directory: ${{ matrix.crate }}
+        run: cargo check --locked ${{ matrix.features }}
+
   fuzz:
     name: Fuzz (60s smoke run)
     runs-on: ubuntu-latest

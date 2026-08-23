@@ -7,10 +7,10 @@ import { copyFileSync } from 'node:fs'
 
 if (process.platform === 'win32') {
   copyFileSync(
-    'src-tauri/target/release/app.exe',
-    'src-tauri/target/release/bundle/PDF-Compressor-portable.exe',
+    'target/release/app.exe',
+    'target/release/bundle/PDF-Compressor-portable.exe',
   )
-  console.log('Portable executable copied to src-tauri/target/release/bundle/')
+  console.log('Portable executable copied to target/release/bundle/')
 } else {
   console.log(`Skipping portable copy on ${process.platform}`)
 }

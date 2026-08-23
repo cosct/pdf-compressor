@@ -10,9 +10,5 @@
   "maximum": {
     "imageQuality": 46,
     "maxImageSizePercent": 52
-  },
-  "custom": {
-    "imageQuality": 46,
-    "maxImageSizePercent": 52
   }
 }

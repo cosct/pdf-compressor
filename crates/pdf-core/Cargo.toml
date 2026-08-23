@@ -5,7 +5,9 @@ description = "Pure-Rust PDF analysis and selective compression engine"
 authors = ["cosct"]
 license = "MIT"
 edition = "2021"
-rust-version = "1.77.2"
+# Engine-only MSRV (default features). The optional `specta` feature and the
+# desktop shell in src-tauri require a newer toolchain (see src-tauri/Cargo.toml).
+rust-version = "1.88"
 
 [lib]
 name = "pdf_core"
@@ -23,7 +25,7 @@ serde_json = "1.0"
 tempfile = "3"
 thiserror = "2"
 specta = { version = "=2.0.0-rc.25", optional = true }
-jpeg-encoder = { version = "0.6.1", features = ["simd"] }
+jpeg-encoder = { version = "0.7", features = ["simd"] }
 
 [dev-dependencies]
 criterion = "0.5"

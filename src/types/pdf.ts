@@ -15,6 +15,9 @@ export type WorkflowState =
   | 'success'
   | 'error'
 
+/** Status a queue job can take — 'idle' is reserved for the empty-queue workflow state. */
+export type QueueItemStatus = Exclude<WorkflowState, 'idle'>
+
 export type ProgressPhase = 'queued' | 'analyzing' | 'compressing' | 'writing' | 'done' | 'error'
 
 export interface CompressionSettings {
@@ -55,7 +58,6 @@ export interface BackendMessage {
 export interface ProgressUpdate {
   phase: ProgressPhase
   percent: number
-  message?: BackendMessage | null
 }
 
 export interface NoticeItem {
@@ -104,7 +106,7 @@ export interface PdfQueueJob {
   id: string
   sourcePath: string
   fileName: string
-  status: WorkflowState
+  status: QueueItemStatus
   progress: ProgressUpdate
   analysis: AnalysisSummary | null
   result: CompressionResult | null

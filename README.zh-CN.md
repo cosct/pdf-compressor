@@ -2,7 +2,7 @@
 
 语言版本：`README.md`（English）| `README.zh-CN.md`（简体中文）
 
-PDF Compressor 是一个本地优先的桌面 PDF 压缩应用，后端使用 Rust，前端使用 Vue 3 + Tauri。它支持多文件队列工作流：添加一个或多个 PDF，由应用自动分析每个文件，按需调整设置，然后导出更轻的副本，不会覆盖原文件。
+PDF Compressor 是一个本地优先的桌面 PDF 压缩应用，后端使用 Rust，前端使用 Vue 3 + Tauri。它支持多文件队列工作流：添加一个或多个 PDF，由应用自动分析每个文件，按文件或全局调整设置，然后导出更轻的副本，不会覆盖原文件。
 
 当前版本：`0.2.0`
 
@@ -13,11 +13,14 @@ PDF Compressor 是一个本地优先的桌面 PDF 压缩应用，后端使用 Ru
 这个项目面向有选择的 PDF 优化，而不是对整个文件做盲目重写。当前处理流程会尽量保留文本和矢量指令，然后优先优化通常更安全的部分：
 
 - 可处理的嵌入图片流可以重新编码为 JPEG，并在需要时缩小尺寸
+- 带透明度（`/SMask`）的图片会在保留 Alpha 通道的前提下重写
+- 字节级相同的重复图片（Logo、印章）会被无损合并为共享引用
+- 目标大小模式会在质量/分辨率参数空间中搜索，直到输出满足字节预算（UI、CLI `--target-size` 与 IPC 均可使用）
 - 符合条件的非图片 PDF 流可以进行压缩
 - 文档元数据可以移除
 - UI 会先执行一次分析，让用户在导出前查看预估收益和推荐预设
 
-本应用以桌面优先、本地优先为前提。没有上传到云端的流程，没有远程处理。桌面版支持本地队列，可以批量分析和压缩多个 PDF。
+本应用以桌面优先、本地优先为前提。没有上传流程，没有云端处理。桌面版支持本地队列，可以批量分析和压缩多个 PDF。
 
 ## 安装
 
@@ -46,9 +49,9 @@ yay -S pdf-compressor      # 或：paru -S pdf-compressor
 - **Fluent 设计令牌** — 所有颜色、间距、排版、圆角、阴影和过渡效果均以 CSS 自定义属性（custom properties）定义，遵循 WinUI 3 / Fluent 2 令牌规范。深色和浅色主题各有一套完整的语义令牌。
 - **PDF 上传作为主视图** — 上传/队列面板现在是左侧主区域，占据大部分屏幕空间。设置和活动面板放在右侧较窄的侧栏中，让拖放上传区成为最显眼的核心元素。
 - **响应式布局** — 双栏网格在窄屏上自动折叠为单栏。侧栏在宽屏上使用 sticky 定位，在滚动长队列时始终可见。
+- **自定义窗口边框** — 应用使用无边框窗口，集成了自定义标题栏，包含最小化、最大化/还原和关闭控件，与主题和语言切换器并排。
 - **统一图标** — 每个面板标题都带有小型内联 SVG 图标，增强视觉锚点。拖放区域有更大的上传图标以提高可发现性。
 - **开关切换** — 布尔设置（优化图片、压缩流、移除元数据）使用 Fluent 风格的开关切换，取代了原始的复选框。
-- **自定义窗口边框** — 应用使用无边框窗口，集成了自定义标题栏，包含最小化、最大化/还原和关闭控件，与主题和语言切换器并排。
 - **启动画面** — 在主窗口和 Vue 应用初始化期间显示轻量启动画面窗口，通过 `app_ready` 命令关闭。
 - **错误通知** — 后端错误和对话框失败以浮动通知卡片形式展示，按级别着色（危险、警告、成功），可逐条关闭。
 
@@ -126,11 +129,13 @@ Rust 压缩引擎进行了针对性的性能改进：
 
 ## 使用流程
 
+应用采用两阶段后端工作流和三步 UI 流程。
+
 1. 通过拖放、浏览按钮或原生文件选择器添加一个或多个 PDF。
 2. 由应用分析每个文件并推荐预设。
 3. 查看所选文件，按需调整设置，导出优化副本。
 
-"先分析再压缩"的规则在 `src/composables/usePdfCompressor.ts` 中强制执行。
+"先分析再压缩"的规则在 `src/composables/usePdfCompressor.ts` 中强制执行。压缩会等待每个队列文件完成分析后，才把该文件交给后端压缩器。
 
 ## 项目架构
 
@@ -142,26 +147,36 @@ Vue UI -> Tauri bridge -> Rust commands -> PDF analysis/compression engine -> ou
 
 ### 前端架构
 
-- `src/main.ts` — Vue 入口，加载全局样式并挂载带 i18n 的应用
-- `src/App.vue` — 顶层应用外壳，双栏布局：上传面板（主区域）+ 侧栏（设置、活动）
-- `src/composables/useTheme.ts` — 主题管理 composable（深色 / 浅色 / 跟随系统），持久化存储，DOM 同步
-- `src/composables/usePdfCompressor.ts` — 工作流状态的单一事实来源，管理任务、设置、分析结果、压缩结果
-- `src/lib/tauri.ts` — Vue 与 Tauri 命令之间的桥接层；调用分析、压缩、取消、预设配置等命令；窗口管理（最小化、最大化、关闭、拖动）
+- `src/main.ts` — Vue 入口；加载全局样式并挂载带 i18n 的应用
+- `src/App.vue` — 顶层应用外壳；双栏布局：上传面板（主区域）+ 侧栏（设置、活动）；将工作流状态映射为用户可见的状态文案
+- `src/composables/useTheme.ts` — 主题管理 composable（深色 / 浅色 / 跟随系统），持久化存储，DOM 同步，监听系统主题变化
+- `src/composables/usePdfCompressor.ts` — 工作流状态的单一事实来源；管理任务、设置、分析结果、压缩结果、加载状态和错误；将后端载荷规范化为前端类型；强制"先分析再压缩"；用工作线程池管理并发压缩
+- `src/composables/useErrorToasts.ts` — 错误通知状态管理：去重后的通知队列，由 `ErrorToastViewport` 呈现
+- `src/composables/backendMessages.ts` — 后端消息适配层：净化后端载荷，做运行时 tone/phase 校验并本地化
+- `src/lib/tauri.ts` — Vue 与 Tauri 命令之间的桥接层；检测原生命令是否可用；打开桌面文件/目录选择器；监听原生拖放事件；调用 `analyze_pdf`、`compress_pdf`、`cancel_compression` 和预设配置命令；窗口管理（最小化、最大化、关闭、拖动）
+- `src/lib/bindings.ts` — 由 tauri-specta 生成的类型化 IPC 层（命令与载荷类型；`export_bindings` 测试负责再生成）
 - `src/config/presets.ts` — 预设配置管理（加载、保存、清除），合并内置默认值与用户覆盖，缓存已加载配置
 - `src/config/preset-defaults.json` — 各压缩预设的内置默认值（质量、最大图片尺寸百分比）
-- `src/utils/compressionSettings.ts` — 图片质量、尺寸百分比和像素值的夹紧与规范化；百分比转绝对像素值
+- `src/utils/compressionSettings.ts` — 图片质量、尺寸百分比和像素值的夹紧与规范化；基于参考边长把百分比转换为绝对像素值
 - `src/utils/format.ts` — 格式化工具（字节、百分比、毫秒、路径）
-- `src/i18n/index.ts` — 国际化初始化，支持 `en` 和 `zh-CN`
+- `src/i18n/index.ts` — 国际化初始化，支持 `en` 和 `zh-CN`，语言选择保存在 localStorage
 
-### 原生后端架构
+### PDF 引擎（`crates/pdf-core`）
 
-- `src-tauri/src/lib.rs` — Tauri 应用入口，注册插件，管理启动画面窗口，注册命令处理器
-- `src-tauri/src/commands.rs` — 命令接口层，合并并规范化来自前端的压缩设置；预设配置持久化；压缩任务注册与取消；通过系统处理器打开/显示文件
-- `src-tauri/src/models.rs` — Rust 与 Vue 之间序列化传输的共享结构
-- `src-tauri/src/error.rs` — 面向用户的后端统一错误映射，包含 i18n 兼容的错误码
-- `src-tauri/src/pdf/analyzer.rs` — 预检分析引擎（页面抽样、文本密度、图片信号）
-- `src-tauri/src/pdf/compressor.rs` — 对象级 PDF 优化引擎（图片重压缩、流压缩、元数据移除）
-- `src-tauri/src/pdf/settings.rs` — 设置规范化，应用后端默认值并限制范围
+- `crates/pdf-core/src/lib.rs` — 引擎 crate 入口，汇聚分析、压缩、模型与错误模块
+- `crates/pdf-core/src/pdf/analyzer.rs` — 预检分析引擎（页面抽样、文本密度、图片信号）
+- `crates/pdf-core/src/pdf/compressor.rs` — 对象级 PDF 优化引擎（图片重压缩、流压缩、元数据移除）
+- `crates/pdf-core/src/pdf/settings.rs` — 设置规范化，应用后端默认值并限制范围
+- `crates/pdf-core/src/models.rs` — Rust 与调用方之间序列化传输的分析/压缩载荷结构
+- `crates/pdf-core/src/error.rs` — 引擎统一错误类型，带 i18n 兼容的错误码
+- `crates/pdf-core/src/bin/pdf-cli.rs` — `pdf-cli` 命令行工具（analyze / compress，支持 `--preset` 与 `--target-size`）
+- `crates/pdf-core/benches/` — criterion 基准测试（压缩管线、JPEG 编码器对比）
+- `crates/pdf-core/fuzz/fuzz_targets/pipeline.rs` — cargo-fuzz 目标
+
+### 桌面壳（`src-tauri`）
+
+- `src-tauri/src/lib.rs` — Tauri 应用入口；注册插件，管理启动画面窗口，注册命令处理器
+- `src-tauri/src/commands.rs` — Tauri 命令接口层；合并并规范化来自前端的压缩设置；预设配置持久化；压缩任务注册与取消；通过系统处理器打开/显示文件
 
 ## 目录结构
 
@@ -174,9 +189,13 @@ Vue UI -> Tauri bridge -> Rust commands -> PDF analysis/compression engine -> ou
 │  ├─ App.vue                       # 主外壳：双栏布局
 │  ├─ composables/
 │  │  ├─ usePdfCompressor.ts        # 工作流状态、命令调用、数据规范化
-│  │  └─ useTheme.ts                # 深色/浅色/系统主题管理
+│  │  ├─ useTheme.ts                # 深色/浅色/系统主题管理
+│  │  ├─ useErrorToasts.ts          # 去重错误通知队列
+│  │  ├─ backendMessages.ts         # 后端消息净化与本地化
+│  │  └─ __tests__/                 # Vitest 单元测试
 │  ├─ lib/
-│  │  └─ tauri.ts                   # 原生桥接、对话框、拖放、命令调用
+│  │  ├─ tauri.ts                   # 原生桥接、对话框、拖放、命令调用
+│  │  └─ bindings.ts                # tauri-specta 生成的类型化 IPC 层
 │  ├─ config/
 │  │  ├─ presets.ts                 # 预设配置管理、持久化、默认值合并
 │  │  └─ preset-defaults.json       # 各预设的内置默认值
@@ -196,20 +215,34 @@ Vue UI -> Tauri bridge -> Rust commands -> PDF analysis/compression engine -> ou
 │  │  └─ format.ts                  # 格式化工具（字节、百分比、路径、毫秒）
 │  └─ types/
 │     └─ pdf.ts                     # 前端 PDF 工作流类型
+├─ crates/
+│  └─ pdf-core/                     # 纯 Rust PDF 引擎 crate
+│     ├─ Cargo.toml
+│     ├─ src/
+│     │  ├─ lib.rs                  # 引擎 crate 入口
+│     │  ├─ models.rs               # 分析/压缩载荷结构
+│     │  ├─ error.rs                # 引擎错误类型（含 i18n 错误码）
+│     │  ├─ pdf/
+│     │  │  ├─ analyzer.rs          # 预检分析引擎
+│     │  │  ├─ compressor.rs        # 压缩引擎
+│     │  │  ├─ settings.rs          # 设置规范化
+│     │  │  └─ tests.rs             # 管线集成测试
+│     │  └─ bin/
+│     │     └─ pdf-cli.rs           # pdf-cli 命令行工具
+│     ├─ benches/                   # criterion 基准测试
+│     └─ fuzz/                      # cargo-fuzz 目标（pipeline）
 ├─ src-tauri/
 │  ├─ Cargo.toml                    # Rust crate 元数据与原生依赖
 │  ├─ tauri.conf.json               # Tauri 产品与打包配置
 │  └─ src/
 │     ├─ lib.rs                     # Tauri 构建入口、启动画面管理
-│     ├─ commands.rs                # 命令接口层、预设配置、任务注册
-│     ├─ models.rs                  # 分析与压缩载荷结构
-│     ├─ error.rs                   # 共享后端错误类型（含 i18n 错误码）
-│     └─ pdf/
-│        ├─ analyzer.rs             # 预检分析引擎
-│        ├─ compressor.rs           # 压缩引擎
-│        └─ settings.rs             # 设置规范化
+│     ├─ main.rs                    # 桌面程序入口
+│     └─ commands.rs                # 命令接口层、预设配置、任务注册
 ├─ aur/
 │  └─ pdf-compressor/                # Arch Linux（AUR）源码包（PKGBUILD、.SRCINFO）
+├─ scripts/
+│  ├─ sync-version.mjs              # 版本号同步（package.json -> tauri.conf.json / Cargo.toml）
+│  └─ postbuild-portable.mjs        # 便携版可执行文件后处理
 ├─ package.json                     # 前端脚本与 JS 依赖
 ├─ README.md
 └─ README.zh-CN.md
@@ -220,7 +253,7 @@ Vue UI -> Tauri bridge -> Rust commands -> PDF analysis/compression engine -> ou
 标准的 Vue + Tauri 桌面应用开发环境：
 
 - Node.js 和 npm
-- Rust 工具链
+- Rust 工具链（MSRV：`pdf-core` 1.88，桌面应用 1.93 — 由 CI 强制执行）
 - 对应操作系统所需的 Tauri 构建前置依赖
 
 在 Arch Linux 上，系统依赖为 `webkit2gtk-4.1` 和 `gtk3`（构建还需 `cargo`、`nodejs`、`npm` 和 `pkgconf`）；完整列表以 `aur/pdf-compressor/PKGBUILD` 为准。其他发行版需要安装等价的 WebKit2GTK 4.1 与 GTK 3 软件包。
@@ -239,7 +272,14 @@ npm install
 npm run dev
 ```
 
-启动 Vite 前端，适合 UI 开发和布局检查。浏览器预览模式无法使用原生命令和文件选择器。
+只启动 Vite 前端，适合 UI 开发、布局检查和一般前端工作。
+
+浏览器预览模式的重要限制：
+
+- 原生 Tauri 命令不可用
+- 原生文件选择器被禁用
+- 拖放可能拿不到可用的桌面文件路径
+- 真正的后端分析和压缩需要桌面壳
 
 ### 运行完整桌面应用
 
@@ -248,6 +288,42 @@ npm run tauri dev
 ```
 
 启动 Vue 开发服务器和 Tauri 桌面壳。验证原生文件浏览、拖放、后端分析、压缩输出和主题切换时使用此模式。
+
+### 测试
+
+```bash
+npm test                    # 前端单元测试（Vitest）
+cargo test --workspace      # Rust 单元 + 管线集成测试
+cargo bench -p pdf-core     # 压缩基准测试（criterion）
+```
+
+Rust 代码是一个 Cargo workspace：`crates/pdf-core` 是纯 PDF 引擎（分析器、压缩器、模型、`pdf-cli` 二进制、基准测试和 cargo-fuzz 目标），`src-tauri` 是桌面壳。Rust 测试套件中有一个 `export_bindings` 测试，负责重新生成 `src/lib/bindings.ts`（由 tauri-specta 产出的类型化 IPC 层）。每当 Tauri 命令签名发生变化，运行 `cargo test --workspace` 并把再生成后的绑定随改动一起提交。
+
+另有一个小型 CLI 可供 shell 使用和调试：
+
+```bash
+cargo run -p pdf-core --bin pdf-cli -- analyze <file.pdf>
+cargo run -p pdf-core --bin pdf-cli -- compress <file.pdf> --preset maximum
+cargo run -p pdf-core --bin pdf-cli -- compress <file.pdf> --target-size 5MB
+```
+
+PDF 引擎还有 cargo-fuzz 目标（`crates/pdf-core/fuzz`）— 在 `crates/pdf-core` 目录下运行 `cargo +nightly fuzz run pipeline`。
+
+引擎的变异测试使用 cargo-mutants（CI 每周运行，也可从 *Mutation tests* 工作流手动触发）：
+
+```bash
+cargo mutants               # 在 crates/pdf-core 下运行；报告输出到 mutants.out/
+```
+
+### 版本管理
+
+`package.json` 是应用版本的单一事实来源。提升版本号后运行：
+
+```bash
+npm run sync-version
+```
+
+它会把版本号同步到 `src-tauri/tauri.conf.json` 和 `src-tauri/Cargo.toml`。
 
 ## 构建与发布
 
@@ -269,7 +345,7 @@ npm run tauri build
 npm run tauri:build
 ```
 
-便携版输出路径：`src-tauri/target/release/bundle/PDF-Compressor-portable.exe`。
+便携版输出路径：`target/release/bundle/PDF-Compressor-portable.exe`。
 
 便携版需要 Windows 10 21H2+ 或 Windows 11（这些系统已预装 WebView2）。
 
@@ -288,17 +364,17 @@ npm run tauri:build
 
 ### 分析阶段
 
-`src-tauri/src/pdf/analyzer.rs` 中的分析步骤是一次轻量级预检。会评估文件大小、精确页数、嵌入图片信号、可提取文本密度、结构化文本回退信号、扫描文档置信度和估计图片覆盖率。返回 `documentKind`、`recommendedPreset`、`estimatedSavingsPercent` 和提示信息。这是启发式建议，不是精确保证。
+`crates/pdf-core/src/pdf/analyzer.rs` 中的分析步骤是一次轻量级预检。会评估文件大小、来自 PDF 页面树的精确页数、来自页面资源和 XObject 的嵌入图片信号、抽样页面的可提取文本密度、来自页面内容操作符和字体资源的结构化文本回退信号、扫描文档置信度和估计图片覆盖率。返回 `documentKind`、`recommendedPreset`、`estimatedSavingsPercent` 和提示信息。这是启发式建议，不是精确保证。
 
 ### 压缩阶段
 
-`src-tauri/src/pdf/compressor.rs` 中的压缩器工作在 PDF 对象级别：
+`crates/pdf-core/src/pdf/compressor.rs` 中的压缩器工作在 PDF 对象级别：
 
-- 仅当图片流可以安全重写时才进行重压缩
+- 图片流经过检查，仅在安全时才重压缩
 - 受支持的图片使用两阶段策略缩放（Nearest + CatmullRom）
 - 重压缩后的图片编码为 JPEG
 - 符合条件的非图片流可以进行 deflate 压缩
-- 可以移除文档元数据
+- 可以移除文档信息和根元数据条目中的元数据
 - 明确优先保留文本和矢量指令
 
 ### 主题系统
@@ -354,7 +430,8 @@ npm run tauri:build
 - Vue 3 + TypeScript + Vite
 - Tauri 2 + Rust
 - `lopdf`（PDF 解析与写入）
-- `image`（图片解码、缩放、JPEG 编码）
+- `image`（图片解码与缩放）
+- `jpeg-encoder`（SIMD JPEG 重编码）
 - `vue-i18n`（国际化）
 
 ## 版本历史

@@ -1,0 +1,36 @@
+name: Mutation tests
+
+# Mutation testing is too slow for per-PR CI: run weekly and on demand.
+# Results land in mutants.out/ (summary.json, log.txt) as a build artifact.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * 1" # Mondays 03:00 UTC
+
+jobs:
+  mutants:
+    name: cargo-mutants (pdf-core)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: taiki-e/install-action@cargo-mutants
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/pdf-core
+
+      - name: Run cargo-mutants
+        working-directory: crates/pdf-core
+        run: cargo mutants
+
+      - name: Upload mutants report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-out
+          path: crates/pdf-core/mutants.out/
+          if-no-files-found: warn

@@ -38,6 +38,8 @@ const {
   openCompressedFile,
   openCompressedFileFolder,
   dismissErrorToast,
+  pauseErrorToast,
+  resumeErrorToast,
   reportError,
 } = usePdfCompressor()
 
@@ -80,12 +82,12 @@ const queueItems = computed(() =>
         id: job.id,
         fileName: job.fileName || t('app.emptySource'),
         path: job.sourcePath,
-        status: job.status === 'idle' ? 'selected' : job.status,
+        status: job.status,
         presetLabel: t(`app.preset.${job.settings.preset}`),
         detail:
           job.error && job.status === 'error'
             ? job.error.body
-            : t(`queue.detail.${job.status === 'idle' ? 'selected' : job.status}`),
+            : t(`queue.detail.${job.status}`),
         meta: [
           sizeMeta,
           job.analysis?.pageCount ? `${job.analysis.pageCount} ${t('queue.pages')}` : '',
@@ -129,7 +131,12 @@ onBeforeUnmount(() => {
       :locales="appLocales"
       @update:locale="updateLocale"
     />
-    <ErrorToastViewport :items="errorToasts" @dismiss="dismissErrorToast" />
+    <ErrorToastViewport
+      :items="errorToasts"
+      @dismiss="dismissErrorToast"
+      @pause="pauseErrorToast"
+      @resume="resumeErrorToast"
+    />
 
     <main class="shell-content">
       <div class="shell-frame">

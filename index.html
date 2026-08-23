@@ -40,7 +40,7 @@
       }
 
       #app:empty::before {
-        content: 'Loading PDF Compressor\2026';
+        content: var(--app-loading-text, 'Loading PDF Compressor\2026');
         position: fixed;
         inset: 0;
         display: grid;
@@ -62,6 +62,22 @@
         }
         document.documentElement.setAttribute('data-theme', theme);
         document.documentElement.style.colorScheme = theme;
+      })();
+      // Localize document chrome (lang, title, loading text) before first paint,
+      // mirroring detectInitialLocale() in src/i18n/index.ts
+      (function() {
+        var stored = null;
+        try { stored = localStorage.getItem('pdf-compressor-locale'); } catch(e) {}
+        var browserLocale = '';
+        try {
+          browserLocale = (navigator.languages && navigator.languages[0]) || navigator.language || '';
+        } catch(e) {}
+        var isZh = (stored || browserLocale).toLowerCase().indexOf('zh') === 0;
+        if (isZh) {
+          document.documentElement.lang = 'zh-CN';
+          document.title = 'PDF 压缩器';
+          document.documentElement.style.setProperty('--app-loading-text', '正在加载 PDF 压缩器\2026');
+        }
       })();
     </script>
   </head>

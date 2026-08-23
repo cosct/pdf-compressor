@@ -1,0 +1,6 @@
+# cargo-mutants configuration — run from the workspace root or crates/pdf-core.
+# The weekly CI job lives in .github/workflows/mutants.yml.
+# Paths are matched in workspace-relative form (crates/pdf-core/...).
+exclude_globs = ["crates/pdf-core/src/bin/**"]
+# Skip git-ignored build trees (src-tauri/target alone is tens of GB locally).
+gitignore = true

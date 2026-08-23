@@ -30,6 +30,13 @@ const CONFIG_VERSION = 1
 
 const PRESET_KEYS: CompressionPreset[] = ['conservative', 'balanced', 'maximum', 'custom']
 
+/** Presets with their own entry in preset-defaults.json. */
+const BUILTIN_DEFAULT_PRESETS: Exclude<CompressionPreset, 'custom'>[] = [
+  'conservative',
+  'balanced',
+  'maximum',
+]
+
 let cachedUserPresetConfig: PresetUserConfig | null = null
 let pendingUserPresetConfigLoad: Promise<PresetUserConfig> | null = null
 
@@ -49,13 +56,17 @@ function sanitizePresetProfile(
   }
 }
 
-const defaultPresetProfiles = PRESET_KEYS.reduce((profiles, preset) => {
+const defaultPresetProfiles = BUILTIN_DEFAULT_PRESETS.reduce((profiles, preset) => {
   profiles[preset] = sanitizePresetProfile(
     presetDefaultsJson[preset] as Partial<PresetProfile>,
     presetDefaultsJson[preset] as PresetProfile,
   )
   return profiles
 }, {} as PresetProfileMap)
+
+// `custom` has no JSON entry of its own: hand-tuned settings start from a
+// clone of `maximum`, the most aggressive baseline.
+defaultPresetProfiles.custom = clonePresetProfile(defaultPresetProfiles.maximum)
 
 function createEmptyUserConfig(): PresetUserConfig {
   return {

@@ -9,6 +9,8 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   dismiss: [id: string]
+  pause: [id: string]
+  resume: [id: string]
 }>()
 
 const { t } = useI18n()
@@ -28,6 +30,10 @@ function toneClass(tone: NoticeItem['tone']) {
       class="toast-card"
       :class="toneClass(item.tone)"
       :role="item.tone === 'danger' ? 'alert' : 'status'"
+      @mouseenter="emit('pause', item.id)"
+      @mouseleave="emit('resume', item.id)"
+      @focusin="emit('pause', item.id)"
+      @focusout="emit('resume', item.id)"
     >
       <div class="toast-card__body">
         <strong>{{ item.title }}</strong>

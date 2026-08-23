@@ -12,6 +12,8 @@ dist
 dist-ssr
 target
 src-tauri/target
+mutants.out
+mutants.out.old
 *.local
 
 # Local cross-platform git safe.directory helper

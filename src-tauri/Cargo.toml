@@ -6,7 +6,9 @@ authors = ["cosct"]
 license = "MIT"
 repository = ""
 edition = "2021"
-rust-version = "1.77.2"
+# Driven by specta 2.0.0-rc.25 (needs Rust 1.93 for `debug_closure_helpers`);
+# pdf-core without the `specta` feature builds on 1.88.
+rust-version = "1.93"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
