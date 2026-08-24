@@ -10,6 +10,7 @@ import {
   saveUserPresetProfile,
 } from '../config/presets'
 import type { AnalysisSummary, CompressionPreset, CompressionSettings } from '../types/pdf'
+import { normalizeSettings } from '../composables/usePdfCompressor'
 import {
   calculateMaxImageSizePx,
   clampImageQuality,
@@ -26,12 +27,14 @@ const props = withDefaults(
     settings: CompressionSettings
     disabled: boolean
     canApplyToAll?: boolean
+    applyToAllHint?: string | null
     recommendedPreset: CompressionPreset | null | undefined
     analysis?: AnalysisSummary | null
   }>(),
   {
     analysis: null,
     canApplyToAll: false,
+    applyToAllHint: null,
   },
 )
 
@@ -39,27 +42,26 @@ const emit = defineEmits<{
   'update:settings': [value: CompressionSettings]
   'apply-settings-to-all': []
   'preset-config-error': [error: unknown]
+  'preset-config-saved': []
 }>()
 
 const { t } = useI18n()
 
-function normalizeSettings(settings: CompressionSettings): CompressionSettings {
-  const resolvedReferenceMaxImageEdgePx =
-    normalizeReferenceMaxImageEdgePx(settings.referenceMaxImageEdgePx) ??
-    normalizeReferenceMaxImageEdgePx(props.analysis?.maxImageEdgePx)
-
-  return {
+/** Normalize with the analysis' reference edge as fallback (panel context). */
+function normalizeWithAnalysis(settings: CompressionSettings): CompressionSettings {
+  return normalizeSettings({
     ...settings,
-    imageQuality: clampImageQuality(settings.imageQuality),
-    maxImageSizePercent: clampMaxImageSizePercent(settings.maxImageSizePercent),
-    referenceMaxImageEdgePx: resolvedReferenceMaxImageEdgePx,
-  }
+    referenceMaxImageEdgePx:
+      normalizeReferenceMaxImageEdgePx(settings.referenceMaxImageEdgePx) ??
+      normalizeReferenceMaxImageEdgePx(props.analysis?.maxImageEdgePx),
+  })
 }
 
 const defaultPresetProfiles = getDefaultPresetProfiles()
 const presetProfiles = ref(getDefaultPresetProfiles())
 const hasCustomPresets = ref(false)
 const presetConfigBusy = ref(false)
+const targetSizeInvalid = ref(false)
 const maxImageEdgePx = computed(() => props.analysis?.maxImageEdgePx ?? 0)
 const hasAnalysisResult = computed(() => maxImageEdgePx.value > 0)
 const displayMaxImageSizePx = computed(() =>
@@ -120,6 +122,7 @@ async function saveCurrentAsPreset() {
       maxImageSizePercent: percent,
     })
     await refreshPresetProfiles()
+    emit('preset-config-saved')
   } catch (error) {
     emit('preset-config-error', error)
   } finally {
@@ -141,7 +144,7 @@ async function resetToDefaults() {
     presetProfiles.value = defaults
     hasCustomPresets.value = false
 
-    emit('update:settings', normalizeSettings({
+    emit('update:settings', normalizeWithAnalysis({
       ...props.settings,
       preset: nextPreset,
       imageQuality: defaults[nextPreset].imageQuality,
@@ -173,7 +176,7 @@ function applyLocalPresetPercent(preset: CompressionPreset, percent: number) {
 
 function selectPreset(value: CompressionPreset) {
   const defaults = presetProfiles.value[value]
-  emit('update:settings', normalizeSettings({
+  emit('update:settings', normalizeWithAnalysis({
     ...props.settings,
     preset: value,
     imageQuality: defaults.imageQuality,
@@ -184,25 +187,40 @@ function selectPreset(value: CompressionPreset) {
 function updateMaxImageSizePercent(percent: number) {
   const normalizedPercent = clampMaxImageSizePercent(percent)
   applyLocalPresetPercent(props.settings.preset, normalizedPercent)
-  emit('update:settings', normalizeSettings({
+  emit('update:settings', normalizeWithAnalysis({
     ...props.settings,
     maxImageSizePercent: normalizedPercent,
   }))
 }
 
 function updateSetting<K extends keyof CompressionSettings>(key: K, value: CompressionSettings[K]) {
-  emit('update:settings', normalizeSettings({ ...props.settings, [key]: value }))
+  emit('update:settings', normalizeWithAnalysis({ ...props.settings, [key]: value }))
 }
 
 function updateTargetSizeMb(raw: string) {
   const trimmed = raw.trim()
   if (!trimmed) {
+    targetSizeInvalid.value = false
     updateSetting('targetFileSizeMb', null)
     return
   }
 
   const parsed = Number(trimmed)
-  updateSetting('targetFileSizeMb', Number.isFinite(parsed) && parsed > 0 ? parsed : null)
+  if (Number.isFinite(parsed) && parsed > 0) {
+    targetSizeInvalid.value = false
+    updateSetting('targetFileSizeMb', parsed)
+    return
+  }
+
+  // Reject with visible feedback instead of silently switching to "Off".
+  targetSizeInvalid.value = true
+  updateSetting('targetFileSizeMb', null)
+}
+
+function handleTargetSizeInput(raw: string) {
+  if (targetSizeInvalid.value && raw.trim()) {
+    targetSizeInvalid.value = false
+  }
 }
 
 function handlePresetKeydown(event: KeyboardEvent, index: number) {
@@ -281,7 +299,13 @@ function presetSnapshotLabel(preset: CompressionPreset): string {
         >
           {{ t('settings.resetPresets') }}
         </button>
-        <button class="fd-button fd-button--subtle" type="button" :disabled="!props.canApplyToAll" @click="emit('apply-settings-to-all')">
+        <button
+          class="fd-button fd-button--subtle"
+          type="button"
+          :disabled="!props.canApplyToAll"
+          :title="props.canApplyToAll ? undefined : (props.applyToAllHint ?? undefined)"
+          @click="emit('apply-settings-to-all')"
+        >
           {{ t('settings.applyToAll') }}
         </button>
       </div>
@@ -320,7 +344,10 @@ function presetSnapshotLabel(preset: CompressionPreset): string {
     </div>
 
     <details class="advanced-panel" open>
-      <summary>
+      <summary
+        :class="{ 'advanced-panel__summary-lock': props.disabled }"
+        @click="props.disabled ? $event.preventDefault() : undefined"
+      >
         <span class="advanced-panel__summary">
           <strong>{{ t('settings.advancedToggle') }}</strong>
         </span>
@@ -384,6 +411,7 @@ function presetSnapshotLabel(preset: CompressionPreset): string {
             </span>
             <input
               class="target-size-input"
+              :class="{ 'target-size-input--invalid': targetSizeInvalid }"
               type="number"
               :min="0.1"
               :max="2048"
@@ -391,10 +419,15 @@ function presetSnapshotLabel(preset: CompressionPreset): string {
               inputmode="decimal"
               :placeholder="t('settings.targetSizeHint')"
               :value="props.settings.targetFileSizeMb ?? ''"
+              :aria-invalid="targetSizeInvalid ? 'true' : undefined"
               :disabled="props.disabled"
+              @input="handleTargetSizeInput(($event.target as HTMLInputElement).value)"
               @change="updateTargetSizeMb(($event.target as HTMLInputElement).value)"
             />
           </label>
+          <p v-if="targetSizeInvalid" class="target-size-warning" role="alert">
+            {{ t('settings.targetSizeInvalid') }}
+          </p>
         </div>
 
         <div class="toggle-list">
@@ -457,23 +490,9 @@ function presetSnapshotLabel(preset: CompressionPreset): string {
   gap: var(--fd-space-8);
 }
 
-.panel-header {
-  display: flex;
-  align-items: center;
-  gap: var(--fd-space-8);
-}
-
-.panel-header__icon {
-  flex-shrink: 0;
-}
-
 .panel-header__copy {
   display: flex;
   flex-direction: column;
-}
-
-.panel-header h2 {
-  font: var(--fd-text-section);
 }
 
 .preset-actions {
@@ -617,6 +636,14 @@ function presetSnapshotLabel(preset: CompressionPreset): string {
   background: var(--fd-subtle-bg-hover);
 }
 
+.advanced-panel__summary-lock {
+  cursor: not-allowed;
+}
+
+.advanced-panel__summary-lock:hover {
+  background: transparent;
+}
+
 .advanced-panel summary::-webkit-details-marker {
   display: none;
 }
@@ -735,6 +762,22 @@ input[type='range']:disabled {
 .target-size-input:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+.target-size-input--invalid {
+  border-color: var(--fd-danger-border);
+}
+
+.target-size-input--invalid:focus {
+  outline: none;
+  border-color: var(--fd-danger);
+}
+
+.target-size-warning {
+  margin: 0;
+  padding: 0 12px;
+  color: var(--fd-danger);
+  font: var(--fd-text-caption);
 }
 
 .toggle-list {

@@ -70,6 +70,11 @@ export const i18n = createI18n({
 
 applyDocumentLocale(i18n.global.locale.value)
 
+/** Translate outside components (composables/modules without a useI18n scope). */
+export function translate(key: string, values?: Record<string, unknown>): string {
+  return values ? i18n.global.t(key, values) : i18n.global.t(key)
+}
+
 export function setAppLocale(locale: AppLocale) {
   i18n.global.locale.value = locale
   applyDocumentLocale(locale)

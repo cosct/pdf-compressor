@@ -7,7 +7,7 @@
  * `cd src-tauri && cargo test export_bindings`).
  * 命令类型与调用封装由 tauri-specta 从 Rust 源码生成。
  */
-import { Channel, invoke } from '@tauri-apps/api/core'
+import { Channel, invoke, isTauri } from '@tauri-apps/api/core'
 
 import type {
   AnalysisResponse as AnalysisResponseWire,
@@ -22,8 +22,12 @@ import { calculateMaxImageSizePx } from '../utils/compressionSettings'
 
 export type { AnalysisResponse, CompressionResponse } from './bindings'
 
+/**
+ * True only inside a Tauri webview. `invoke` is a plain bundled function, so
+ * checking its type would report native availability in a plain browser too.
+ */
 export function hasNativeCommands(): boolean {
-  return typeof invoke === 'function'
+  return isTauri()
 }
 
 /** Unwrap a tauri-specta Result-style payload, rethrowing the error payload. */
@@ -126,6 +130,18 @@ export async function cancelCompression(taskId: string): Promise<void> {
   }
 
   await unwrap(commands.cancelCompression(taskId))
+}
+
+/**
+ * Filter paths down to those still present on disk — used to pre-check a
+ * restored session queue so missing files are skipped up front.
+ */
+export async function existingPaths(paths: string[]): Promise<string[]> {
+  if (!hasNativeCommands()) {
+    return paths
+  }
+
+  return unwrap(commands.existingPaths(paths))
 }
 
 // ---------------------------------------------------------------------------

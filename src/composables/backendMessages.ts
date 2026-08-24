@@ -12,7 +12,7 @@ import type {
   BackendNotice,
   CompressionResponse,
 } from '../lib/bindings'
-import { i18n } from '../i18n'
+import { i18n, translate } from '../i18n'
 import type {
   AnalysisSummary,
   BackendMessage,
@@ -21,10 +21,6 @@ import type {
   NoticeTone,
 } from '../types/pdf'
 import { fileNameFromPath } from '../utils/format'
-
-function translate(key: string, values?: Record<string, unknown>): string {
-  return values ? i18n.global.t(key, values) : i18n.global.t(key)
-}
 
 function formatTemplate(template: string, values: Record<string, string>): string {
   return template.replace(/\{(\w+)\}/g, (_, key: string) => values[key] ?? `{${key}}`)

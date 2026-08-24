@@ -298,33 +298,6 @@ dd {
   color: var(--fd-danger);
 }
 
-.fd-input,
-.fd-select {
-  width: 100%;
-  min-height: var(--fd-control-height-md);
-  padding: 0 11px;
-  border: 1px solid var(--fd-control-stroke);
-  border-radius: 12px;
-  background: var(--fd-control-bg);
-  color: var(--fd-text-primary);
-  transition:
-    border-color var(--fd-duration-fast) var(--fd-easing-standard),
-    background-color var(--fd-duration-fast) var(--fd-easing-standard),
-    box-shadow var(--fd-duration-fast) var(--fd-easing-standard);
-}
-
-.fd-input:hover,
-.fd-select:hover {
-  background: var(--fd-control-bg-hover);
-}
-
-.fd-input:focus,
-.fd-select:focus {
-  outline: none;
-  border-color: var(--fd-accent);
-  box-shadow: var(--fd-shadow-focus);
-}
-
 .fd-button {
   display: inline-flex;
   align-items: center;
@@ -406,11 +379,6 @@ dd {
   border-color: var(--fd-warning-border);
 }
 
-.fd-infobar--danger {
-  background: var(--fd-danger-subtle);
-  border-color: var(--fd-danger-border);
-}
-
 .fd-progress {
   width: 100%;
   height: 4px;
@@ -425,6 +393,21 @@ dd {
   border-radius: inherit;
   background: linear-gradient(90deg, var(--fd-accent), var(--fd-accent-hover));
   transition: width var(--fd-duration-normal) var(--fd-easing-standard);
+}
+
+/* Shared panel header base — panels extend it with their own extras. */
+.panel-header {
+  display: flex;
+  align-items: center;
+  gap: var(--fd-space-8);
+}
+
+.panel-header__icon {
+  flex-shrink: 0;
+}
+
+.panel-header h2 {
+  font: var(--fd-text-section);
 }
 
 .fd-toggle {

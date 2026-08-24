@@ -25,7 +25,7 @@ export function clampMaxImageSizePercent(value: number): number {
   return Math.max(MIN_IMAGE_SIZE_PERCENT, Math.min(MAX_IMAGE_SIZE_PERCENT, Math.round(value)))
 }
 
-export function clampMaxImageSizePx(value: number): number {
+function clampMaxImageSizePx(value: number): number {
   return Math.max(MIN_IMAGE_SIZE_PX, Math.min(MAX_IMAGE_SIZE_PX, Math.round(value / 100) * 100))
 }
 

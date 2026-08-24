@@ -15,6 +15,7 @@ vi.mock('../../lib/tauri', () => ({
   analyzePdf: vi.fn(),
   compressPdf: vi.fn(),
   cancelCompression: vi.fn().mockResolvedValue(undefined),
+  existingPaths: vi.fn().mockResolvedValue([]),
   openDirectoryDialog: vi.fn(),
   openPath: vi.fn(),
   openPdfDialog: vi.fn(),
@@ -197,6 +198,43 @@ describe('compressCurrentPdf', () => {
 
     expect(composable.jobs.value[0].status).toBe('error')
     expect(composable.errorToasts.value).toHaveLength(1)
+  })
+
+  it('surfaces warning-level result notes as toasts', async () => {
+    const composable = await readyQueue(['/tmp/a.pdf'])
+    mockedCompress.mockResolvedValue(
+      compressionResponse({
+        notices: [
+          {
+            code: 'compress.warning.targetSizeMissed',
+            level: 'warning',
+            values: { targetKb: '512' },
+            fallback: 'Could not reach the 512 KB target.',
+          },
+        ],
+      }),
+    )
+
+    await composable.compressCurrentPdf()
+
+    expect(composable.jobs.value[0].status).toBe('success')
+    expect(composable.errorToasts.value.some((toast) => toast.tone === 'warning')).toBe(true)
+  })
+})
+
+describe('compressSelectedPdf', () => {
+  it('compresses only the selected job while others stay pending', async () => {
+    const composable = await readyQueue(['/tmp/a.pdf', '/tmp/b.pdf'])
+    composable.selectJob(composable.jobs.value[1].id)
+    mockedCompress.mockImplementation((path: string) =>
+      Promise.resolve(compressionResponse({ outputPath: `/tmp/out-${path}` })),
+    )
+
+    await composable.compressSelectedPdf()
+
+    expect(mockedCompress).toHaveBeenCalledTimes(1)
+    expect(composable.jobs.value[0].status).toBe('ready')
+    expect(composable.jobs.value[1].status).toBe('success')
   })
 })
 

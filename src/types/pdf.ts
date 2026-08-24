@@ -114,5 +114,4 @@ export interface PdfQueueJob {
   recommendedSettings: CompressionSettings
   useRecommendedSettings: boolean
   error: NoticeItem | null
-  lastAction: 'analyze' | 'compress' | null
 }

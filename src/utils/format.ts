@@ -38,3 +38,27 @@ export function fileNameFromPath(path: string): string {
   const segments = path.split(/[/\\]/)
   return segments[segments.length - 1] || path
 }
+
+export function isPdfPath(path: string): boolean {
+  return path.trim().toLowerCase().endsWith('.pdf')
+}
+
+/** Compact duration for result reports: `830 ms`, `4.2 s`, `2 min 05 s`. */
+export function formatDuration(ms?: number): string {
+  if (ms === undefined || ms === null || !Number.isFinite(ms) || ms < 0) {
+    return '--'
+  }
+
+  if (ms < 1_000) {
+    return `${Math.round(ms)} ms`
+  }
+
+  const totalSeconds = ms / 1_000
+  if (totalSeconds < 60) {
+    return `${totalSeconds.toFixed(1)} s`
+  }
+
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = Math.round(totalSeconds % 60)
+  return `${minutes} min ${String(seconds).padStart(2, '0')} s`
+}

@@ -7,9 +7,11 @@ import AppHeader from './components/AppHeader.vue'
 import CompressionSettingsPanel from './components/CompressionSettingsPanel.vue'
 import ErrorToastViewport from './components/ErrorToastViewport.vue'
 import PdfUploadPanel from './components/PdfUploadPanel.vue'
+import { createNotice } from './composables/backendMessages'
 import { usePdfCompressor } from './composables/usePdfCompressor'
 import { appLocales, setAppLocale, type AppLocale } from './i18n'
 import { listenForOpenPdf } from './lib/tauri'
+import type { NoticeItem } from './types/pdf'
 import { formatBytes, formatPercent } from './utils/format'
 
 const {
@@ -26,6 +28,8 @@ const {
   workflowState,
   canCompress,
   canCancelCompression,
+  pendingQueueCount,
+  pushErrorToast,
   updateSettings,
   applySettingsToAll,
   browseForPdf,
@@ -33,6 +37,7 @@ const {
   selectJob,
   removeJobById,
   compressCurrentPdf,
+  compressSelectedPdf,
   cancelCompressionRun,
   selectOutputDir,
   openCompressedFile,
@@ -52,9 +57,41 @@ const completedQueueCount = computed(() => jobs.value.filter((job) => job.status
 const canApplySettingsToAll = computed(
   () => Boolean(selectedJobId.value) && activeQueueCount.value > 1 && !compressionLoading.value,
 )
+const applyToAllHint = computed(() =>
+  compressionLoading.value
+    ? t('upload.lockedHint')
+    : activeQueueCount.value <= 1
+      ? t('settings.applyToAllHintSingle')
+      : null,
+)
 const selectedJobProgressPercent = computed(
   () => jobs.value.find((job) => job.id === selectedJobId.value)?.progress.percent ?? 0,
 )
+const primaryActionLabel = computed(() =>
+  pendingQueueCount.value > 1
+    ? t('activity.startCompressionAll', { count: pendingQueueCount.value })
+    : t('activity.startCompression'),
+)
+// The queue-scope button compresses everything pending; when several files
+// are pending and the selection itself is pending, offer the single-file
+// scope as a secondary action.
+const selectedJobIsPending = computed(() => {
+  const job = jobs.value.find((item) => item.id === selectedJobId.value)
+  return Boolean(job && job.status !== 'compressing' && job.status !== 'success')
+})
+const secondaryActionLabel = computed(() =>
+  pendingQueueCount.value > 1 && selectedJobIsPending.value && !compressionLoading.value
+    ? t('activity.compressSelected')
+    : null,
+)
+// Backend notes for the selected job (analysis hints + compression report).
+const selectedJobNotes = computed<NoticeItem[]>(() => {
+  const job = jobs.value.find((item) => item.id === selectedJobId.value)
+  if (!job) {
+    return []
+  }
+  return [...(job.analysis?.notes ?? []), ...(job.result?.notes ?? [])]
+})
 
 function formatSizeChange(original?: number, compressed?: number): string {
   const from = formatBytes(original)
@@ -62,7 +99,7 @@ function formatSizeChange(original?: number, compressed?: number): string {
   if (from === '--' || to === '--') {
     return ''
   }
-  return `${from} -> ${to}`
+  return `${from} → ${to}`
 }
 
 const queueItems = computed(() =>
@@ -90,7 +127,7 @@ const queueItems = computed(() =>
             : t(`queue.detail.${job.status}`),
         meta: [
           sizeMeta,
-          job.analysis?.pageCount ? `${job.analysis.pageCount} ${t('queue.pages')}` : '',
+          job.analysis?.pageCount ? t('queue.pageCount', { count: job.analysis.pageCount }, job.analysis.pageCount) : '',
           job.result ? formatPercent(job.result.savingsPercent) : '',
         ].filter(Boolean),
         progressPercent: job.progress.percent,
@@ -102,6 +139,17 @@ const queueItems = computed(() =>
 
 function updateLocale(nextLocale: AppLocale) {
   setAppLocale(nextLocale)
+}
+
+function handlePresetSaved() {
+  pushErrorToast(
+    createNotice(
+      'preset:saved',
+      'success',
+      t('settings.presetSavedTitle'),
+      t('settings.presetSavedBody'),
+    ),
+  )
 }
 
 // PDFs handed to an already-running instance ("Open with…") join the queue.
@@ -163,11 +211,13 @@ onBeforeUnmount(() => {
               :settings="settings"
               :disabled="compressionLoading"
               :can-apply-to-all="canApplySettingsToAll"
+              :apply-to-all-hint="applyToAllHint"
               :recommended-preset="recommendedPreset"
               :analysis="analysis"
               @update:settings="updateSettings"
               @apply-settings-to-all="applySettingsToAll"
               @preset-config-error="reportError"
+              @preset-config-saved="handlePresetSaved"
             />
           </div>
 
@@ -179,16 +229,20 @@ onBeforeUnmount(() => {
               :recommended-preset="recommendedPreset"
               :analysis="analysis"
               :result="result"
-              :primary-action-label="t('activity.startCompression')"
+              :primary-action-label="primaryActionLabel"
               :primary-action-disabled="!canCompress"
+              :secondary-action-label="secondaryActionLabel"
               :can-cancel="canCancelCompression"
               :queue-count="activeQueueCount"
+              :pending-count="pendingQueueCount"
               :completed-count="completedQueueCount"
               :progress-percent="selectedJobProgressPercent"
+              :notes="selectedJobNotes"
               :output-dir="settings.outputDir"
               :native-available="nativeAvailable"
               :queue-locked="compressionLoading"
               @primary-action="compressCurrentPdf"
+              @secondary-action="compressSelectedPdf"
               @cancel-action="cancelCompressionRun"
               @select-output-dir="selectOutputDir"
             />
@@ -252,7 +306,9 @@ onBeforeUnmount(() => {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--fd-space-12);
   padding: var(--fd-space-14);
-  height: clamp(304px, 36vh, 352px);
+  /* Fixed per user preference; the advanced settings section scrolls
+     internally if its content exceeds this height. */
+  height: 380px;
   min-height: 0;
   overflow: hidden;
 }

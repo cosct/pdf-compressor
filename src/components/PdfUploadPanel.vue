@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n'
 
 import { listenForNativePdfDrop, type NativePdfDropEvent } from '../lib/tauri'
 import type { QueueItemStatus } from '../types/pdf'
+import { isPdfPath } from '../utils/format'
 
 type FileWithPath = File & {
   path?: string
@@ -45,8 +46,14 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 
-const dragActive = ref(false)
+// Two drop sources write the same highlight: Tauri native events and the
+// HTML5 fallback. The HTML5 path tracks depth so dragging across child
+// elements does not flicker the highlight on every dragleave.
+const nativeDragActive = ref(false)
+let html5DragDepth = 0
+const dragActive = computed(() => nativeDragActive.value || html5DragDepth > 0)
 const dropFeedback = ref('')
+let dropFeedbackTimer: ReturnType<typeof setTimeout> | null = null
 const contextMenu = ref<{ x: number; y: number; itemId: string } | null>(null)
 const contextMenuRef = ref<HTMLElement | null>(null)
 let contextMenuTrigger: HTMLElement | null = null
@@ -60,8 +67,17 @@ const dropHintCopy = computed(() =>
   props.items.length ? t('upload.dropHintReady') : t('upload.dropHint'),
 )
 
-function isPdfPath(path: string): boolean {
-  return path.trim().toLowerCase().endsWith('.pdf')
+function showDropFeedback(message: string) {
+  dropFeedback.value = message
+  if (dropFeedbackTimer) {
+    clearTimeout(dropFeedbackTimer)
+  }
+  // Warnings should not linger forever — auto-clear so stale hints (e.g. a
+  // rejected drop) do not sit next to a healthy queue.
+  dropFeedbackTimer = setTimeout(() => {
+    dropFeedback.value = ''
+    dropFeedbackTimer = null
+  }, 6000)
 }
 
 function normalizeDroppedValue(rawValue: string): string {
@@ -81,14 +97,14 @@ function normalizeDroppedValue(rawValue: string): string {
 
 function applyDroppedPaths(paths: string[]) {
   if (props.queueLocked) {
-    dropFeedback.value = t('upload.lockedHint')
+    showDropFeedback(t('upload.lockedHint'))
     return
   }
 
   const pdfPaths = paths.filter((path) => isPdfPath(path))
 
   if (!pdfPaths.length) {
-    dropFeedback.value = t('intake.invalidDrop')
+    showDropFeedback(t('intake.invalidDrop'))
     return
   }
 
@@ -131,28 +147,28 @@ function handleNativeDropEvent(event: NativePdfDropEvent) {
   switch (event.type) {
     case 'enter':
     case 'over':
-      dragActive.value = true
+      nativeDragActive.value = true
       break
     case 'leave':
-      dragActive.value = false
+      nativeDragActive.value = false
       break
     case 'drop':
-      dragActive.value = false
+      nativeDragActive.value = false
       applyDroppedPaths(event.paths)
       break
   }
 }
 
-function handleDragOver() {
-  dragActive.value = true
+function handleDragEnter() {
+  html5DragDepth += 1
 }
 
 function handleDragLeave() {
-  dragActive.value = false
+  html5DragDepth = Math.max(0, html5DragDepth - 1)
 }
 
 function handleDrop(event: DragEvent) {
-  dragActive.value = false
+  html5DragDepth = 0
   applyDroppedPaths(readDroppedPaths(event))
 }
 
@@ -185,6 +201,16 @@ function openContextMenu(item: QueueVisualItem, x: number, y: number, trigger: H
   contextMenuTrigger = trigger
   contextMenu.value = { x, y, itemId: item.id }
   void nextTick(() => {
+    // Clamp the fixed-position menu into the viewport so edge-triggered
+    // right-clicks do not overflow past the window edge.
+    const menuEl = contextMenuRef.value
+    if (menuEl && contextMenu.value) {
+      const rect = menuEl.getBoundingClientRect()
+      const clampedX = Math.max(8, Math.min(contextMenu.value.x, window.innerWidth - rect.width - 8))
+      const clampedY = Math.max(8, Math.min(contextMenu.value.y, window.innerHeight - rect.height - 8))
+      contextMenu.value = { ...contextMenu.value, x: clampedX, y: clampedY }
+    }
+
     contextMenuRef.value
       ?.querySelector<HTMLElement>('[role="menuitem"]')
       ?.focus()
@@ -300,6 +326,9 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   stopListening?.()
+  if (dropFeedbackTimer) {
+    clearTimeout(dropFeedbackTimer)
+  }
   window.removeEventListener('click', closeContextMenu)
   window.removeEventListener('blur', closeContextMenu)
   window.removeEventListener('keydown', handleGlobalKeydown)
@@ -312,8 +341,8 @@ onBeforeUnmount(() => {
   <section
     class="upload-panel fd-card"
     :class="{ 'upload-panel--active': dragActive }"
-    @dragenter.prevent="handleDragOver"
-    @dragover.prevent="handleDragOver"
+    @dragenter.prevent="handleDragEnter"
+    @dragover.prevent
     @dragleave.prevent="handleDragLeave"
     @drop.prevent="handleDrop"
   >
@@ -325,7 +354,7 @@ onBeforeUnmount(() => {
         <h2>{{ t('upload.eyebrow') }}</h2>
       </div>
       <div class="panel-header__right">
-        <span v-if="props.items.length" class="fd-badge">{{ t('queue.count', { count: props.items.length }) }}</span>
+        <span v-if="props.items.length" class="fd-badge">{{ t('queue.count', { count: props.items.length }, props.items.length) }}</span>
         <span v-if="props.queueLocked" class="fd-badge fd-badge--accent">{{ t('upload.lockedTag') }}</span>
       </div>
     </div>
@@ -365,8 +394,21 @@ onBeforeUnmount(() => {
 
       <div v-if="props.items.length" class="queue-shell" :class="{ 'queue-shell--active': dragActive }">
         <div class="queue-shell__header">
-          <strong>{{ t('upload.queueTitle') }}</strong>
-          <span>{{ t('upload.queueHint') }}</span>
+          <div class="queue-shell__heading">
+            <strong>{{ t('upload.queueTitle') }}</strong>
+            <span>{{ t('upload.queueHint') }}</span>
+          </div>
+          <button
+            class="fd-button fd-button--subtle queue-shell__add"
+            type="button"
+            :disabled="props.queueLocked"
+            @click.stop="emit('browse')"
+          >
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+              <path d="M6 2.5v7M2.5 6h7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+            </svg>
+            {{ t('upload.addMore') }}
+          </button>
         </div>
 
         <div class="queue-list">
@@ -419,6 +461,8 @@ onBeforeUnmount(() => {
               :aria-valuemin="0"
               :aria-valuemax="100"
               :aria-valuenow="Math.round(item.progressPercent)"
+              :aria-valuetext="`${Math.round(item.progressPercent)}%`"
+              :title="`${statusLabel(item.status)} · ${Math.round(item.progressPercent)}%`"
             >
               <span
                 class="fd-progress__bar"
@@ -466,8 +510,6 @@ onBeforeUnmount(() => {
 }
 
 .panel-header {
-  display: flex;
-  align-items: center;
   justify-content: space-between;
   gap: var(--fd-space-12);
 }
@@ -482,14 +524,6 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: var(--fd-space-8);
-}
-
-.panel-header__icon {
-  flex-shrink: 0;
-}
-
-.panel-header h2 {
-  font: var(--fd-text-section);
 }
 
 .upload-stage {
@@ -571,11 +605,6 @@ onBeforeUnmount(() => {
   gap: var(--fd-space-8);
 }
 
-.dropzone__support {
-  color: var(--fd-text-tertiary);
-  font: var(--fd-text-caption);
-}
-
 .queue-shell {
   display: flex;
   flex-direction: column;
@@ -602,20 +631,36 @@ onBeforeUnmount(() => {
 
 .queue-shell__header {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: var(--fd-space-12);
 }
 
-.queue-shell__header strong {
+.queue-shell__heading {
+  display: flex;
+  align-items: baseline;
+  gap: var(--fd-space-12);
+  min-width: 0;
+}
+
+.queue-shell__heading strong {
   font: var(--fd-text-section);
 }
 
-.queue-shell__header span {
+.queue-shell__heading span {
   color: var(--fd-text-tertiary);
   font: var(--fd-text-caption);
-  max-width: none;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.queue-shell__add {
+  flex-shrink: 0;
+  min-height: 26px;
+  padding: 0 8px;
+  border-radius: 12px;
+  font: var(--fd-text-caption);
 }
 
 .queue-list {
@@ -624,13 +669,8 @@ onBeforeUnmount(() => {
   gap: var(--fd-space-10);
   min-height: 0;
   overflow: auto;
-  padding-right: 0;
-  scrollbar-width: none;
-  -ms-overflow-style: none;
-}
-
-.queue-list::-webkit-scrollbar {
-  display: none;
+  padding-right: 2px;
+  scrollbar-width: thin;
 }
 
 .queue-item {
@@ -797,7 +837,13 @@ onBeforeUnmount(() => {
     align-items: flex-start;
   }
 
-  .queue-shell__header span {
+  .queue-shell__heading {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--fd-space-4);
+  }
+
+  .queue-shell__heading span {
     white-space: normal;
   }
 }

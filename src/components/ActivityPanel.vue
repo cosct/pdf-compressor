@@ -6,9 +6,10 @@ import type {
   AnalysisSummary,
   CompressionPreset,
   CompressionResult,
+  NoticeItem,
   WorkflowState,
 } from '../types/pdf'
-import { formatPercent } from '../utils/format'
+import { formatBytes, formatDuration, formatPercent } from '../utils/format'
 
 const props = withDefaults(
   defineProps<{
@@ -20,25 +21,31 @@ const props = withDefaults(
     result: CompressionResult | null
     primaryActionLabel: string
     primaryActionDisabled: boolean
+    secondaryActionLabel?: string | null
     canCancel: boolean
     queueCount: number
+    pendingCount: number
     completedCount: number
     progressPercent?: number
     outputDir?: string | null
     nativeAvailable?: boolean
     queueLocked?: boolean
+    notes?: NoticeItem[]
   }>(),
   {
     selectedPreset: null,
+    secondaryActionLabel: null,
     progressPercent: 0,
     outputDir: null,
     nativeAvailable: false,
     queueLocked: false,
+    notes: () => [],
   },
 )
 
 const emit = defineEmits<{
   'primary-action': []
+  'secondary-action': []
   'cancel-action': []
   'select-output-dir': []
 }>()
@@ -75,13 +82,51 @@ const metrics = computed(() => [
   },
   {
     label: t('activity.metricQueued'),
-    value: `${props.queueCount}`,
+    value: `${props.pendingCount}`,
   },
   {
     label: t('activity.metricCompleted'),
     value: `${props.completedCount}`,
   },
 ])
+
+const allDone = computed(
+  () => props.queueCount > 0 && props.pendingCount === 0 && props.completedCount > 0,
+)
+
+/**
+ * Compact result report: surfaces the compression stats the backend already
+ * returns (saved bytes, elapsed time, image/stream counters) that previously
+ * had no UI representation.
+ */
+const reportHighlights = computed<string[]>(() => {
+  const result = props.result
+  if (!result) {
+    return []
+  }
+
+  const chips: string[] = []
+  if ((result.savedBytes ?? 0) > 0) {
+    chips.push(
+      t('activity.report.savedValue', { size: formatBytes(result.savedBytes) }),
+    )
+  }
+  chips.push(t('activity.report.elapsedValue', { time: formatDuration(result.elapsedMs) }))
+
+  const recompressed = result.imagesRecompressed ?? 0
+  const skipped = result.imagesSkipped ?? 0
+  if (recompressed > 0 || skipped > 0) {
+    chips.push(t('activity.report.imagesValue', { recompressed, skipped }))
+  }
+  if ((result.imagesDeduplicated ?? 0) > 0) {
+    chips.push(t('activity.report.dedupValue', { count: result.imagesDeduplicated ?? 0 }))
+  }
+  if ((result.streamsCompressed ?? 0) > 0) {
+    chips.push(t('activity.report.streamsValue', { count: result.streamsCompressed ?? 0 }))
+  }
+
+  return chips
+})
 </script>
 
 <template>
@@ -132,12 +177,30 @@ const metrics = computed(() => [
           :aria-valuemin="0"
           :aria-valuemax="100"
           :aria-valuenow="Math.round(props.progressPercent ?? 0)"
+          :aria-valuetext="`${Math.round(props.progressPercent ?? 0)}%`"
         >
           <span
             class="fd-progress__bar"
             :style="{ width: `${Math.max(props.progressPercent ?? 0, props.workflowState === 'success' ? 100 : 2)}%` }"
           ></span>
         </div>
+
+        <ul v-if="props.notes.length" class="status-card__notes" aria-live="polite">
+          <li
+            v-for="note in props.notes"
+            :key="`${note.id}:${note.body}`"
+            class="status-card__note"
+            :class="`status-card__note--${note.tone}`"
+          >
+            {{ note.body }}
+          </li>
+        </ul>
+
+        <ul v-if="reportHighlights.length" class="status-card__report">
+          <li v-for="chip in reportHighlights" :key="chip" class="status-card__report-chip">
+            {{ chip }}
+          </li>
+        </ul>
       </div>
 
       <div class="output-dir">
@@ -150,6 +213,7 @@ const metrics = computed(() => [
             class="fd-button fd-button--subtle output-dir__btn"
             type="button"
             :disabled="props.queueLocked || !props.nativeAvailable"
+            :title="props.queueLocked ? t('activity.outputLocked') : props.nativeAvailable ? undefined : t('activity.outputDirDesktopOnly')"
             @click="emit('select-output-dir')"
           >
             {{ t('settings.outputDirBrowse') }}
@@ -168,7 +232,7 @@ const metrics = computed(() => [
             {{ t('activity.cancel') }}
           </button>
         </div>
-        <div v-else-if="props.queueCount > 0" class="action-single">
+        <div v-else-if="props.pendingCount > 0" class="action-single">
           <button
             class="fd-button fd-button--accent compress-btn"
             type="button"
@@ -180,6 +244,24 @@ const metrics = computed(() => [
             </svg>
             {{ props.primaryActionLabel }}
           </button>
+          <button
+            v-if="props.secondaryActionLabel"
+            class="fd-button fd-button--subtle compress-secondary"
+            type="button"
+            :disabled="props.primaryActionDisabled"
+            @click="emit('secondary-action')"
+          >
+            {{ props.secondaryActionLabel }}
+          </button>
+        </div>
+        <div v-else-if="allDone" class="action-single">
+          <div class="action-done">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.4"/>
+              <path d="M5.2 8.2 7.1 10l3.7-4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <span>{{ t('activity.allDone') }}</span>
+          </div>
         </div>
         <div v-else class="action-empty">
           {{ t('activity.noSourcePlaceholder') }}
@@ -212,20 +294,6 @@ const metrics = computed(() => [
   align-items: center;
   justify-content: space-between;
   gap: var(--fd-space-10);
-}
-
-.panel-header {
-  display: flex;
-  align-items: center;
-  gap: var(--fd-space-8);
-}
-
-.panel-header__icon {
-  flex-shrink: 0;
-}
-
-.panel-header h2 {
-  font: var(--fd-text-section);
 }
 
 .activity-grid {
@@ -298,6 +366,61 @@ const metrics = computed(() => [
   word-break: break-word;
 }
 
+.status-card__notes {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 88px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.status-card__note {
+  padding-left: 14px;
+  border-left: 2px solid var(--fd-stroke-card);
+  color: var(--fd-text-secondary);
+  font: var(--fd-text-caption);
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.status-card__note--warning {
+  border-left-color: var(--fd-warning-border);
+  color: var(--fd-warning);
+}
+
+.status-card__note--danger {
+  border-left-color: var(--fd-danger-border);
+  color: var(--fd-danger);
+}
+
+.status-card__note--success {
+  border-left-color: var(--fd-success-border);
+}
+
+.status-card__report {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.status-card__report-chip {
+  padding: 2px 8px;
+  border: 1px solid var(--fd-stroke-card);
+  border-radius: var(--fd-radius-full);
+  background: color-mix(in srgb, var(--fd-layer-1) 82%, transparent);
+  color: var(--fd-text-secondary);
+  font: var(--fd-text-caption);
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
 .status-card__file .fd-badge {
   max-width: 100%;
 }
@@ -358,9 +481,21 @@ const metrics = computed(() => [
 .action-single {
   display: flex;
   flex: 1;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: var(--fd-space-8);
   min-height: 0;
+}
+
+.compress-secondary {
+  width: min(100%, 220px);
+  min-height: 34px;
+  padding: 0 10px;
+  border-radius: 12px;
+  font: var(--fd-text-caption);
+  white-space: normal;
+  text-align: center;
 }
 
 .action-empty {
@@ -373,6 +508,22 @@ const metrics = computed(() => [
   border: 1px dashed var(--fd-stroke-card);
   border-radius: 16px;
   color: var(--fd-text-tertiary);
+  font: var(--fd-text-body-strong);
+  text-align: center;
+}
+
+.action-done {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--fd-space-6);
+  width: min(100%, 220px);
+  min-height: 46px;
+  padding: 0 12px;
+  border: 1px solid var(--fd-success-border);
+  border-radius: 14px;
+  background: var(--fd-success-subtle);
+  color: var(--fd-success);
   font: var(--fd-text-body-strong);
   text-align: center;
 }

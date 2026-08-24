@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import type { AppLocale } from '../i18n'
@@ -29,6 +29,25 @@ const { themePreference, setTheme } = useTheme()
 const windowMaximized = ref(false)
 const openPicker = ref<'theme' | 'locale' | null>(null)
 const headerRoot = ref<HTMLElement | null>(null)
+const themeTriggerRef = ref<HTMLButtonElement | null>(null)
+const localeTriggerRef = ref<HTMLButtonElement | null>(null)
+const themeMenuRef = ref<HTMLElement | null>(null)
+const localeMenuRef = ref<HTMLElement | null>(null)
+let lastTitlebarMouseDownAt = 0
+
+const activeMenuRef = computed(() => {
+  if (openPicker.value === 'theme') {
+    return themeMenuRef.value
+  }
+  return openPicker.value === 'locale' ? localeMenuRef.value : null
+})
+
+const activeTriggerRef = computed(() => {
+  if (openPicker.value === 'theme') {
+    return themeTriggerRef.value
+  }
+  return openPicker.value === 'locale' ? localeTriggerRef.value : null
+})
 
 const localeOptions = computed(() =>
   props.locales.map((locale) => ({
@@ -89,15 +108,76 @@ function handleTitlebarMouseDown(event: MouseEvent) {
     return
   }
 
+  // Second press of a double-click: skip dragging so the dblclick handler
+  // can maximize without fighting a native drag loop.
+  const now = Date.now()
+  if (now - lastTitlebarMouseDownAt < 400) {
+    lastTitlebarMouseDownAt = 0
+    return
+  }
+  lastTitlebarMouseDownAt = now
+
   void startDraggingAppWindow()
 }
 
 function togglePicker(name: 'theme' | 'locale') {
-  openPicker.value = openPicker.value === name ? null : name
+  if (openPicker.value === name) {
+    closePickers()
+    return
+  }
+
+  openPicker.value = name
+  void nextTick(() => {
+    // WAI-ARIA menu pattern: move focus into the menu on open.
+    activeMenuRef.value
+      ?.querySelector<HTMLElement>('[role="menuitemradio"]')
+      ?.focus()
+  })
 }
 
 function closePickers() {
+  // If focus sits inside the menu, hand it back to the trigger button.
+  const menuEl = activeMenuRef.value
+  if (menuEl && document.activeElement && menuEl.contains(document.activeElement)) {
+    activeTriggerRef.value?.focus()
+  }
+
   openPicker.value = null
+}
+
+function handleMenuKeydown(event: KeyboardEvent) {
+  const items = Array.from(
+    activeMenuRef.value?.querySelectorAll<HTMLElement>('[role="menuitemradio"]') ?? [],
+  )
+  if (!items.length) {
+    return
+  }
+
+  const currentIndex = items.indexOf(document.activeElement as HTMLElement)
+  let nextIndex: number | null = null
+
+  switch (event.key) {
+    case 'ArrowDown':
+      nextIndex = (currentIndex + 1 + items.length) % items.length
+      break
+    case 'ArrowUp':
+      nextIndex = (currentIndex - 1 + items.length) % items.length
+      break
+    case 'Home':
+      nextIndex = 0
+      break
+    case 'End':
+      nextIndex = items.length - 1
+      break
+    case 'Tab':
+      closePickers()
+      return
+    default:
+      return
+  }
+
+  event.preventDefault()
+  items[nextIndex]?.focus()
 }
 
 function chooseTheme(value: Theme) {
@@ -168,6 +248,7 @@ onBeforeUnmount(() => {
         <div class="titlebar__prefs">
           <div class="picker picker--theme" :class="{ 'picker--open': openPicker === 'theme' }">
             <button
+              ref="themeTriggerRef"
               class="picker__trigger"
               type="button"
               :aria-expanded="openPicker === 'theme' ? 'true' : 'false'"
@@ -184,7 +265,14 @@ onBeforeUnmount(() => {
             </button>
 
             <transition name="picker-menu">
-              <div v-if="openPicker === 'theme'" class="picker__menu" role="menu" :aria-label="t('theme.label')">
+              <div
+                v-if="openPicker === 'theme'"
+                ref="themeMenuRef"
+                class="picker__menu"
+                role="menu"
+                :aria-label="t('theme.label')"
+                @keydown="handleMenuKeydown"
+              >
                 <button
                   v-for="option in themeOptions"
                   :key="option.value"
@@ -214,6 +302,7 @@ onBeforeUnmount(() => {
 
           <div class="picker picker--locale" :class="{ 'picker--open': openPicker === 'locale' }">
             <button
+              ref="localeTriggerRef"
               class="picker__trigger"
               type="button"
               :aria-expanded="openPicker === 'locale' ? 'true' : 'false'"
@@ -229,7 +318,14 @@ onBeforeUnmount(() => {
             </button>
 
             <transition name="picker-menu">
-              <div v-if="openPicker === 'locale'" class="picker__menu" role="menu" :aria-label="t('locale.label')">
+              <div
+                v-if="openPicker === 'locale'"
+                ref="localeMenuRef"
+                class="picker__menu"
+                role="menu"
+                :aria-label="t('locale.label')"
+                @keydown="handleMenuKeydown"
+              >
                 <button
                   v-for="option in localeOptions"
                   :key="option.value"

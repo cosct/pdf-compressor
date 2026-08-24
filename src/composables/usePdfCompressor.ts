@@ -11,11 +11,12 @@
 import { computed, ref, watch } from 'vue'
 
 import { getPresetDefaults } from '../config/presets'
-import { i18n } from '../i18n'
+import { translate } from '../i18n'
 import {
   analyzePdf,
   cancelCompression,
   compressPdf,
+  existingPaths,
   hasNativeCommands,
   openDirectoryDialog,
   openPath,
@@ -36,7 +37,7 @@ import {
   clampMaxImageSizePercent,
   normalizeReferenceMaxImageEdgePx,
 } from '../utils/compressionSettings'
-import { fileNameFromPath } from '../utils/format'
+import { fileNameFromPath, isPdfPath } from '../utils/format'
 import {
   clampPercent,
   createNotice,
@@ -46,10 +47,6 @@ import {
   normalizeError,
 } from './backendMessages'
 import { useErrorToasts } from './useErrorToasts'
-
-function translate(key: string, values?: Record<string, unknown>): string {
-  return values ? i18n.global.t(key, values) : i18n.global.t(key)
-}
 
 function createSettingsForPreset(
   preset: CompressionPreset,
@@ -112,10 +109,6 @@ export function getCompressionConcurrency(jobCount: number): number {
   return Math.min(2, Math.max(1, Math.floor(cpu / 2)))
 }
 
-function isPdfPath(path: string): boolean {
-  return path.trim().toLowerCase().endsWith('.pdf')
-}
-
 function mapProgressPhaseToWorkflow(phase: ProgressUpdate['phase']): QueueItemStatus {
   switch (phase) {
     case 'analyzing':
@@ -151,7 +144,6 @@ function createJob(path: string): PdfQueueJob {
     recommendedSettings: { ...defaults },
     useRecommendedSettings: true,
     error: null,
-    lastAction: null,
   }
 }
 
@@ -253,6 +245,7 @@ export function usePdfCompressor() {
         job.status !== 'success',
     ),
   )
+  const pendingQueueCount = computed(() => jobsPendingCompression.value.length)
   const selectedCompressionTargetIds = computed(() => {
     if (
       !selectedJob.value ||
@@ -485,7 +478,6 @@ export function usePdfCompressor() {
     }
 
     const requestedPath = job.sourcePath
-    job.lastAction = 'analyze'
     job.error = null
     job.result = null
     applyProgress(job, { phase: 'analyzing', percent: 0 })
@@ -536,7 +528,6 @@ export function usePdfCompressor() {
 
     const requestedPath = job.sourcePath
     const taskId = `${job.id}::run-${runId}`
-    job.lastAction = 'compress'
     job.error = null
     job.result = null
     activeCompressionTaskIds.set(job.id, taskId)
@@ -564,6 +555,14 @@ export function usePdfCompressor() {
       job.result = mapCompressionResult(response, requestedPath)
       job.progress = { phase: 'done', percent: 100 }
       setJobStatus(job, 'success')
+
+      // Warning-level backend notes (e.g. target size missed) must not stay
+      // buried in the notes list — surface them immediately as toasts.
+      for (const note of job.result.notes) {
+        if (note.tone === 'warning' || note.tone === 'danger') {
+          pushErrorToast(note)
+        }
+      }
     } catch (error) {
       if (job.sourcePath !== requestedPath || !isActiveCompressionTask(job.id, taskId)) {
         return
@@ -636,6 +635,15 @@ export function usePdfCompressor() {
     }
 
     await runCompressionTargets(getPrimaryCompressionTargetIds())
+  }
+
+  /** Compress only the selected job — the queue-scope sibling of the above. */
+  async function compressSelectedPdf() {
+    if (!canCompress.value || !selectedJob.value) {
+      return
+    }
+
+    await runCompressionTargets(getSelectedCompressionTargetIds())
   }
 
   async function cancelCompressionRun() {
@@ -762,16 +770,52 @@ export function usePdfCompressor() {
 
   // --- Restore the previous session's queue (paths + settings only) ---
   if (!jobs.value.length) {
+    void restorePersistedQueue()
+  }
+
+  async function restorePersistedQueue() {
     const persisted = readPersistedQueue()
-    if (persisted.length) {
-      addSourcePaths(persisted.map((entry) => entry.sourcePath))
-      for (const entry of persisted) {
-        const job = jobs.value.find(
-          (item) => item.sourcePath.toLowerCase() === entry.sourcePath.toLowerCase(),
-        )
-        if (job) {
-          job.settings = normalizeSettings({ ...entry.settings })
+    if (!persisted.length) {
+      return
+    }
+
+    // Pre-check existence so files moved or deleted since the last session
+    // are skipped up front instead of failing analysis one by one.
+    let entries = persisted
+    if (nativeAvailable) {
+      try {
+        const existing = new Set(await existingPaths(persisted.map((entry) => entry.sourcePath)))
+        const stillPresent = persisted.filter((entry) => existing.has(entry.sourcePath))
+        const missingCount = persisted.length - stillPresent.length
+
+        if (missingCount > 0 && stillPresent.length > 0) {
+          pushErrorToast(
+            createNotice(
+              'queue:restoredMissing',
+              'warning',
+              translate('composable.notices.restoreSkippedTitle'),
+              translate('composable.notices.restoreSkippedBody', { count: missingCount }),
+            ),
+          )
         }
+
+        if (!stillPresent.length) {
+          return
+        }
+        entries = stillPresent
+      } catch {
+        // Existence probe unavailable — restore everything and let the
+        // analysis pass surface missing files.
+      }
+    }
+
+    addSourcePaths(entries.map((entry) => entry.sourcePath))
+    for (const entry of entries) {
+      const job = jobs.value.find(
+        (item) => item.sourcePath.toLowerCase() === entry.sourcePath.toLowerCase(),
+      )
+      if (job) {
+        job.settings = normalizeSettings({ ...entry.settings })
       }
     }
   }
@@ -790,6 +834,8 @@ export function usePdfCompressor() {
     workflowState,
     canCompress,
     canCancelCompression,
+    pendingQueueCount,
+    pushErrorToast,
     updateSettings,
     applySettingsToAll,
     browseForPdf,
@@ -797,6 +843,7 @@ export function usePdfCompressor() {
     selectJob,
     removeJobById,
     compressCurrentPdf,
+    compressSelectedPdf,
     cancelCompressionRun,
     dismissErrorToast,
     pauseErrorToast,

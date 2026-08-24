@@ -81,7 +81,6 @@ export function useTheme() {
 
   return {
     themePreference,
-    resolvedTheme,
     setTheme,
   }
 }

@@ -58,7 +58,9 @@ function toneClass(tone: NoticeItem['tone']) {
 <style scoped>
 .toast-viewport {
   position: fixed;
-  top: calc(env(titlebar-area-height, 0px) + 16px);
+  /* Stay below the custom titlebar (env() is 0 there) so toasts never cover
+     the theme/locale/window controls. */
+  top: max(env(titlebar-area-height, 0px) + 16px, 56px);
   right: 16px;
   z-index: 80;
   display: flex;
@@ -147,7 +149,7 @@ function toneClass(tone: NoticeItem['tone']) {
 
 @media (max-width: 768px) {
   .toast-viewport {
-    top: calc(env(titlebar-area-height, 0px) + 12px);
+    top: max(env(titlebar-area-height, 0px) + 12px, 52px);
     right: 12px;
     width: min(100%, calc(100vw - 24px));
   }
