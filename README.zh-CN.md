@@ -224,9 +224,14 @@ Vue UI -> Tauri bridge -> Rust commands -> PDF analysis/compression engine -> ou
 │     │  ├─ error.rs                # 引擎错误类型（含 i18n 错误码）
 │     │  ├─ pdf/
 │     │  │  ├─ analyzer.rs          # 预检分析引擎
-│     │  │  ├─ compressor.rs        # 压缩引擎
+│     │  │  ├─ compressor.rs        # 压缩编排（文档遍历、批量调度）
+│     │  │  ├─ encode.rs            # 单图编解码（跳过启发式、缩放、JPEG、软蒙版）
+│     │  │  ├─ search.rs            # 目标大小搜索状态（逐图缓存、探测与物化）
+│     │  │  ├─ target_size.rs       # 目标大小搜索调度与入口
+│     │  │  ├─ workers.rs           # 共享有界作用域线程池
 │     │  │  ├─ settings.rs          # 设置规范化
 │     │  │  └─ tests.rs             # 管线集成测试
+│     │  ├─ testutil.rs             # 确定性夹具生成器（测试/基准/示例共用）
 │     │  └─ bin/
 │     │     └─ pdf-cli.rs           # pdf-cli 命令行工具
 │     ├─ benches/                   # criterion 基准测试
@@ -259,6 +264,8 @@ Vue UI -> Tauri bridge -> Rust commands -> PDF analysis/compression engine -> ou
 在 Arch Linux 上，系统依赖为 `webkit2gtk-4.1` 和 `gtk3`（构建还需 `cargo`、`nodejs`、`npm` 和 `pkgconf`）；完整列表以 `aur/pdf-compressor/PKGBUILD` 为准。其他发行版需要安装等价的 WebKit2GTK 4.1 与 GTK 3 软件包。
 
 ## 开发
+
+> 面向贡献者的整合指南（环境搭建、架构、测试、规范与打包）见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
 
 ### 安装依赖
 

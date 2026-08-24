@@ -268,12 +268,18 @@ Vue UI -> Tauri bridge -> Rust commands -> PDF analysis/compression engine -> ou
 │     │  ├─ error.rs                # Engine error type with i18n codes
 │     │  ├─ pdf/
 │     │  │  ├─ analyzer.rs          # Preflight analysis engine
-│     │  │  ├─ compressor.rs        # Compression engine
+│     │  │  ├─ compressor.rs        # Compression orchestration (document walk, scheduling)
+│     │  │  ├─ encode.rs            # Per-image codec: skip heuristics, resize, JPEG, soft masks
+│     │  │  ├─ search.rs            # Target-size search state (per-image caches, probing)
+│     │  │  ├─ target_size.rs       # Target-size search schedule and entry point
+│     │  │  ├─ workers.rs           # Shared bounded scoped worker pool
 │     │  │  ├─ settings.rs          # Settings normalization
 │     │  │  └─ tests.rs             # Pipeline integration tests
+│     │  ├─ testutil.rs             # Deterministic fixture builders (tests/benches/examples)
 │     │  └─ bin/
 │     │     └─ pdf-cli.rs           # pdf-cli binary
 │     ├─ benches/                   # Criterion benchmarks
+│     ├─ examples/                  # Fixture generators for manual benchmarking
 │     └─ fuzz/                      # cargo-fuzz target (pipeline)
 ├─ src-tauri/
 │  ├─ Cargo.toml                    # Rust crate metadata and native dependencies
@@ -284,10 +290,12 @@ Vue UI -> Tauri bridge -> Rust commands -> PDF analysis/compression engine -> ou
 │     └─ commands.rs                # Command surface, preset config, task registry
 ├─ aur/
 │  └─ pdf-compressor/                # Arch Linux (AUR) source package (PKGBUILD, .SRCINFO)
+├─ docs/
+│  └─ DEVELOPMENT.md                 # Contributor guide: setup, architecture, testing, packaging
 ├─ scripts/
-│  ├─ sync-version.mjs              # Version sync (package.json -> tauri.conf.json / Cargo.toml)
-│  └─ postbuild-portable.mjs        # Portable executable post-processing
-├─ package.json                     # Frontend scripts and JS dependencies
+│  ├─ sync-version.mjs               # Version sync (package.json -> tauri.conf.json / Cargo.toml)
+│  └─ postbuild-portable.mjs         # Portable executable post-processing
+├─ package.json                      # Frontend scripts and JS dependencies
 ├─ README.md
 └─ README.zh-CN.md
 ```
@@ -303,6 +311,8 @@ You need the usual toolchain for a Vue + Tauri desktop app:
 On Arch Linux the system dependencies are `webkit2gtk-4.1` and `gtk3` (plus `cargo`, `nodejs`, `npm`, and `pkgconf` to build); see `aur/pdf-compressor/PKGBUILD` for the authoritative list. Other distributions need the equivalent WebKit2GTK 4.1 and GTK 3 packages.
 
 ## Development
+
+> A consolidated contributor guide — setup, architecture, testing, conventions, and packaging — lives in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 ### Install dependencies
 
