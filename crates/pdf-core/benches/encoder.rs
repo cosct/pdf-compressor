@@ -5,38 +5,14 @@
 use std::io::Cursor;
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
-use image::{codecs::jpeg::JpegEncoder, DynamicImage, Rgb, RgbImage};
+use image::{codecs::jpeg::JpegEncoder, DynamicImage};
 
-/// Gradient plus deterministic noise — same shape as the pipeline fixtures:
-/// behaves like a photograph under JPEG (hard case for the encoder).
-fn deterministic_rgb_image(width: u32, height: u32) -> RgbImage {
-    let mut image = RgbImage::new(width, height);
-    let mut state: u32 = 0x1234_5678;
-
-    for y in 0..height {
-        for x in 0..width {
-            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            let noise = ((state >> 24) & 0xFF) as i32 - 128;
-            let channel = |value: u32, span: u32| (value.saturating_mul(255) / span) as i32;
-            let red = channel(x, width.max(1));
-            let green = channel(y, height.max(1));
-            let blue = channel(x + y, width.saturating_add(height).max(1));
-            let components = [
-                (red + noise).clamp(0, 255) as u8,
-                (green + noise).clamp(0, 255) as u8,
-                (blue + noise).clamp(0, 255) as u8,
-            ];
-            image.put_pixel(x, y, Rgb(components));
-        }
-    }
-
-    image
-}
+use pdf_core::testutil::fixture_rgb_image;
 
 fn bench_encoders(c: &mut Criterion) {
     const WIDTH: u32 = 1600;
     const HEIGHT: u32 = 1200;
-    let rgb = deterministic_rgb_image(WIDTH, HEIGHT);
+    let rgb = fixture_rgb_image(WIDTH, HEIGHT);
     let dynamic = DynamicImage::ImageRgb8(rgb.clone());
     let raw_pixels = rgb.as_raw();
 

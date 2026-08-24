@@ -20,6 +20,9 @@ pub struct CompressionSettingsPayload {
     pub optimize_images: Option<bool>,
     pub compress_streams: Option<bool>,
     pub strip_metadata: Option<bool>,
+    /// Re-encode color images as grayscale (best for black-and-white scans).
+    #[serde(default)]
+    pub grayscale: Option<bool>,
     pub output_dir: Option<String>,
 }
 
@@ -54,8 +57,11 @@ pub struct CompressScannedPdfRequest {
     pub settings: Option<CompressionSettingsPayload>,
     pub preset: Option<String>,
     pub image_quality: Option<u8>,
-    pub downsample_dpi: Option<u16>,
-    pub target_dpi: Option<u16>,
+    /// Maximum image edge in pixels — same semantics as `CompressPdfRequest`.
+    /// (The historical `downsampleDpi`/`targetDpi` names were misnomers: the
+    /// value was always consumed as a pixel bound, not a DPI.)
+    #[serde(default, alias = "downsampleDpi", alias = "targetDpi")]
+    pub max_image_size_px: Option<u16>,
     pub grayscale: Option<bool>,
     pub strip_metadata: Option<bool>,
     pub remove_metadata: Option<bool>,

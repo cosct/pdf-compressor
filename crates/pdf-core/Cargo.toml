@@ -16,6 +16,9 @@ name = "pdf_core"
 # Derives `specta::Type` on the wire models for TypeScript binding generation
 # in the Tauri app. Off by default to keep the engine dependency-light.
 specta = ["dep:specta"]
+# Fixture builders for tests/benches/examples (`src/testutil.rs`). Enabled by
+# the dev-dependency on itself below, so normal builds never compile it.
+testutil = []
 
 [dependencies]
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
@@ -26,9 +29,17 @@ tempfile = "3"
 thiserror = "2"
 specta = { version = "=2.0.0-rc.25", optional = true }
 jpeg-encoder = { version = "0.7", features = ["simd"] }
+# Not referenced in code: declared so feature unification switches lopdf's
+# flate2 (stream compression, object streams) to the zlib-ng C backend.
+flate2 = { version = "1", default-features = false, features = ["zlib-ng"] }
+rustc-hash = "2"
+fast_image_resize = { version = "6", features = ["image"] }
 
 [dev-dependencies]
 criterion = "0.5"
+# Self dev-dependency: turns on the `testutil` feature for tests, benches,
+# and examples only (resolver = "2" keeps it out of normal builds).
+pdf-core = { path = ".", features = ["testutil"] }
 
 [[bench]]
 name = "compression"

@@ -1,34 +1,34 @@
-//! Object-level PDF compression engine — image recompression, stream compression, metadata removal.
-//! 对象级 PDF 压缩引擎 — 图片重压缩、流压缩、元数据移除。
-//!
-//! Walks every PDF object, classifies streams, optimizes images (possibly in parallel
-//! with a largest-first scheduling strategy), compresses eligible non-image streams,
-//! and optionally strips document metadata. Supports cancellation via an atomic flag.
-//! 遍历每个 PDF 对象，分类流，优化图片（可能通过最大优先调度策略并行处理），
-//! 压缩符合条件的非图片流，可选移除文档元数据。支持通过原子标志取消。
+//! Object-level PDF compression orchestration — the document walk, batch
+//! scheduling, stream compression, and metadata removal. Per-image codec
+//! logic lives in `encode.rs`, target-size search state in `search.rs`, and
+//! the shared worker pool in `workers.rs`.
+//! 对象级 PDF 压缩编排 — 文档遍历、批量调度、流压缩与元数据移除。
+//! 单图编解码逻辑位于 encode.rs，目标大小搜索状态位于 search.rs，
+//! 共享线程池位于 workers.rs。
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc, Arc, Mutex,
+        Arc,
     },
     thread,
     time::Instant,
 };
 
-use image::{imageops::FilterType, DynamicImage, GenericImageView};
-use lopdf::{dictionary, Document, Object, ObjectId, Stream};
+use lopdf::{Document, Object, ObjectId, Stream};
 
+use super::encode::{optimize_image_stream, pixel_count, ImageOptimization};
+use super::ensure_not_cancelled;
+use super::settings::CompressionSettings;
+use super::workers::{run_worker_pool, CHANNEL_BUFFER_MULTIPLIER};
+use super::{optional_integer, validate_input_path};
 use crate::{
     error::AppError,
     models::{BackendNotice, CompressionResponse, ProgressUpdate},
 };
-
-use super::settings::CompressionSettings;
-use super::{optional_integer, validate_input_path};
 
 /// Progress range: object scan phase.
 const OBJECT_SCAN_PROGRESS_START: f32 = 15.0;
@@ -45,33 +45,6 @@ const MAX_IMAGE_WORKERS: usize = 8;
 /// Below this count, thread pool overhead outweighs the gains.
 const MIN_PARALLEL_IMAGE_OBJECTS: usize = 3;
 
-/// JPEG streams smaller than this are skipped outright — the decode+encode
-/// round-trip cost exceeds any realistic savings on tiny streams.
-const TINY_JPEG_STREAM_BYTES: usize = 6 * 1024;
-
-/// Streams below this byte count are considered "small". For small JPEGs that
-/// are already within the target dimensions, recompression is skipped because
-/// the potential savings are negligible.
-const SMALL_IMAGE_STREAM_BYTES: usize = 64 * 1024;
-
-/// Images with fewer total pixels than this are skipped entirely.
-/// Recompressing a 100×100 icon yields almost no savings.
-const TRIVIAL_PIXEL_COUNT: u64 = 10_000;
-
-/// For small JPEG images that are already at or below the target edge, skip
-/// if pixel count is under this threshold (roughly 500×500).
-const SMALL_JPEG_PIXEL_COUNT: u64 = 250_000;
-
-/// Only resize when the source edge exceeds the target by at least this factor.
-/// Prevents pointless resize operations for near-target images.
-const RESIZE_EDGE_TOLERANCE: f32 = 1.08;
-
-/// Above this pixel count, use a fast two-pass resize: first a cheap Nearest
-/// downsample to ~2× the target, then CatmullRom for the final pass.
-/// Lowered from 8M to 4M to trigger two-pass earlier and save CPU on moderately
-/// large images.
-const TWO_PASS_RESIZE_PIXEL_THRESHOLD: u64 = 4_000_000;
-
 /// Non-image streams shorter than this are too small for compression to help.
 /// Lowered from 128 to 64 bytes — deflate can still win on repetitive short streams.
 const MIN_COMPRESSIBLE_STREAM_BYTES: usize = 64;
@@ -79,6 +52,10 @@ const MIN_COMPRESSIBLE_STREAM_BYTES: usize = 64;
 /// Inputs above this size are rejected: the whole document is loaded into
 /// memory, so a hard ceiling protects against OOM on multi-gigabyte files.
 const MAX_INPUT_BYTES: u64 = 2 * 1024 * 1024 * 1024; // 2 GiB
+
+/// Maximum number of per-image skip notices included in the response.
+/// Additional skips are counted but not individually reported.
+const MAX_IMAGE_SKIP_NOTICES: usize = 6;
 
 /// Guard against OOM on oversized inputs. Shared by analyze and compress.
 pub(crate) fn ensure_input_size_supported(size_bytes: u64) -> Result<(), AppError> {
@@ -91,37 +68,30 @@ pub(crate) fn ensure_input_size_supported(size_bytes: u64) -> Result<(), AppErro
     Ok(())
 }
 
-/// Maximum number of per-image skip notices included in the response.
-/// Additional skips are counted but not individually reported.
-const MAX_IMAGE_SKIP_NOTICES: usize = 6;
-
-/// Worker channel buffer multiplier relative to worker count.
-/// Larger buffer reduces blocking on the producer side.
-const CHANNEL_BUFFER_MULTIPLIER: usize = 4;
-
 // ---------------------------------------------------------------------------
 // Internal types
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Default)]
-struct CompressionStats {
-    images_recompressed: usize,
-    images_skipped: usize,
-    images_deduplicated: usize,
-    streams_compressed: usize,
-    metadata_removed: bool,
-    notices: Vec<BackendNotice>,
-    image_skip_notices: usize,
-    suppressed_skip_notices: usize,
+pub(crate) struct CompressionStats {
+    pub(crate) images_recompressed: usize,
+    pub(crate) images_skipped: usize,
+    pub(crate) images_deduplicated: usize,
+    pub(crate) streams_compressed: usize,
+    pub(crate) metadata_removed: bool,
+    pub(crate) notices: Vec<BackendNotice>,
+    pub(crate) image_skip_notices: usize,
+    pub(crate) suppressed_skip_notices: usize,
 }
 
 #[derive(Debug)]
-struct ImageTask {
-    object_id: ObjectId,
-    stream: Stream,
-    /// Cloned soft-mask stream referenced by `/SMask`, resolved on the main
-    /// thread (workers have no document access). `None` when absent.
-    smask: Option<Stream>,
+pub(super) struct ImageTask {
+    pub(super) object_id: ObjectId,
+    pub(super) stream: Stream,
+    /// Soft-mask stream referenced by `/SMask`, moved out of the document on
+    /// the main thread (workers have no document access) as
+    /// `(original object id, stream)`. `None` when absent.
+    pub(super) smask: Option<(ObjectId, Stream)>,
     /// Cached stream byte length — avoids re-reading during scheduling.
     stream_size: usize,
 }
@@ -130,30 +100,16 @@ struct ImageTask {
 struct ImageTaskOutcome {
     object_id: ObjectId,
     result: Result<ImageOptimization, AppError>,
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-struct StreamFilterInfo {
-    has_jpeg: bool,
-    has_flate: bool,
-    has_unsupported_filter: bool,
+    /// Originals returned by the worker so the main thread can restore them
+    /// untouched when the outcome is a skip.
+    stream: Stream,
+    smask: Option<(ObjectId, Stream)>,
 }
 
 #[derive(Clone, Copy)]
 struct CompressionRuntime<'a> {
     cancel_flag: &'a Arc<AtomicBool>,
     task_id: &'a str,
-}
-
-#[derive(Debug)]
-enum ImageOptimization {
-    /// Recompressed stream plus, for images with transparency, the rebuilt
-    /// soft-mask stream to attach as a new indirect object.
-    Recompressed {
-        stream: Stream,
-        smask: Option<Stream>,
-    },
-    Skipped { stream: Stream, reason: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -187,7 +143,10 @@ where
         .map_err(|e| AppError::PdfBuild(format!("Failed to load PDF: {e}")))?;
     let mut stats = CompressionStats::default();
 
-    report_progress(ProgressUpdate::new("compressing", OBJECT_SCAN_PROGRESS_START));
+    report_progress(ProgressUpdate::new(
+        "compressing",
+        OBJECT_SCAN_PROGRESS_START,
+    ));
 
     // --- Core optimization pass ---
     optimize_document(
@@ -202,17 +161,49 @@ where
     report_progress(ProgressUpdate::new("writing", 92.0));
     ensure_not_cancelled(&cancel_flag, path)?;
 
+    // --- Cleanup, write output & build response ---
+    let response = save_and_build_response(
+        &mut document,
+        &output_path,
+        original_size_bytes,
+        started_at,
+        &settings,
+        &mut stats,
+    )?;
+
+    report_progress(
+        ProgressUpdate::new("done", 100.0).with_message(BackendNotice::new(
+            "compress.progress.done",
+            "success",
+            "Compression finished.",
+        )),
+    );
+
+    Ok(response)
+}
+
+/// Serialize the optimized document, compute result metrics, and assemble the
+/// response with the standard notices. Shared by the single-pass compressor
+/// and the target-size search materialization.
+pub(crate) fn save_and_build_response(
+    document: &mut Document,
+    output_path: &Path,
+    original_size_bytes: u64,
+    started_at: Instant,
+    settings: &CompressionSettings,
+    stats: &mut CompressionStats,
+) -> Result<CompressionResponse, AppError> {
     // --- Cleanup & write output ---
     document.prune_objects();
     document.renumber_objects();
 
-    let mut output_file = fs::File::create(&output_path)?;
+    let mut output_file = fs::File::create(output_path)?;
     document
         .save_modern(&mut output_file)
         .map_err(|e| AppError::PdfBuild(format!("Failed to save optimized PDF: {e}")))?;
 
     // --- Compute result metrics ---
-    let compressed_size_bytes = fs::metadata(&output_path)?.len();
+    let compressed_size_bytes = fs::metadata(output_path)?.len();
     let saved_bytes = original_size_bytes.saturating_sub(compressed_size_bytes);
     let savings_percent = if original_size_bytes == 0 {
         0.0
@@ -276,14 +267,6 @@ where
         ));
     }
 
-    report_progress(
-        ProgressUpdate::new("done", 100.0).with_message(BackendNotice::new(
-            "compress.progress.done",
-            "success",
-            "Compression finished.",
-        )),
-    );
-
     Ok(CompressionResponse {
         output_path: output_path.to_string_lossy().to_string(),
         original_size_bytes: original_size_bytes as f64,
@@ -297,7 +280,7 @@ where
         streams_compressed: stats.streams_compressed as u32,
         metadata_removed: stats.metadata_removed,
         output_was_smaller: compressed_size_bytes < original_size_bytes,
-        notices: stats.notices,
+        notices: std::mem::take(&mut stats.notices),
     })
 }
 
@@ -307,7 +290,7 @@ where
 
 /// Walk every object in the document exactly once:
 /// - Collect image stream IDs for batch optimization.
-/// - Compress eligible non-image streams inline.
+/// - Collect eligible non-image streams for parallel compression.
 /// - Optionally strip metadata.
 fn optimize_document<F>(
     document: &mut Document,
@@ -325,33 +308,99 @@ where
         task_id,
     };
 
+    let preparation = prepare_document(
+        document,
+        settings,
+        runtime.cancel_flag,
+        stats,
+        report_progress,
+        runtime.task_id,
+    )?;
+
+    // --- Batch image optimization (possibly parallel) ---
+    if settings.optimize_images && !preparation.image_object_ids.is_empty() {
+        let mut image_phase_percent = OBJECT_SCAN_PROGRESS_END;
+        optimize_image_streams(
+            document,
+            &preparation,
+            settings,
+            runtime,
+            stats,
+            report_progress,
+            &mut image_phase_percent,
+        )?;
+    } else {
+        report_progress(ProgressUpdate::new(
+            "compressing",
+            IMAGE_OPTIMIZATION_PROGRESS_END,
+        ));
+    }
+
+    Ok(())
+}
+
+/// Scan output: which objects are images, and which soft masks are shared.
+pub(crate) struct DocumentPreparation {
+    pub image_object_ids: Vec<ObjectId>,
+    pub shared_smask_ids: HashSet<ObjectId>,
+}
+
+/// Shared preparation pass used by both compression entry points: lossless
+/// image dedup, soft-mask bookkeeping, stream classification, parallel
+/// compression of eligible non-image streams, and metadata removal. Image
+/// optimization itself is left to the caller — the target-size search runs it
+/// as probe rounds instead of once.
+pub(crate) fn prepare_document<F>(
+    document: &mut Document,
+    settings: &CompressionSettings,
+    cancel_flag: &Arc<AtomicBool>,
+    stats: &mut CompressionStats,
+    report_progress: &mut F,
+    task_id: &str,
+) -> Result<DocumentPreparation, AppError>
+where
+    F: FnMut(ProgressUpdate),
+{
     // --- Lossless pass: merge byte-identical image objects (logos, stamps) ---
     stats.images_deduplicated = dedupe_identical_images(document) as usize;
 
     // Soft-mask streams carry Subtype /Image too — collect the ids referenced
     // as /SMask so the scan treats them as alpha auxiliaries of their parent
-    // image instead of standalone optimization targets.
-    let smask_object_ids: HashSet<ObjectId> = document
-        .objects
-        .values()
-        .filter_map(|object| match object {
-            Object::Stream(stream) if is_image_stream(stream) => stream
-                .dict
-                .get(b"SMask")
-                .ok()
-                .and_then(|entry| entry.as_reference().ok()),
-            _ => None,
-        })
+    // image instead of standalone optimization targets. Masks referenced by
+    // more than one image must stay in the document (they are cloned for the
+    // task instead of moved) so every sharer keeps a valid target.
+    let mut smask_reference_counts: HashMap<ObjectId, usize> = HashMap::new();
+    for object in document.objects.values() {
+        let Object::Stream(stream) = object else {
+            continue;
+        };
+        if !is_image_stream(stream) {
+            continue;
+        }
+        if let Some(smask_id) = stream
+            .dict
+            .get(b"SMask")
+            .ok()
+            .and_then(|entry| entry.as_reference().ok())
+        {
+            *smask_reference_counts.entry(smask_id).or_default() += 1;
+        }
+    }
+    let smask_object_ids: HashSet<ObjectId> = smask_reference_counts.keys().copied().collect();
+    let shared_smask_ids: HashSet<ObjectId> = smask_reference_counts
+        .into_iter()
+        .filter_map(|(smask_id, count)| (count > 1).then_some(smask_id))
         .collect();
 
     let object_ids: Vec<ObjectId> = document.objects.keys().copied().collect();
     let total_objects = object_ids.len().max(1);
     let mut image_object_ids = Vec::new();
+    let mut compressible_stream_ids = Vec::new();
     let mut last_reported_percent = OBJECT_SCAN_PROGRESS_START;
 
     // --- Single-pass scan: classify each object ---
     for (index, object_id) in object_ids.into_iter().enumerate() {
-        ensure_not_cancelled(runtime.cancel_flag, runtime.task_id)?;
+        ensure_not_cancelled(cancel_flag, task_id)?;
         if smask_object_ids.contains(&object_id) {
             report_progress_if_needed(
                 report_progress,
@@ -383,8 +432,8 @@ where
             if settings.optimize_images {
                 image_object_ids.push(object_id);
             }
-        } else if settings.compress_streams && compress_non_image_stream(stream) {
-            stats.streams_compressed += 1;
+        } else if settings.compress_streams && stream_is_compressible(stream) {
+            compressible_stream_ids.push(object_id);
         }
 
         report_progress_if_needed(
@@ -397,19 +446,12 @@ where
         );
     }
 
-    // --- Batch image optimization (possibly parallel) ---
-    if settings.optimize_images && !image_object_ids.is_empty() {
-        optimize_image_streams(
-            document,
-            &image_object_ids,
-            settings,
-            runtime,
-            stats,
-            report_progress,
-            &mut last_reported_percent,
-        )?;
-    } else {
-        report_progress(ProgressUpdate::new("compressing", IMAGE_OPTIMIZATION_PROGRESS_END));
+    // --- Batch compression of eligible non-image streams ---
+    // Deflate is CPU-bound; text-heavy PDFs with many uncompressed content
+    // streams would otherwise serialize on the scan thread.
+    if !compressible_stream_ids.is_empty() {
+        stats.streams_compressed +=
+            compress_non_image_streams(document, &compressible_stream_ids, cancel_flag, task_id)?;
     }
 
     // --- Metadata removal ---
@@ -417,19 +459,45 @@ where
         stats.metadata_removed = remove_metadata(document);
     }
 
-    Ok(())
+    Ok(DocumentPreparation {
+        image_object_ids,
+        shared_smask_ids,
+    })
 }
 
 // ---------------------------------------------------------------------------
 // Lossless image deduplication
 // ---------------------------------------------------------------------------
 
-fn fnv1a64(bytes: &[u8]) -> u64 {
-    bytes
-        .iter()
-        .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
-            (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01B3)
-        })
+/// Streaming fingerprint of an image stream: dictionary fields that define
+/// pixel interpretation, then the content bytes scanned in place — no
+/// concatenated temporary buffer. FxHash processes word-sized chunks
+/// (~10 GB/s vs ~1 GB/s for byte-wise FNV). Hash collisions are never merged:
+/// the caller verifies full equality before replacing an object.
+fn image_stream_fingerprint(stream: &Stream) -> u64 {
+    use rustc_hash::FxHasher;
+    use std::hash::Hasher;
+
+    let mut hasher = FxHasher::default();
+    if let Ok(Object::Name(filter)) = stream.dict.get(b"Filter") {
+        hasher.write(filter);
+    }
+    for key in [
+        b"Width".as_slice(),
+        b"Height".as_slice(),
+        b"BitsPerComponent".as_slice(),
+    ] {
+        hasher.write(
+            &optional_integer(stream, key)
+                .unwrap_or_default()
+                .to_le_bytes(),
+        );
+    }
+    if let Ok(Object::Name(color_space)) = stream.dict.get(b"ColorSpace") {
+        hasher.write(color_space);
+    }
+    hasher.write(&stream.content);
+    hasher.finish()
 }
 
 /// Merge byte-identical image streams into a single canonical object,
@@ -437,8 +505,6 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
 /// filters, and pixel data must match exactly. Images carrying masks or
 /// `DecodeParms` are excluded to keep the equivalence check airtight.
 fn dedupe_identical_images(document: &mut Document) -> u32 {
-    use std::collections::HashMap;
-
     let candidate_ids: Vec<ObjectId> = document
         .objects
         .iter()
@@ -462,22 +528,7 @@ fn dedupe_identical_images(document: &mut Document) -> u32 {
             continue;
         };
 
-        let mut signature = Vec::with_capacity(64);
-        if let Ok(Object::Name(filter)) = stream.dict.get(b"Filter") {
-            signature.extend_from_slice(filter);
-        }
-        for key in [b"Width".as_slice(), b"Height".as_slice(), b"BitsPerComponent".as_slice()] {
-            signature.extend_from_slice(
-                &optional_integer(stream, key).unwrap_or_default().to_le_bytes(),
-            );
-        }
-        if let Ok(Object::Name(color_space)) = stream.dict.get(b"ColorSpace") {
-            signature.extend_from_slice(color_space);
-        }
-        signature.push(0);
-        signature.extend_from_slice(&stream.content);
-
-        let hash = fnv1a64(&signature);
+        let hash = image_stream_fingerprint(stream);
         match first_by_hash.get(&hash) {
             Some(&first_id) => {
                 // Verify exact equality — a hash alone must never merge images.
@@ -518,7 +569,7 @@ fn dedupe_identical_images(document: &mut Document) -> u32 {
 /// parallel), and write the results back.
 fn optimize_image_streams<F>(
     document: &mut Document,
-    image_object_ids: &[ObjectId],
+    preparation: &DocumentPreparation,
     settings: &CompressionSettings,
     runtime: CompressionRuntime<'_>,
     stats: &mut CompressionStats,
@@ -528,14 +579,26 @@ fn optimize_image_streams<F>(
 where
     F: FnMut(ProgressUpdate),
 {
-    let image_tasks = take_image_tasks(document, image_object_ids);
+    let image_tasks = take_image_tasks(
+        document,
+        &preparation.image_object_ids,
+        &preparation.shared_smask_ids,
+    );
     if image_tasks.is_empty() {
-        report_progress(ProgressUpdate::new("compressing", IMAGE_OPTIMIZATION_PROGRESS_END));
+        report_progress(ProgressUpdate::new(
+            "compressing",
+            IMAGE_OPTIMIZATION_PROGRESS_END,
+        ));
         return Ok(());
     }
 
     let task_count = image_tasks.len();
-    let worker_count = image_worker_count(task_count);
+    let max_bitmap_estimate = image_tasks
+        .iter()
+        .map(|task| estimated_decoded_bitmap_bytes(&task.stream))
+        .max()
+        .unwrap_or(0);
+    let worker_count = image_worker_count(task_count, max_bitmap_estimate);
 
     // --- Serial path (1 worker) ---
     if worker_count <= 1 {
@@ -548,13 +611,14 @@ where
                 ..
             } = task;
             let optimization = optimize_image_stream(
-                stream,
-                smask,
+                &stream,
+                smask.as_ref().map(|(_, smask)| smask),
                 settings,
                 runtime.cancel_flag,
                 runtime.task_id,
+                None,
             )?;
-            apply_image_optimization(document, object_id, optimization, stats);
+            apply_image_optimization(document, object_id, stream, smask, optimization, stats);
             report_progress_if_needed(
                 report_progress,
                 last_reported_percent,
@@ -567,95 +631,60 @@ where
         return Ok(());
     }
 
-    // --- Parallel path ---
-    thread::scope(|scope| -> Result<(), AppError> {
-        let cancel_flag = Arc::clone(runtime.cancel_flag);
-        // Larger buffer to reduce producer blocking.
-        let (task_tx, task_rx) =
-            mpsc::sync_channel::<ImageTask>(worker_count * CHANNEL_BUFFER_MULTIPLIER);
-        let task_rx = Arc::new(Mutex::new(task_rx));
-        let (result_tx, result_rx) = mpsc::channel::<ImageTaskOutcome>();
-
-        // Spawn worker threads.
-        for _ in 0..worker_count {
-            let rx = Arc::clone(&task_rx);
-            let tx = result_tx.clone();
-            let worker_settings = settings.clone();
-            let worker_cancel_flag = Arc::clone(&cancel_flag);
-            let worker_task_id = runtime.task_id.to_string();
-
-            scope.spawn(move || {
-                loop {
-                    if worker_cancel_flag.load(Ordering::Relaxed) {
-                        return;
-                    }
-
-                    let task = match rx.lock() {
-                        Ok(guard) => guard.recv(),
-                        Err(_) => return,
-                    };
-                    let Ok(task) = task else { return };
-
-                    let ImageTask {
-                        object_id,
-                        stream,
-                        smask,
-                        ..
-                    } = task;
-                    let result = optimize_image_stream(
-                        stream,
-                        smask,
-                        &worker_settings,
-                        &worker_cancel_flag,
-                        &worker_task_id,
-                    );
-                    if tx
-                        .send(ImageTaskOutcome {
-                            object_id,
-                            result,
-                        })
-                        .is_err()
-                    {
-                        return;
-                    }
-                }
-            });
-        }
-
-        // Drop spare sender so result_rx closes when all workers finish.
-        drop(result_tx);
-
-        // Feed tasks into the channel.
-        for task in image_tasks {
-            ensure_not_cancelled(&cancel_flag, runtime.task_id)?;
-            task_tx.send(task).map_err(|_| {
-                AppError::PdfBuild("Failed to schedule an image optimization task.".to_string())
-            })?;
-        }
-        drop(task_tx);
-
-        // Collect results.
-        for completed in 0..task_count {
-            ensure_not_cancelled(&cancel_flag, runtime.task_id)?;
-            let outcome = result_rx.recv().map_err(|_| {
-                AppError::PdfBuild(
-                    "An image optimization worker exited before returning its result.".to_string(),
-                )
-            })?;
+    // --- Parallel path: the shared scoped pool (see workers.rs) ---
+    let mut completed = 0usize;
+    run_worker_pool(
+        image_tasks,
+        worker_count,
+        worker_count * CHANNEL_BUFFER_MULTIPLIER,
+        runtime.cancel_flag,
+        runtime.task_id,
+        |task: ImageTask| {
+            let ImageTask {
+                object_id,
+                stream,
+                smask,
+                ..
+            } = task;
+            let result = optimize_image_stream(
+                &stream,
+                smask.as_ref().map(|(_, smask)| smask),
+                settings,
+                runtime.cancel_flag,
+                runtime.task_id,
+                None,
+            );
+            // The borrowed originals travel back with the outcome so
+            // the main thread can restore them on skip.
+            ImageTaskOutcome {
+                object_id,
+                result,
+                stream,
+                smask,
+            }
+        },
+        |outcome: ImageTaskOutcome| {
             let optimization = outcome.result?;
-            apply_image_optimization(document, outcome.object_id, optimization, stats);
+            apply_image_optimization(
+                document,
+                outcome.object_id,
+                outcome.stream,
+                outcome.smask,
+                optimization,
+                stats,
+            );
+            completed += 1;
             report_progress_if_needed(
                 report_progress,
                 last_reported_percent,
                 OBJECT_SCAN_PROGRESS_END,
                 IMAGE_OPTIMIZATION_PROGRESS_END,
-                completed + 1,
+                completed,
                 task_count,
             );
-        }
-
-        Ok(())
-    })?;
+            Ok(())
+        },
+    )?;
 
     Ok(())
 }
@@ -663,7 +692,17 @@ where
 /// Remove image streams from the document and return them as tasks, sorted
 /// largest-first so the worker pool starts with the heaviest work and avoids
 /// the "straggler" problem.
-fn take_image_tasks(document: &mut Document, image_object_ids: &[ObjectId]) -> Vec<ImageTask> {
+///
+/// The `/SMask` stream is *moved* out of the document (not cloned): workers
+/// used to hold a second copy of every transparency mask, doubling the memory
+/// for scan-heavy files. Masks shared by several images are cloned instead —
+/// every sharer must keep a valid target. The originals travel back with the
+/// outcome and are restored verbatim on skip.
+pub(super) fn take_image_tasks(
+    document: &mut Document,
+    image_object_ids: &[ObjectId],
+    shared_smask_ids: &HashSet<ObjectId>,
+) -> Vec<ImageTask> {
     let mut tasks = Vec::with_capacity(image_object_ids.len());
 
     for object_id in image_object_ids.iter().copied() {
@@ -679,10 +718,30 @@ fn take_image_tasks(document: &mut Document, image_object_ids: &[ObjectId]) -> V
                     .get(b"SMask")
                     .ok()
                     .and_then(|entry| entry.as_reference().ok())
-                    .and_then(|smask_id| document.objects.get(&smask_id).cloned())
-                    .and_then(|entry| match entry {
-                        Object::Stream(smask_stream) => Some(smask_stream),
-                        _ => None,
+                    .and_then(|smask_id| {
+                        if shared_smask_ids.contains(&smask_id) {
+                            document
+                                .objects
+                                .get(&smask_id)
+                                .and_then(|object| match object {
+                                    Object::Stream(smask_stream) => {
+                                        Some((smask_id, smask_stream.clone()))
+                                    }
+                                    _ => None,
+                                })
+                        } else {
+                            match document.objects.remove(&smask_id) {
+                                Some(Object::Stream(smask_stream)) => {
+                                    Some((smask_id, smask_stream))
+                                }
+                                Some(other) => {
+                                    // Not a stream after all — put it back untouched.
+                                    document.objects.insert(smask_id, other);
+                                    None
+                                }
+                                None => None,
+                            }
+                        }
                     });
                 tasks.push(ImageTask {
                     object_id,
@@ -702,29 +761,42 @@ fn take_image_tasks(document: &mut Document, image_object_ids: &[ObjectId]) -> V
     tasks
 }
 
+/// Write an optimization result back into the document. `stream`/`smask` are
+/// the moved-out originals: restored verbatim on skip, consumed (dropped) on
+/// recompression.
 fn apply_image_optimization(
     document: &mut Document,
     object_id: ObjectId,
+    stream: Stream,
+    smask: Option<(ObjectId, Stream)>,
     optimization: ImageOptimization,
     stats: &mut CompressionStats,
 ) {
     match optimization {
-        ImageOptimization::Recompressed { mut stream, smask } => {
-            if let Some(smask_stream) = smask {
+        ImageOptimization::Recompressed {
+            stream: mut rebuilt,
+            smask: rebuilt_smask,
+        } => {
+            if let Some(smask_stream) = rebuilt_smask {
                 let smask_id = document.add_object(smask_stream);
-                stream.dict.set("SMask", Object::Reference(smask_id));
+                rebuilt.dict.set("SMask", Object::Reference(smask_id));
             }
-            document.objects.insert(object_id, Object::Stream(stream));
+            document.objects.insert(object_id, Object::Stream(rebuilt));
             stats.images_recompressed += 1;
         }
-        ImageOptimization::Skipped { stream, reason } => {
+        ImageOptimization::Skipped { reason } => {
             document.objects.insert(object_id, Object::Stream(stream));
+            if let Some((smask_id, smask_stream)) = smask {
+                document
+                    .objects
+                    .insert(smask_id, Object::Stream(smask_stream));
+            }
             record_image_skip(stats, object_id, reason);
         }
     }
 }
 
-fn record_image_skip(stats: &mut CompressionStats, object_id: ObjectId, reason: String) {
+pub(super) fn record_image_skip(stats: &mut CompressionStats, object_id: ObjectId, reason: String) {
     stats.images_skipped += 1;
 
     if stats.image_skip_notices >= MAX_IMAGE_SKIP_NOTICES {
@@ -745,534 +817,105 @@ fn record_image_skip(stats: &mut CompressionStats, object_id: ObjectId, reason: 
 }
 
 // ---------------------------------------------------------------------------
-// Per-image optimization
-// ---------------------------------------------------------------------------
-
-/// Decide whether to recompress a single image stream. Returns quickly for
-/// images that cannot benefit from recompression (fast-path skips). Decode and
-/// encode failures are reported as skips with a reason; only cancellation
-/// propagates as an error. Images with an 8-bit grayscale `/SMask` keep their
-/// transparency: the color plane is re-encoded as JPEG and the alpha plane as
-/// a flate-compressed grayscale soft mask.
-fn optimize_image_stream(
-    mut stream: Stream,
-    smask: Option<Stream>,
-    settings: &CompressionSettings,
-    cancel_flag: &Arc<AtomicBool>,
-    task_id: &str,
-) -> Result<ImageOptimization, AppError> {
-    ensure_not_cancelled(cancel_flag, task_id)?;
-    // --- Skip: stencil image masks and color-key masks stay untouched ---
-    if stream.dict.get(b"ImageMask").is_ok() {
-        return Ok(ImageOptimization::Skipped {
-            stream,
-            reason: "image masks (stencils) are not rewritten".into(),
-        });
-    }
-    if stream.dict.get(b"Mask").is_ok() {
-        return Ok(ImageOptimization::Skipped {
-            stream,
-            reason: "color-key masks are not rewritten".into(),
-        });
-    }
-    let has_smask = stream.dict.get(b"SMask").is_ok();
-    if has_smask && smask.is_none() {
-        return Ok(ImageOptimization::Skipped {
-            stream,
-            reason: "soft mask could not be resolved for a safe rewrite".into(),
-        });
-    }
-
-    let filter_info = stream_filter_info(&stream);
-
-    // --- Skip: unsupported filters (JBIG2, JPX, CCITT, Crypt) ---
-    if filter_info.has_unsupported_filter {
-        return Ok(ImageOptimization::Skipped {
-            stream,
-            reason: "unsupported image filter for safe recompression".into(),
-        });
-    }
-
-    // --- Fast skip: tiny JPEG streams ---
-    if filter_info.has_jpeg && stream.content.len() <= TINY_JPEG_STREAM_BYTES {
-        return Ok(ImageOptimization::Skipped {
-            stream,
-            reason: "JPEG stream too small to benefit from recompression".into(),
-        });
-    }
-
-    // --- Fast skip: trivially small images by pixel count ---
-    if let Some(pixels) = pixel_count(&stream) {
-        if pixels <= TRIVIAL_PIXEL_COUNT {
-            return Ok(ImageOptimization::Skipped {
-                stream,
-                reason: "image too small in pixel dimensions to benefit".into(),
-            });
-        }
-    }
-
-    let max_edge = u32::from(settings.max_image_size_px);
-
-    // --- Fast JPEG header check: read dimensions without full decode ---
-    // This is orders of magnitude faster than `image::load_from_memory`.
-    if filter_info.has_jpeg {
-        if let Some((w, h)) = jpeg_dimensions_from_header(&stream.content) {
-            let longest = w.max(h);
-
-            // Already within target AND stream is compact → skip.
-            if longest <= max_edge && stream.content.len() <= SMALL_IMAGE_STREAM_BYTES {
-                return Ok(ImageOptimization::Skipped {
-                    stream,
-                    reason: "JPEG already within target dimensions and stream size".into(),
-                });
-            }
-
-            // Near target edge AND very small stream → skip for speed.
-            let tolerance_edge = (max_edge as f32 * RESIZE_EDGE_TOLERANCE) as u32;
-            if longest <= tolerance_edge && stream.content.len() <= SMALL_IMAGE_STREAM_BYTES / 2 {
-                return Ok(ImageOptimization::Skipped {
-                    stream,
-                    reason: "JPEG near target dimensions with small stream".into(),
-                });
-            }
-        }
-    }
-
-    // --- Dictionary-based dimension check (catches non-JPEG too) ---
-    if let Some(edge) = longest_edge(&stream) {
-        if filter_info.has_jpeg && edge <= max_edge && stream.content.len() <= SMALL_IMAGE_STREAM_BYTES
-        {
-            return Ok(ImageOptimization::Skipped {
-                stream,
-                reason: "already below target size and unlikely to shrink".into(),
-            });
-        }
-    }
-
-    // --- Additional heuristic skip checks ---
-    if let Some(reason) = skip_recompression_reason(&stream, settings, filter_info) {
-        return Ok(ImageOptimization::Skipped { stream, reason });
-    }
-
-    if let Some(reason) = raw_recompression_skip_reason(&stream, filter_info) {
-        return Ok(ImageOptimization::Skipped { stream, reason });
-    }
-
-    let original_len = stream.content.len();
-
-    // --- Decode the image ---
-    // Decode/encode failures are treated as skips, not fatal errors: one
-    // malformed image stream in a hostile or damaged PDF must not abort the
-    // whole file. Only cancellation propagates as `Err`.
-    ensure_not_cancelled(cancel_flag, task_id)?;
-    let dynamic_image = if filter_info.has_jpeg {
-        match image::load_from_memory(&stream.content) {
-            Ok(image) => image,
-            Err(e) => {
-                return Ok(ImageOptimization::Skipped {
-                    stream,
-                    reason: format!("failed to decode JPEG image stream: {e}"),
-                })
-            }
-        }
-    } else {
-        match decode_raw_image_stream(&stream) {
-            Ok(image) => image,
-            Err(e) => {
-                return Ok(ImageOptimization::Skipped {
-                    stream,
-                    reason: format!("failed to decode raw image stream: {e}"),
-                })
-            }
-        }
-    };
-
-    // --- Resize if needed (two-pass for large images) ---
-    ensure_not_cancelled(cancel_flag, task_id)?;
-    let optimized = resize_if_needed_fast(dynamic_image, settings.max_image_size_px);
-    let color_space_name = if optimized.color().has_color() {
-        "DeviceRGB"
-    } else {
-        "DeviceGray"
-    };
-
-    // --- Decode + resize the alpha plane to match the color plane ---
-    let new_smask = if has_smask {
-        let Some(raw_smask) = smask.as_ref().and_then(decode_smask_gray) else {
-            return Ok(ImageOptimization::Skipped {
-                stream,
-                reason: "soft mask uses an unsupported shape for a safe rewrite".into(),
-            });
-        };
-        Some(resize_smask_to(raw_smask, optimized.width(), optimized.height()))
-    } else {
-        None
-    };
-
-    // --- Encode as JPEG ---
-    // Pre-allocate based on conservative compression ratio estimate.
-    ensure_not_cancelled(cancel_flag, task_id)?;
-    let estimated_output_size = (original_len as f32 * 0.65) as usize;
-    let encoded =
-        match encode_dynamic_image_as_jpeg(&optimized, settings.image_quality, estimated_output_size)
-        {
-            Ok(encoded) => encoded,
-            Err(e) => {
-                return Ok(ImageOptimization::Skipped {
-                    stream,
-                    reason: format!("failed to re-encode image as JPEG: {e}"),
-                })
-            }
-        };
-
-    // --- Skip if the new encoding is not smaller AND we didn't resize ---
-    if encoded.len() >= original_len
-        && longest_edge(&stream).is_some_and(|edge| edge <= max_edge)
-    {
-        return Ok(ImageOptimization::Skipped {
-            stream,
-            reason: "existing image stream is already compact for the requested target".into(),
-        });
-    }
-
-    // --- Write optimized stream back ---
-    stream
-        .dict
-        .set("Filter", Object::Name(b"DCTDecode".to_vec()));
-    stream.dict.remove(b"DecodeParms");
-    stream
-        .dict
-        .set("Width", Object::Integer(optimized.width().into()));
-    stream
-        .dict
-        .set("Height", Object::Integer(optimized.height().into()));
-    stream.dict.set("BitsPerComponent", Object::Integer(8));
-    stream.dict.set(
-        "ColorSpace",
-        Object::Name(color_space_name.as_bytes().to_vec()),
-    );
-    stream.set_content(encoded);
-
-    // The rebuilt soft mask ships as a separate flate-compressed grayscale
-    // stream; `apply_image_optimization` attaches it as an indirect object.
-    let smask_stream = new_smask.map(|alpha| {
-        let mut soft_mask = Stream::new(
-            dictionary! {
-                "Type" => "XObject",
-                "Subtype" => "Image",
-                "Width" => i64::from(alpha.width()),
-                "Height" => i64::from(alpha.height()),
-                "ColorSpace" => "DeviceGray",
-                "BitsPerComponent" => 8,
-            },
-            alpha.into_raw(),
-        );
-        let _ = soft_mask.compress();
-        soft_mask
-    });
-
-    Ok(ImageOptimization::Recompressed {
-        stream,
-        smask: smask_stream,
-    })
-}
-
-fn ensure_not_cancelled(cancel_flag: &Arc<AtomicBool>, task_id: &str) -> Result<(), AppError> {
-    if cancel_flag.load(Ordering::Relaxed) {
-        return Err(AppError::Cancelled(task_id.to_string()));
-    }
-
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Soft-mask (transparency) helpers
-// ---------------------------------------------------------------------------
-
-/// Decode an `/SMask` stream into an 8-bit grayscale image. Returns `None`
-/// for any shape we cannot rewrite safely (non-gray, non-8bit, mismatched
-/// byte counts, undecodable filter).
-fn decode_smask_gray(smask: &Stream) -> Option<image::GrayImage> {
-    let width = optional_integer(smask, b"Width")? as u32;
-    let height = optional_integer(smask, b"Height")? as u32;
-    if width == 0 || height == 0 {
-        return None;
-    }
-
-    if optional_integer(smask, b"BitsPerComponent").unwrap_or(8) != 8 {
-        return None;
-    }
-
-    if let Ok(Object::Name(color_space)) = smask.dict.get(b"ColorSpace") {
-        if color_space.as_slice() != b"DeviceGray" {
-            return None;
-        }
-    }
-
-    // A mask without /Filter is spec-legal (raw bytes); get_plain_content
-    // handles both raw and flate-encoded shapes.
-    let data = smask.get_plain_content().ok()?;
-    image::GrayImage::from_raw(width, height, data)
-}
-
-/// Resize the alpha plane to exactly match the color plane dimensions.
-fn resize_smask_to(alpha: image::GrayImage, width: u32, height: u32) -> image::GrayImage {
-    let dynamic = DynamicImage::ImageLuma8(alpha);
-    let resized = if dynamic.width() == width && dynamic.height() == height {
-        dynamic
-    } else {
-        dynamic.resize_exact(width, height, FilterType::CatmullRom)
-    };
-
-    match resized {
-        DynamicImage::ImageLuma8(gray) => gray,
-        other => other.to_luma8(),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Skip heuristics
-// ---------------------------------------------------------------------------
-
-fn skip_recompression_reason(
-    stream: &Stream,
-    settings: &CompressionSettings,
-    filter_info: StreamFilterInfo,
-) -> Option<String> {
-    let edge = longest_edge(stream)?;
-    if edge > u32::from(settings.max_image_size_px) {
-        return None;
-    }
-
-    if stream.content.len() <= SMALL_IMAGE_STREAM_BYTES {
-        return Some("already below target and unlikely to shrink meaningfully".into());
-    }
-
-    let pixels = pixel_count(stream)?;
-    if filter_info.has_jpeg && pixels <= SMALL_JPEG_PIXEL_COUNT {
-        return Some("already near the requested target dimensions".into());
-    }
-
-    None
-}
-
-fn raw_recompression_skip_reason(stream: &Stream, filter_info: StreamFilterInfo) -> Option<String> {
-    if filter_info.has_jpeg {
-        return None;
-    }
-
-    let bits_per_component = optional_integer(stream, b"BitsPerComponent").unwrap_or(8);
-    if bits_per_component != 8 {
-        return Some(format!(
-            "raw image uses unsupported bit depth for safe recompression: {bits_per_component}"
-        ));
-    }
-
-    // Only name-valued DeviceGray/DeviceRGB color spaces are safely decodable.
-    // An absent ColorSpace defaults to DeviceRGB per the PDF spec; anything
-    // else (arrays such as [/ICCBased …] or [/Indexed …]) is skipped because
-    // the raw bytes would be misinterpreted.
-    match stream.dict.get(b"ColorSpace") {
-        Ok(Object::Name(name)) => match name.as_slice() {
-            b"DeviceGray" | b"DeviceRGB" => None,
-            other => Some(format!(
-                "raw image uses unsupported color space for safe recompression: {}",
-                String::from_utf8_lossy(other)
-            )),
-        },
-        Ok(_) => Some(
-            "raw image uses a non-name color space (ICC, indexed, …) that is not safely rewritable"
-                .to_string(),
-        ),
-        Err(_) => None,
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Resize logic
-// ---------------------------------------------------------------------------
-
-/// Fast, two-pass resize strategy optimized for throughput:
-///
-/// 1. If the image is within the edge tolerance, return as-is (no work).
-/// 2. For images above `TWO_PASS_RESIZE_PIXEL_THRESHOLD`:
-///    - **Pass 1**: `Nearest` filter to ~2× the target (extremely fast, removes
-///      the bulk of pixels).
-///    - **Pass 2**: `CatmullRom` filter to exact target (good quality, but now
-///      operating on a much smaller image).
-/// 3. For smaller images: single-pass `CatmullRom` (fast enough at this size).
-///
-/// `CatmullRom` (bicubic) is ~2× faster than `Lanczos3` with nearly
-/// indistinguishable quality for JPEG-bound output.
-fn resize_if_needed_fast(image: DynamicImage, max_edge: u16) -> DynamicImage {
-    let (width, height) = image.dimensions();
-    let longest = width.max(height);
-    let max_edge_u32 = u32::from(max_edge);
-
-    // Within tolerance → no resize needed.
-    let threshold = (max_edge_u32 as f32 * RESIZE_EDGE_TOLERANCE) as u32;
-    if longest <= threshold {
-        return image;
-    }
-
-    let scale = max_edge_u32 as f32 / longest as f32;
-    let target_w = ((width as f32) * scale).round().max(1.0) as u32;
-    let target_h = ((height as f32) * scale).round().max(1.0) as u32;
-
-    let pixel_count = (width as u64) * (height as u64);
-
-    if pixel_count > TWO_PASS_RESIZE_PIXEL_THRESHOLD {
-        // Two-pass: bulk downsample with Nearest, then refine with CatmullRom.
-        let inter_w = (target_w * 2).min(width);
-        let inter_h = (target_h * 2).min(height);
-
-        // Only bother with two-pass if intermediate is meaningfully smaller.
-        if inter_w < width * 3 / 4 {
-            let intermediate = image.resize(inter_w, inter_h, FilterType::Nearest);
-            return intermediate.resize(target_w, target_h, FilterType::CatmullRom);
-        }
-    }
-
-    // Single-pass CatmullRom — fast and high quality for moderate images.
-    image.resize(target_w, target_h, FilterType::CatmullRom)
-}
-
-// ---------------------------------------------------------------------------
-// Image decode / encode helpers
-// ---------------------------------------------------------------------------
-
-/// Decode a raw (non-JPEG) image stream using PDF dictionary metadata.
-fn decode_raw_image_stream(stream: &Stream) -> Result<DynamicImage, AppError> {
-    let width = required_integer(stream, b"Width")? as u32;
-    let height = required_integer(stream, b"Height")? as u32;
-    let bits_per_component = optional_integer(stream, b"BitsPerComponent").unwrap_or(8);
-    let color_space =
-        optional_name(stream, b"ColorSpace").unwrap_or_else(|| "DeviceRGB".to_string());
-
-    if bits_per_component != 8 {
-        return Err(AppError::PdfBuild(
-            "Only 8-bit raw images are currently supported for recompression.".into(),
-        ));
-    }
-
-    let decoded = stream
-        .decompressed_content()
-        .map_err(|e| AppError::PdfBuild(format!("Failed to decompress raw image stream: {e}")))?;
-
-    match color_space.as_str() {
-        "DeviceGray" => image::GrayImage::from_raw(width, height, decoded)
-            .map(DynamicImage::ImageLuma8)
-            .ok_or_else(|| {
-                AppError::PdfBuild(
-                    "Grayscale image bytes did not match the declared dimensions.".into(),
-                )
-            }),
-        "DeviceRGB" => image::RgbImage::from_raw(width, height, decoded)
-            .map(DynamicImage::ImageRgb8)
-            .ok_or_else(|| {
-                AppError::PdfBuild("RGB image bytes did not match the declared dimensions.".into())
-            }),
-        other => Err(AppError::PdfBuild(format!(
-            "Unsupported color space for recompression: {other}"
-        ))),
-    }
-}
-
-/// Encode a `DynamicImage` as JPEG into a `Vec<u8>`.
-///
-/// Uses the jpeg-encoder crate (SIMD build): measured ~3× faster than
-/// image's built-in encoder on photographic content with slightly smaller
-/// output at the same quality number (see `benches/encoder.rs`).
-fn encode_dynamic_image_as_jpeg(
-    image: &DynamicImage,
-    quality: u8,
-    expected_capacity: usize,
-) -> Result<Vec<u8>, AppError> {
-    use std::borrow::Cow;
-
-    let (color_type, pixels): (jpeg_encoder::ColorType, Cow<'_, [u8]>) = match image {
-        DynamicImage::ImageLuma8(gray) => (jpeg_encoder::ColorType::Luma, Cow::Borrowed(gray.as_raw())),
-        DynamicImage::ImageRgb8(rgb) => (jpeg_encoder::ColorType::Rgb, Cow::Borrowed(rgb.as_raw())),
-        other => (jpeg_encoder::ColorType::Rgb, Cow::Owned(other.to_rgb8().into_raw())),
-    };
-
-    let (width, height) = (image.width(), image.height());
-    if width > u16::MAX as u32 || height > u16::MAX as u32 {
-        return Err(AppError::PdfBuild(
-            "Image dimensions exceed the JPEG format limit.".into(),
-        ));
-    }
-
-    // At least 32 KB to avoid re-allocation on small images.
-    let capacity = expected_capacity.max(32 * 1024);
-    let mut output = Vec::with_capacity(capacity);
-    jpeg_encoder::Encoder::new(&mut output, quality)
-        .encode(pixels.as_ref(), width as u16, height as u16, color_type)
-        .map_err(|e| AppError::PdfBuild(format!("Failed to encode JPEG: {e}")))?;
-    Ok(output)
-}
-
-/// Read JPEG dimensions from the SOF marker without decoding the full image.
-/// Scans only the first 64 KB of the stream. Returns `(width, height)`.
-fn jpeg_dimensions_from_header(data: &[u8]) -> Option<(u32, u32)> {
-    if data.len() < 4 || data[0] != 0xFF || data[1] != 0xD8 {
-        return None;
-    }
-
-    let mut pos = 2;
-    let scan_limit = data.len().min(65536);
-
-    while pos + 4 < scan_limit {
-        if data[pos] != 0xFF {
-            pos += 1;
-            continue;
-        }
-
-        let marker = data[pos + 1];
-
-        // SOF markers: C0–CF except C4 (DHT) and CC (DAC).
-        let is_sof = matches!(marker, 0xC0..=0xCF) && marker != 0xC4 && marker != 0xCC;
-
-        if is_sof {
-            if pos + 9 < data.len() {
-                let height = u16::from_be_bytes([data[pos + 5], data[pos + 6]]) as u32;
-                let width = u16::from_be_bytes([data[pos + 7], data[pos + 8]]) as u32;
-                if width > 0 && height > 0 {
-                    return Some((width, height));
-                }
-            }
-            return None;
-        }
-
-        // Skip past this marker segment.
-        if pos + 3 < data.len() {
-            let segment_len = u16::from_be_bytes([data[pos + 2], data[pos + 3]]) as usize;
-            pos += 2 + segment_len;
-        } else {
-            break;
-        }
-    }
-
-    None
-}
-
-// ---------------------------------------------------------------------------
 // Non-image stream compression
 // ---------------------------------------------------------------------------
 
-/// Try to deflate-compress a non-image stream. Returns `true` if compression
-/// was applied.
-fn compress_non_image_stream(stream: &mut Stream) -> bool {
-    if stream.is_compressed() || !stream.allows_compression {
-        return false;
+/// Minimum number of eligible streams before parallel compression pays for
+/// its thread coordination overhead.
+const MIN_PARALLEL_STREAM_OBJECTS: usize = 8;
+
+/// Hard cap on stream-compression threads; each holds one stream at a time
+/// and deflate working memory is small, so this stays generous.
+const MAX_STREAM_WORKERS: usize = 8;
+
+/// Eligibility check: uncompressed, compressible, and large enough for
+/// deflate to plausibly win. Runs on the scan thread per object.
+fn stream_is_compressible(stream: &Stream) -> bool {
+    !stream.is_compressed()
+        && stream.allows_compression
+        && stream.content.len() >= MIN_COMPRESSIBLE_STREAM_BYTES
+}
+
+/// Deflate-compress a batch of eligible non-image streams in parallel.
+/// Streams are moved out, compressed in per-thread chunks (no locking), and
+/// moved back — failures leave a stream untouched, exactly as before.
+fn compress_non_image_streams(
+    document: &mut Document,
+    candidate_ids: &[ObjectId],
+    cancel_flag: &Arc<AtomicBool>,
+    task_id: &str,
+) -> Result<usize, AppError> {
+    // Move the candidates out so worker chunks can own their slice.
+    let mut taken: Vec<(ObjectId, Stream)> = candidate_ids
+        .iter()
+        .filter_map(|&object_id| match document.objects.remove(&object_id) {
+            Some(Object::Stream(stream)) => Some((object_id, stream)),
+            Some(other) => {
+                document.objects.insert(object_id, other);
+                None
+            }
+            None => None,
+        })
+        .collect();
+
+    let worker_count = stream_worker_count(taken.len());
+    let compressed = if worker_count <= 1 {
+        let mut compressed = 0;
+        for (_, stream) in taken.iter_mut() {
+            if cancel_flag.load(Ordering::Relaxed) {
+                break;
+            }
+            if stream.compress().is_ok() {
+                compressed += 1;
+            }
+        }
+        compressed
+    } else {
+        let chunk_size = taken.len().div_ceil(worker_count);
+        thread::scope(|scope| {
+            let mut handles = Vec::with_capacity(worker_count);
+            for chunk in taken.chunks_mut(chunk_size) {
+                let cancel_flag = &*cancel_flag;
+                handles.push(scope.spawn(move || {
+                    let mut compressed = 0;
+                    for (_, stream) in chunk.iter_mut() {
+                        if cancel_flag.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        if stream.compress().is_ok() {
+                            compressed += 1;
+                        }
+                    }
+                    compressed
+                }));
+            }
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap_or(0))
+                .sum()
+        })
+    };
+
+    // Restore every stream, compressed or not.
+    for (object_id, stream) in taken {
+        document.objects.insert(object_id, Object::Stream(stream));
     }
 
-    // Skip streams too small for deflate to help.
-    if stream.content.len() < MIN_COMPRESSIBLE_STREAM_BYTES {
-        return false;
-    }
+    ensure_not_cancelled(cancel_flag, task_id)?;
+    Ok(compressed)
+}
 
-    stream.compress().is_ok()
+fn stream_worker_count(candidate_count: usize) -> usize {
+    if candidate_count < MIN_PARALLEL_STREAM_OBJECTS {
+        return 1;
+    }
+    let available = thread::available_parallelism()
+        .map(|value| value.get())
+        .unwrap_or(1);
+    available
+        .saturating_sub(1)
+        .clamp(1, MAX_STREAM_WORKERS)
+        .min(candidate_count)
 }
 
 // ---------------------------------------------------------------------------
@@ -1280,74 +923,13 @@ fn compress_non_image_stream(stream: &mut Stream) -> bool {
 // ---------------------------------------------------------------------------
 
 fn is_image_stream(stream: &Stream) -> bool {
-    matches!(optional_name(stream, b"Subtype").as_deref(), Some("Image"))
+    // Byte-wise comparison — allocation-free, unlike optional_name, because
+    // this runs against every stream in the document.
+    matches!(stream.dict.get(b"Subtype"), Ok(Object::Name(name)) if name.as_slice() == b"Image")
 }
 
 fn has_mask(stream: &Stream) -> bool {
     stream.dict.get(b"SMask").is_ok() || stream.dict.get(b"Mask").is_ok()
-}
-
-fn stream_filter_info(stream: &Stream) -> StreamFilterInfo {
-    let mut info = StreamFilterInfo::default();
-
-    match stream.dict.get(b"Filter") {
-        Ok(Object::Name(name)) => update_filter_info(name, &mut info),
-        Ok(Object::Array(items)) => {
-            for item in items {
-                if let Object::Name(name) = item {
-                    update_filter_info(name.as_slice(), &mut info);
-                }
-            }
-        }
-        _ => {}
-    }
-
-    info
-}
-
-fn update_filter_info(name: &[u8], info: &mut StreamFilterInfo) {
-    match name {
-        b"DCTDecode" => info.has_jpeg = true,
-        b"FlateDecode" => info.has_flate = true,
-        b"JPXDecode" | b"JBIG2Decode" | b"CCITTFaxDecode" | b"Crypt" => {
-            info.has_unsupported_filter = true;
-        }
-        _ => {}
-    }
-}
-
-fn longest_edge(stream: &Stream) -> Option<u32> {
-    let w = optional_integer(stream, b"Width")?;
-    let h = optional_integer(stream, b"Height")?;
-    if w <= 0 || h <= 0 {
-        return None;
-    }
-    Some(w.max(h) as u32)
-}
-
-fn pixel_count(stream: &Stream) -> Option<u64> {
-    let w = optional_integer(stream, b"Width")?;
-    let h = optional_integer(stream, b"Height")?;
-    if w <= 0 || h <= 0 {
-        return None;
-    }
-    Some((w as u64).saturating_mul(h as u64))
-}
-
-fn optional_name(stream: &Stream, key: &[u8]) -> Option<String> {
-    match stream.dict.get(key) {
-        Ok(Object::Name(name)) => Some(String::from_utf8_lossy(name).into_owned()),
-        _ => None,
-    }
-}
-
-fn required_integer(stream: &Stream, key: &[u8]) -> Result<i64, AppError> {
-    optional_integer(stream, key).ok_or_else(|| {
-        AppError::PdfBuild(format!(
-            "Image stream missing required integer key: {}",
-            String::from_utf8_lossy(key)
-        ))
-    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1394,11 +976,29 @@ fn remove_metadata(document: &mut Document) -> bool {
 // Worker pool sizing
 // ---------------------------------------------------------------------------
 
+/// Soft budget for concurrently-held decoded bitmaps across the image worker
+/// pool. The pool used to run a fixed 8 workers: eight concurrent decodes of
+/// large scans (an 8000×8000 RGB page decodes to ~192 MB) can transiently
+/// hold multiple GiB. Workers are now additionally bounded by this budget
+/// divided by the largest single decoded-bitmap estimate.
+const IMAGE_DECODE_MEMORY_BUDGET_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// Estimate the decoded size of a stream's bitmap. Pixel-count based (3 bytes
+/// per pixel worst case); falls back to a ~12:1 JPEG compression heuristic
+/// when the dictionary carries no usable dimensions.
+pub(crate) fn estimated_decoded_bitmap_bytes(stream: &Stream) -> u64 {
+    match pixel_count(stream) {
+        Some(pixels) => pixels.saturating_mul(3),
+        None => (stream.content.len() as u64).saturating_mul(12),
+    }
+}
+
 /// Decide how many worker threads to use for image optimization.
 /// Uses all available cores minus one (for the main thread), capped at
-/// `MAX_IMAGE_WORKERS`. Falls back to serial for small task counts.
-fn image_worker_count(image_count: usize) -> usize {
-    if image_count < MIN_PARALLEL_IMAGE_OBJECTS {
+/// `MAX_IMAGE_WORKERS` and by the decode memory budget. Falls back to serial
+/// for small task counts.
+pub(crate) fn image_worker_count(task_count: usize, max_estimated_bitmap_bytes: u64) -> usize {
+    if task_count < MIN_PARALLEL_IMAGE_OBJECTS {
         return 1;
     }
 
@@ -1410,7 +1010,16 @@ fn image_worker_count(image_count: usize) -> usize {
     }
 
     let usable = available.saturating_sub(1).max(1);
-    image_count.min(usable).min(MAX_IMAGE_WORKERS)
+    // A missing estimate (`checked_div` → None) or a bitmap larger than the
+    // whole budget still allows one worker — the pool never goes serial here.
+    let memory_cap = (IMAGE_DECODE_MEMORY_BUDGET_BYTES
+        .checked_div(max_estimated_bitmap_bytes)
+        .unwrap_or(0)
+        .max(1)) as usize;
+    task_count
+        .min(usable)
+        .min(MAX_IMAGE_WORKERS)
+        .min(memory_cap)
 }
 
 // ---------------------------------------------------------------------------
@@ -1443,7 +1052,13 @@ fn report_progress_if_needed<F>(
 // File path helpers
 // ---------------------------------------------------------------------------
 
-fn build_output_path(input_path: &Path, settings: &CompressionSettings) -> Result<PathBuf, AppError> {
+/// Pick the output path for `input_path` according to `settings.output_dir`,
+/// with the `__optimized-<preset>` naming and collision suffixes. Shared with
+/// the target-size search, which materializes next to the source file.
+pub(crate) fn build_output_path(
+    input_path: &Path,
+    settings: &CompressionSettings,
+) -> Result<PathBuf, AppError> {
     let parent = if let Some(output_dir) = &settings.output_dir {
         let p = PathBuf::from(output_dir);
         if !p.exists() {
@@ -1456,7 +1071,9 @@ fn build_output_path(input_path: &Path, settings: &CompressionSettings) -> Resul
         input_path
             .parent()
             .ok_or_else(|| {
-                AppError::PdfBuild("Could not determine the source directory for the output PDF.".into())
+                AppError::PdfBuild(
+                    "Could not determine the source directory for the output PDF.".into(),
+                )
             })?
             .to_path_buf()
     };
@@ -1490,48 +1107,17 @@ fn build_output_path(input_path: &Path, settings: &CompressionSettings) -> Resul
 mod tests {
     use super::*;
 
-    /// Build a minimal JPEG byte stream carrying an SOF0 header with the given
-    /// dimensions (values before the SOF marker are an APP0 segment).
-    fn minimal_jpeg_with_dimensions(width: u16, height: u16) -> Vec<u8> {
-        let mut bytes = vec![0xFF, 0xD8];
-        bytes.extend_from_slice(&[0xFF, 0xE0, 0x00, 0x04, 0x41, 0x42]);
-        bytes.extend_from_slice(&[0xFF, 0xC0, 0x00, 0x11, 0x08]);
-        bytes.extend_from_slice(&height.to_be_bytes());
-        bytes.extend_from_slice(&width.to_be_bytes());
-        bytes.extend_from_slice(&[0x03, 0x01, 0x11, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01]);
-        bytes
-    }
-
-    #[test]
-    fn jpeg_header_reader_extracts_dimensions() {
-        let jpeg = minimal_jpeg_with_dimensions(640, 480);
-        assert_eq!(jpeg_dimensions_from_header(&jpeg), Some((640, 480)));
-    }
-
-    #[test]
-    fn jpeg_header_reader_rejects_non_jpeg_input() {
-        assert_eq!(jpeg_dimensions_from_header(&[0x25, 0x50, 0x44, 0x46]), None);
-        assert_eq!(jpeg_dimensions_from_header(&[]), None);
-        assert_eq!(jpeg_dimensions_from_header(&[0xFF, 0xD8]), None);
-    }
-
-    #[test]
-    fn jpeg_header_reader_returns_none_for_zero_dimensions() {
-        let jpeg = minimal_jpeg_with_dimensions(0, 0);
-        assert_eq!(jpeg_dimensions_from_header(&jpeg), None);
-    }
-
     #[test]
     fn worker_count_stays_serial_below_parallel_threshold() {
-        assert_eq!(image_worker_count(0), 1);
-        assert_eq!(image_worker_count(1), 1);
-        assert_eq!(image_worker_count(MIN_PARALLEL_IMAGE_OBJECTS - 1), 1);
+        assert_eq!(image_worker_count(0, 0), 1);
+        assert_eq!(image_worker_count(1, 0), 1);
+        assert_eq!(image_worker_count(MIN_PARALLEL_IMAGE_OBJECTS - 1, 0), 1);
     }
 
     #[test]
     fn worker_count_is_bounded_by_tasks_and_cap() {
         for count in [3usize, 16, 512] {
-            let workers = image_worker_count(count);
+            let workers = image_worker_count(count, 0);
             assert!(workers >= 1, "workers must be at least 1");
             assert!(workers <= count, "workers must not exceed the task count");
             assert!(workers <= MAX_IMAGE_WORKERS, "workers must respect the cap");
@@ -1539,26 +1125,16 @@ mod tests {
     }
 
     #[test]
-    fn resize_skips_images_within_tolerance() {
-        let image = DynamicImage::ImageRgb8(image::RgbImage::new(1000, 500));
-        let resized = resize_if_needed_fast(image, 1000);
-        // 1000 <= 1000 * 1.08 tolerance → returned untouched.
-        assert_eq!(resized.dimensions(), (1000, 500));
-    }
-
-    #[test]
-    fn resize_downscales_longest_edge_to_target() {
-        let image = DynamicImage::ImageRgb8(image::RgbImage::new(2000, 1000));
-        let resized = resize_if_needed_fast(image, 1000);
-        assert_eq!(resized.dimensions(), (1000, 500));
-    }
-
-    #[test]
-    fn resize_never_produces_empty_images() {
-        let image = DynamicImage::ImageRgb8(image::RgbImage::new(3, 2));
-        let resized = resize_if_needed_fast(image, 8000);
-        // Already within tolerance of the (huge) target — unchanged.
-        assert_eq!(resized.dimensions(), (3, 2));
+    fn worker_count_shrinks_under_memory_pressure() {
+        // A 192 MB worst-case bitmap (8000×8000 RGB) caps the pool at
+        // budget / bitmap-bytes workers regardless of core count.
+        let large_bitmap: u64 = 192 * 1024 * 1024;
+        let workers = image_worker_count(64, large_bitmap);
+        assert!(workers >= 1);
+        assert!(
+            workers <= (IMAGE_DECODE_MEMORY_BUDGET_BYTES / large_bitmap) as usize,
+            "decode memory budget must bound the worker count"
+        );
     }
 
     #[test]

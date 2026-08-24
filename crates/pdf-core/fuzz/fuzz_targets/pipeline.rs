@@ -13,8 +13,8 @@ use std::sync::Arc;
 use libfuzzer_sys::fuzz_target;
 
 use pdf_core::{
-    analyze_pdf_with_progress, compress_pdf_with_progress, CompressionSettings,
-    CompressionSettingsOverrides,
+    analyze_pdf_with_progress, compress_pdf_to_target_size, compress_pdf_with_progress,
+    CompressionSettings, CompressionSettingsOverrides,
 };
 
 fuzz_target!(|data: &[u8]| {
@@ -31,9 +31,20 @@ fuzz_target!(|data: &[u8]| {
     let settings = CompressionSettings::from_sources(None, CompressionSettingsOverrides::default());
     let _ = compress_pdf_with_progress(
         &path_str,
-        settings,
+        settings.clone(),
         Arc::new(AtomicBool::new(false)),
         |_| {},
+    );
+
+    // The target-size search is a separate hot path (in-memory probing,
+    // binary quality/edge schedule, materialize + verify) — fuzz it too.
+    // The modest budget keeps valid inputs inside a few probe rounds.
+    let _ = compress_pdf_to_target_size(
+        &path_str,
+        64 * 1024,
+        settings,
+        Arc::new(AtomicBool::new(false)),
+        &mut |_| {},
     );
 
     // Keep the scratch directory empty: output naming deduplicates, so

@@ -26,6 +26,7 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         commands::compress_pdf,
         commands::compress_scanned_pdf,
         commands::cancel_compression,
+        commands::existing_paths,
         commands::app_ready
     ])
 }

@@ -61,6 +61,9 @@ pub struct CompressionSettings {
     pub optimize_images: bool,
     pub compress_streams: bool,
     pub strip_metadata: bool,
+    /// Re-encode color images as 8-bit grayscale (roughly halves image bytes
+    /// for black-and-white scans). No effect on images that are already gray.
+    pub grayscale: bool,
     pub output_dir: Option<String>,
 }
 
@@ -72,6 +75,7 @@ pub struct CompressionSettingsOverrides {
     pub optimize_images: Option<bool>,
     pub compress_streams: Option<bool>,
     pub strip_metadata: Option<bool>,
+    pub grayscale: Option<bool>,
     pub output_dir: Option<String>,
 }
 
@@ -89,6 +93,7 @@ impl CompressionSettings {
         let payload_optimize_images = payload.as_ref().and_then(|value| value.optimize_images);
         let payload_compress_streams = payload.as_ref().and_then(|value| value.compress_streams);
         let payload_strip_metadata = payload.as_ref().and_then(|value| value.strip_metadata);
+        let payload_grayscale = payload.as_ref().and_then(|value| value.grayscale);
         let payload_output_dir = payload.and_then(|value| value.output_dir);
 
         Self {
@@ -115,6 +120,7 @@ impl CompressionSettings {
                 .strip_metadata
                 .or(payload_strip_metadata)
                 .unwrap_or(true),
+            grayscale: overrides.grayscale.or(payload_grayscale).unwrap_or(false),
             output_dir: overrides.output_dir.or(payload_output_dir),
         }
     }
@@ -124,7 +130,11 @@ impl CompressionSettings {
 mod tests {
     use super::*;
 
-    fn payload(preset: Option<&str>, quality: Option<u8>, max_px: Option<u16>) -> Option<CompressionSettingsPayload> {
+    fn payload(
+        preset: Option<&str>,
+        quality: Option<u8>,
+        max_px: Option<u16>,
+    ) -> Option<CompressionSettingsPayload> {
         Some(CompressionSettingsPayload {
             preset: preset.map(str::to_string),
             image_quality: quality,
@@ -132,6 +142,7 @@ mod tests {
             optimize_images: None,
             compress_streams: None,
             strip_metadata: None,
+            grayscale: None,
             output_dir: None,
         })
     }
@@ -162,9 +173,13 @@ mod tests {
 
     #[test]
     fn from_sources_applies_preset_defaults() {
-        let settings = CompressionSettings::from_sources(None, CompressionSettingsOverrides::default());
+        let settings =
+            CompressionSettings::from_sources(None, CompressionSettingsOverrides::default());
         assert_eq!(settings.preset.as_label(), "balanced");
-        assert_eq!(settings.image_quality, CompressionPreset::Balanced.default_quality());
+        assert_eq!(
+            settings.image_quality,
+            CompressionPreset::Balanced.default_quality()
+        );
         assert_eq!(
             settings.max_image_size_px,
             CompressionPreset::Balanced.default_max_image_size_px()
@@ -204,5 +219,21 @@ mod tests {
         );
         assert_eq!(high.image_quality, 100);
         assert_eq!(high.max_image_size_px, 8_000);
+    }
+
+    #[test]
+    fn from_sources_applies_grayscale_flag() {
+        let grayscale = CompressionSettings::from_sources(
+            None,
+            CompressionSettingsOverrides {
+                grayscale: Some(true),
+                ..Default::default()
+            },
+        );
+        assert!(grayscale.grayscale);
+
+        let default =
+            CompressionSettings::from_sources(None, CompressionSettingsOverrides::default());
+        assert!(!default.grayscale);
     }
 }

@@ -4,7 +4,7 @@
 //! Usage:
 //!   pdf-cli analyze <input.pdf>
 //!   pdf-cli compress <input.pdf> [--preset maximum|balanced|conservative]
-//!                    [--quality 10-100] [--max-edge 100-8000]
+//!                    [--quality 10-100] [--max-edge 100-8000] [--grayscale]
 //!                    [--output-dir DIR] [--keep-metadata]
 //!                    [--target-size 5MB]
 //!
@@ -13,8 +13,8 @@
 use std::{process::ExitCode, sync::atomic::AtomicBool, sync::Arc};
 
 use pdf_core::{
-    analyze_pdf_with_progress, compress_pdf_to_target_size, compress_pdf_with_progress,
-    AppError, AppErrorPayload, CompressionSettings, CompressionSettingsOverrides,
+    analyze_pdf_with_progress, compress_pdf_to_target_size, compress_pdf_with_progress, AppError,
+    AppErrorPayload, CompressionSettings, CompressionSettingsOverrides,
 };
 
 const USAGE: &str = "\
@@ -28,6 +28,7 @@ OPTIONS:
     --preset <NAME>       maximum | balanced | conservative (default: balanced)
     --quality <N>         JPEG quality 10-100
     --max-edge <PX>       Maximum image edge in pixels (100-8000)
+    --grayscale           Re-encode color images as grayscale
     --output-dir <DIR>    Write the output into this directory
     --keep-metadata       Keep document metadata (removed by default)
     --target-size <SIZE>  Fit the output under this size (e.g. 5MB, 500K, 3000000)
@@ -110,9 +111,13 @@ fn run(args: &[String]) -> Result<String, AppError> {
             let mut no_progress = |_| {};
 
             match target_bytes {
-                Some(target) => {
-                    compress_pdf_to_target_size(&input, target, settings, Arc::new(AtomicBool::new(false)), &mut no_progress)
-                }
+                Some(target) => compress_pdf_to_target_size(
+                    &input,
+                    target,
+                    settings,
+                    Arc::new(AtomicBool::new(false)),
+                    &mut no_progress,
+                ),
                 None => compress_pdf_with_progress(
                     &input,
                     settings,
@@ -120,9 +125,7 @@ fn run(args: &[String]) -> Result<String, AppError> {
                     |_| {},
                 ),
             }
-            .map(|response| {
-                serde_json::to_string_pretty(&response).expect("serializable")
-            })
+            .map(|response| serde_json::to_string_pretty(&response).expect("serializable"))
         }
         other => Err(AppError::Config(format!("unknown command: {other}"))),
     }
@@ -135,6 +138,11 @@ fn compression_overrides(rest: &[String]) -> Result<CompressionSettingsOverrides
         image_quality: parsed_flag::<u8>(rest, "--quality").map_err(config_error)?,
         max_image_size_px: parsed_flag::<u16>(rest, "--max-edge").map_err(config_error)?,
         output_dir: flag_value(rest, "--output-dir").map_err(config_error)?,
+        grayscale: if rest.iter().any(|arg| arg == "--grayscale") {
+            Some(true)
+        } else {
+            None
+        },
         strip_metadata: if rest.iter().any(|arg| arg == "--keep-metadata") {
             Some(false)
         } else {
@@ -164,5 +172,47 @@ fn main() -> ExitCode {
             );
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{flag_value, parse_size};
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|item| item.to_string()).collect()
+    }
+
+    #[test]
+    fn parse_size_accepts_units_and_raw_bytes() {
+        assert_eq!(parse_size("3000000"), Some(3_000_000));
+        assert_eq!(parse_size("500K"), Some(500 * 1024));
+        assert_eq!(parse_size("5MB"), Some(5 * 1024 * 1024));
+        assert_eq!(parse_size("2 GiB"), Some(2 * 1024 * 1024 * 1024));
+        assert_eq!(parse_size("1b"), Some(1));
+    }
+
+    #[test]
+    fn parse_size_rejects_garbage() {
+        assert_eq!(parse_size("abc"), None);
+        assert_eq!(parse_size("5TB"), None);
+        assert_eq!(parse_size(""), None);
+    }
+
+    #[test]
+    fn flag_value_reads_space_and_inline_forms() {
+        let list = args(&["--preset", "maximum", "--quality=72"]);
+        assert_eq!(
+            flag_value(&list, "--preset"),
+            Ok(Some("maximum".to_string()))
+        );
+        assert_eq!(flag_value(&list, "--quality"), Ok(Some("72".to_string())));
+        assert_eq!(flag_value(&list, "--missing"), Ok(None));
+    }
+
+    #[test]
+    fn flag_value_requires_a_value() {
+        let list = args(&["input.pdf", "--preset"]);
+        assert!(flag_value(&list, "--preset").is_err());
     }
 }

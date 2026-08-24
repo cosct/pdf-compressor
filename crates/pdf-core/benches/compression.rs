@@ -4,55 +4,22 @@
 
 use std::{
     fs,
-    io::Cursor,
     path::PathBuf,
     sync::{atomic::AtomicBool, Arc},
 };
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
-use image::{codecs::jpeg::JpegEncoder, DynamicImage, Rgb, RgbImage};
 use lopdf::{dictionary, Document, Object, Stream};
 
-use pdf_core::pdf::{compress_pdf_with_progress, CompressionSettings, CompressionSettingsOverrides};
-
-/// Gradient plus deterministic noise — behaves like a photograph under JPEG.
-fn deterministic_rgb_image(width: u32, height: u32) -> RgbImage {
-    let mut image = RgbImage::new(width, height);
-    let mut state: u32 = 0x1234_5678;
-
-    for y in 0..height {
-        for x in 0..width {
-            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            let noise = ((state >> 24) & 0xFF) as i32 - 128;
-            let channel = |value: u32, span: u32| (value.saturating_mul(255) / span) as i32;
-            let red = channel(x, width.max(1));
-            let green = channel(y, height.max(1));
-            let blue = channel(x + y, width.saturating_add(height).max(1));
-            let components = [
-                (red + noise).clamp(0, 255) as u8,
-                (green + noise).clamp(0, 255) as u8,
-                (blue + noise).clamp(0, 255) as u8,
-            ];
-            image.put_pixel(x, y, Rgb(components));
-        }
-    }
-
-    image
-}
-
-fn encode_jpeg(image: RgbImage, quality: u8) -> Vec<u8> {
-    let dynamic = DynamicImage::ImageRgb8(image);
-    let mut cursor = Cursor::new(Vec::new());
-    JpegEncoder::new_with_quality(&mut cursor, quality)
-        .encode_image(&dynamic)
-        .expect("failed to encode bench JPEG");
-    cursor.into_inner()
-}
+use pdf_core::pdf::{
+    compress_pdf_with_progress, CompressionSettings, CompressionSettingsOverrides,
+};
+use pdf_core::testutil::{encode_jpeg, fixture_rgb_image};
 
 fn build_fixture_pdf(path: &PathBuf) -> usize {
     const WIDTH: u32 = 1600;
     const HEIGHT: u32 = 1200;
-    let jpeg = encode_jpeg(deterministic_rgb_image(WIDTH, HEIGHT), 95);
+    let jpeg = encode_jpeg(fixture_rgb_image(WIDTH, HEIGHT), 95);
 
     let mut doc = Document::with_version("1.5");
     let pages_id = doc.new_object_id();
@@ -77,7 +44,8 @@ fn build_fixture_pdf(path: &PathBuf) -> usize {
         "Font" => dictionary! { "F1" => font_id },
         "XObject" => dictionary! { "Im0" => image_id },
     });
-    let content = b"q 400 0 0 300 72 400 cm /Im0 Do Q\nBT /F1 24 Tf 72 720 Td (Bench fixture) Tj ET\n";
+    let content =
+        b"q 400 0 0 300 72 400 cm /Im0 Do Q\nBT /F1 24 Tf 72 720 Td (Bench fixture) Tj ET\n";
     let content_id = doc.add_object(Stream::new(dictionary! {}, content.to_vec()));
     let page_id = doc.add_object(dictionary! {
         "Type" => "Page",

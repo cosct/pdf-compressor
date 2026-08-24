@@ -9,56 +9,20 @@ use std::{
     sync::{atomic::AtomicBool, Arc},
 };
 
-use image::{codecs::jpeg::JpegEncoder, DynamicImage, GenericImageView, Rgb, RgbImage};
+use image::{codecs::jpeg::JpegEncoder, DynamicImage, GenericImageView};
 use lopdf::{dictionary, Document, Object, Stream};
 
 use super::analyzer::analyze_pdf_with_progress;
 use super::compressor::compress_pdf_with_progress;
 use super::settings::{CompressionSettings, CompressionSettingsOverrides};
 use super::target_size::compress_pdf_to_target_size;
+use crate::testutil::{encode_jpeg, fixture_rgb_image};
 
 const FIXTURE_TEXT: &str = "Pipeline integration fixture";
 
 // ---------------------------------------------------------------------------
 // Fixture construction
 // ---------------------------------------------------------------------------
-
-/// Gradient plus deterministic noise: behaves like a photograph under JPEG
-/// (poorly compressible at high quality) while staying reproducible.
-fn deterministic_rgb_image(width: u32, height: u32) -> RgbImage {
-    let mut image = RgbImage::new(width, height);
-    let mut state: u32 = 0x1234_5678;
-
-    for y in 0..height {
-        for x in 0..width {
-            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            let noise = ((state >> 24) & 0xFF) as i32 - 128;
-            let channel = |value: u32, span: u32| {
-                (value.saturating_mul(255) / span) as i32
-            };
-            let red = channel(x, width.max(1));
-            let green = channel(y, height.max(1));
-            let blue = channel(x + y, width.saturating_add(height).max(1));
-            let components = [
-                (red + noise).clamp(0, 255) as u8,
-                (green + noise).clamp(0, 255) as u8,
-                (blue + noise).clamp(0, 255) as u8,
-            ];
-            image.put_pixel(x, y, Rgb(components));
-        }
-    }
-
-    image
-}
-
-fn encode_jpeg(image: RgbImage, quality: u8) -> Vec<u8> {
-    let dynamic = DynamicImage::ImageRgb8(image);
-    let mut cursor = Cursor::new(Vec::new());
-    JpegEncoder::new_with_quality(&mut cursor, quality)
-        .encode_image(&dynamic)
-        .expect("failed to encode fixture JPEG");
-    cursor.into_inner()
-}
 
 /// Build a one-page PDF containing visible text, one embedded JPEG image
 /// (optionally with a flate-compressed grayscale soft mask), and optionally
@@ -149,7 +113,8 @@ fn build_pdf_bytes_ext(
     doc.trailer.set("Info", info_id);
 
     let mut bytes = Vec::new();
-    doc.save_modern(&mut bytes).expect("failed to save fixture PDF");
+    doc.save_modern(&mut bytes)
+        .expect("failed to save fixture PDF");
     bytes
 }
 
@@ -164,7 +129,7 @@ fn write_fixture(dir: &Path, name: &str, bytes: &[u8]) -> PathBuf {
 }
 
 fn fresh_fixture(dir: &Path) -> PathBuf {
-    let jpeg = encode_jpeg(deterministic_rgb_image(1600, 1200), 95);
+    let jpeg = encode_jpeg(fixture_rgb_image(1600, 1200), 95);
     write_fixture(dir, "fixture.pdf", &build_pdf_bytes(jpeg, 1600, 1200))
 }
 
@@ -197,12 +162,15 @@ fn analyze_reports_expected_signals() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = fresh_fixture(dir.path());
 
-    let response = analyze_pdf_with_progress(path.to_str().unwrap(), |_| {})
-        .expect("analysis must succeed");
+    let response =
+        analyze_pdf_with_progress(path.to_str().unwrap(), |_| {}).expect("analysis must succeed");
 
     assert_eq!(response.page_count, 1);
     assert_eq!(response.image_object_count, 1);
-    assert!(response.file_size_bytes > 10_000.0, "fixture should be sizable");
+    assert!(
+        response.file_size_bytes > 10_000.0,
+        "fixture should be sizable"
+    );
     assert!(response.max_image_edge_px >= 1200);
 }
 
@@ -243,13 +211,17 @@ fn compress_round_trip_preserves_text_and_shrinks() {
 fn compress_survives_broken_image_stream() {
     // Regression test: one corrupt JPEG inside a PDF must degrade to a skip,
     // never fail the whole file.
-    let mut jpeg = encode_jpeg(deterministic_rgb_image(1600, 1200), 95);
+    let mut jpeg = encode_jpeg(fixture_rgb_image(1600, 1200), 95);
     for byte in jpeg.iter_mut().skip(64) {
         *byte = byte.wrapping_add(0x5A);
     }
 
     let dir = tempfile::tempdir().expect("tempdir");
-    let path = write_fixture(dir.path(), "broken-image.pdf", &build_pdf_bytes(jpeg, 1600, 1200));
+    let path = write_fixture(
+        dir.path(),
+        "broken-image.pdf",
+        &build_pdf_bytes(jpeg, 1600, 1200),
+    );
 
     let response = compress_pdf_with_progress(
         path.to_str().unwrap(),
@@ -270,11 +242,7 @@ fn compress_survives_broken_image_stream() {
 fn mutated_corpus_never_panics() {
     // Deterministic byte mutations of a valid fixture run through load +
     // compression. Ok and Err are both acceptable; panicking is not.
-    let bytes = build_pdf_bytes(
-        encode_jpeg(deterministic_rgb_image(800, 600), 90),
-        800,
-        600,
-    );
+    let bytes = build_pdf_bytes(encode_jpeg(fixture_rgb_image(800, 600), 90), 800, 600);
     let dir = tempfile::tempdir().expect("tempdir");
     let mut rng: u32 = 0xC0FF_EE01;
 
@@ -308,7 +276,7 @@ fn mutated_corpus_never_panics() {
 
 #[test]
 fn compress_dedupes_identical_images() {
-    let jpeg = encode_jpeg(deterministic_rgb_image(1600, 1200), 95);
+    let jpeg = encode_jpeg(fixture_rgb_image(1600, 1200), 95);
     let bytes = build_pdf_bytes_ext(jpeg, 1600, 1200, None, 3);
     let original_text = {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -328,7 +296,10 @@ fn compress_dedupes_identical_images() {
     .expect("compression must succeed");
 
     assert_eq!(response.images_deduplicated, 3);
-    assert!(response.notices.iter().any(|n| n.code == "compress.note.imageDedupe"));
+    assert!(response
+        .notices
+        .iter()
+        .any(|n| n.code == "compress.note.imageDedupe"));
 
     let output = PathBuf::from(&response.output_path);
     let reloaded = Document::load(&output).expect("output must be a valid PDF");
@@ -343,7 +314,7 @@ fn compress_dedupes_identical_images() {
 #[test]
 fn jpeg_encoder_candidate_produces_valid_comparable_output() {
     let (width, height) = (1600u32, 1200u32);
-    let rgb = deterministic_rgb_image(width, height);
+    let rgb = fixture_rgb_image(width, height);
     let dynamic = DynamicImage::ImageRgb8(rgb.clone());
 
     for quality in [58u8, 72, 82] {
@@ -393,7 +364,7 @@ fn jpeg_encoder_candidate_produces_valid_comparable_output() {
 #[test]
 fn compress_rewrites_smask_alpha() {
     let (width, height) = (1600u32, 1200u32);
-    let jpeg = encode_jpeg(deterministic_rgb_image(width, height), 95);
+    let jpeg = encode_jpeg(fixture_rgb_image(width, height), 95);
 
     // Deterministic noisy alpha plane.
     let mut state: u32 = 0x0BAD_F00D;
@@ -438,6 +409,62 @@ fn compress_rewrites_smask_alpha() {
 }
 
 // ---------------------------------------------------------------------------
+// Grayscale re-encoding
+// ---------------------------------------------------------------------------
+
+#[test]
+fn grayscale_mode_rewrites_color_images_as_device_gray() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = fresh_fixture(dir.path());
+
+    let settings = CompressionSettings::from_sources(
+        None,
+        CompressionSettingsOverrides {
+            preset: Some("maximum".to_string()),
+            grayscale: Some(true),
+            ..Default::default()
+        },
+    );
+
+    let response =
+        compress_pdf_with_progress(path.to_str().unwrap(), settings, noop_cancel_flag(), |_| {})
+            .expect("compression must succeed");
+    assert!(
+        response.images_recompressed >= 1,
+        "fixture image must be rewritten"
+    );
+
+    let output = PathBuf::from(&response.output_path);
+    let reloaded = Document::load(&output).expect("output must be a valid PDF");
+
+    // Every rewritten image must declare DeviceGray and its progressive JPEG
+    // payload must decode back through the pipeline's decoder as luma.
+    let mut checked = 0;
+    for object in reloaded.objects.values() {
+        let Object::Stream(stream) = object else {
+            continue;
+        };
+        if !matches!(stream.dict.get(b"Subtype"), Ok(Object::Name(name)) if name.as_slice() == b"Image")
+        {
+            continue;
+        }
+        assert!(
+            matches!(stream.dict.get(b"ColorSpace"), Ok(Object::Name(cs)) if cs.as_slice() == b"DeviceGray"),
+            "rewritten images must be grayscale, got {:?}",
+            stream.dict.get(b"ColorSpace")
+        );
+        // DCTDecode content is the raw JPEG payload — no PDF-side decompression.
+        let decoded = image::load_from_memory(&stream.content).expect("JPEG payload must decode");
+        assert!(
+            !decoded.color().has_color(),
+            "decoded image must be single-channel"
+        );
+        checked += 1;
+    }
+    assert!(checked >= 1, "at least one image must have been rewritten");
+}
+
+// ---------------------------------------------------------------------------
 // Target-size mode
 // ---------------------------------------------------------------------------
 
@@ -460,8 +487,14 @@ fn target_size_mode_meets_budget() {
 
     let output = PathBuf::from(&response.output_path);
     let output_len = fs::metadata(&output).expect("output metadata").len();
-    assert!(output_len <= target, "output {output_len} must fit {target}");
-    assert!(response.notices.iter().any(|n| n.code == "compress.note.targetSizeMet"));
+    assert!(
+        output_len <= target,
+        "output {output_len} must fit {target}"
+    );
+    assert!(response
+        .notices
+        .iter()
+        .any(|n| n.code == "compress.note.targetSizeMet"));
     assert_eq!(extracted_text(&path).trim(), extracted_text(&output).trim());
 }
 
@@ -483,10 +516,8 @@ fn target_size_mode_reports_best_effort() {
     .expect("best-effort output must still be produced");
 
     assert!(PathBuf::from(&response.output_path).exists());
-    assert!(
-        response
-            .notices
-            .iter()
-            .any(|n| n.code == "compress.warning.targetSizeMissed")
-    );
+    assert!(response
+        .notices
+        .iter()
+        .any(|n| n.code == "compress.warning.targetSizeMissed"));
 }

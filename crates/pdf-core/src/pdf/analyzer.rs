@@ -138,8 +138,11 @@ where
         CompressionPreset::Conservative
     };
 
-    let estimated_savings_percent =
-        estimate_savings_percent(recommended_preset, image_stats.total_image_bytes, file_size_bytes);
+    let estimated_savings_percent = estimate_savings_percent(
+        recommended_preset,
+        image_stats.total_image_bytes,
+        file_size_bytes,
+    );
 
     let recommended_max_image_size_px =
         recommend_max_image_size_px(recommended_preset, &image_stats.longest_edges);
@@ -264,7 +267,11 @@ fn collect_analysis_signals(
         let (page_image_references, direct_image_references) =
             collect_page_image_references(document, page_id);
         let has_images = !page_image_references.is_empty() || direct_image_references > 0;
-        let has_text_showing_ops = page_has_text_showing_operations(document, page_id);
+        // Extractable characters imply text-showing operators exist — skip
+        // the second content decode for pages where extraction already
+        // produced text.
+        let has_text_showing_ops =
+            page_text_characters > 0 || page_has_text_showing_operations(document, page_id);
         let has_font_resources = page_has_font_resources(document, page_id);
 
         signals.extracted_text_characters += page_text_characters;
@@ -636,9 +643,18 @@ mod tests {
     #[test]
     fn recommend_max_image_size_px_respects_preset_scaling() {
         let edges = [2000u32];
-        assert_eq!(recommend_max_image_size_px(CompressionPreset::Conservative, &edges), 2000);
-        assert_eq!(recommend_max_image_size_px(CompressionPreset::Balanced, &edges), 1700);
-        assert_eq!(recommend_max_image_size_px(CompressionPreset::Maximum, &edges), 1400);
+        assert_eq!(
+            recommend_max_image_size_px(CompressionPreset::Conservative, &edges),
+            2000
+        );
+        assert_eq!(
+            recommend_max_image_size_px(CompressionPreset::Balanced, &edges),
+            1700
+        );
+        assert_eq!(
+            recommend_max_image_size_px(CompressionPreset::Maximum, &edges),
+            1400
+        );
     }
 
     #[test]

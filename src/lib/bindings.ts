@@ -11,8 +11,14 @@ export const commands = {
 	revealPathInFolder: (path: string) => typedError<null, AppErrorPayload>(__TAURI_INVOKE("reveal_path_in_folder", { path })),
 	analyzePdf: (path: string | null, inputPath: string | null, onProgress: Channel<ProgressUpdate>) => typedError<AnalysisResponse, AppErrorPayload>(__TAURI_INVOKE("analyze_pdf", { path, inputPath, onProgress })),
 	compressPdf: (request: CompressPdfRequest, onProgress: Channel<ProgressUpdate>) => typedError<CompressionResponse, AppErrorPayload>(__TAURI_INVOKE("compress_pdf", { request, onProgress })),
-	compressScannedPdf: (request: CompressScannedPdfRequest, onProgress: Channel<ProgressUpdate>) => typedError<CompressionResponse, AppErrorPayload>(__TAURI_INVOKE("compress_scanned_pdf", { request, onProgress })),
+	compressScannedPdf: (request: CompressScannedPdfRequest_Deserialize, onProgress: Channel<ProgressUpdate>) => typedError<CompressionResponse, AppErrorPayload>(__TAURI_INVOKE("compress_scanned_pdf", { request, onProgress })),
 	cancelCompression: (taskId: string) => typedError<null, AppErrorPayload>(__TAURI_INVOKE("cancel_compression", { taskId })),
+	/**
+	 *  Filter `paths` down to the ones that exist on disk. Used by the frontend
+	 *  to pre-check a restored session queue instead of waiting for each missing
+	 *  file to fail analysis.
+	 */
+	existingPaths: (paths: string[]) => typedError<string[], AppErrorPayload>(__TAURI_INVOKE("existing_paths", { paths })),
 	appReady: () => typedError<null, AppErrorPayload>(__TAURI_INVOKE("app_ready")),
 };
 
@@ -71,15 +77,60 @@ export type CompressPdfRequest = {
 	targetSizeBytes: number | null,
 };
 
-export type CompressScannedPdfRequest = {
+export type CompressScannedPdfRequest = CompressScannedPdfRequest_Serialize | CompressScannedPdfRequest_Deserialize;
+
+export type CompressScannedPdfRequest_Deserialize = {
 	path: string | null,
 	inputPath: string | null,
 	taskId: string | null,
 	settings: CompressionSettingsPayload | null,
 	preset: string | null,
 	imageQuality: number | null,
-	downsampleDpi: number | null,
-	targetDpi: number | null,
+	grayscale: boolean | null,
+	stripMetadata: boolean | null,
+	removeMetadata: boolean | null,
+	outputDir: string | null,
+	/**
+	 *  When set, the engine searches quality/edge parameters until the output
+	 *  fits this byte budget (best effort otherwise).
+	 */
+	targetSizeBytes: number | null,
+} & {
+	/**
+	 *  Maximum image edge in pixels — same semantics as `CompressPdfRequest`.
+	 *  (The historical `downsampleDpi`/`targetDpi` names were misnomers: the
+	 *  value was always consumed as a pixel bound, not a DPI.)
+	 */
+	maxImageSizePx?: number | null,
+} | {
+	/**
+	 *  Maximum image edge in pixels — same semantics as `CompressPdfRequest`.
+	 *  (The historical `downsampleDpi`/`targetDpi` names were misnomers: the
+	 *  value was always consumed as a pixel bound, not a DPI.)
+	 */
+	downsampleDpi?: number | null,
+} | {
+	/**
+	 *  Maximum image edge in pixels — same semantics as `CompressPdfRequest`.
+	 *  (The historical `downsampleDpi`/`targetDpi` names were misnomers: the
+	 *  value was always consumed as a pixel bound, not a DPI.)
+	 */
+	targetDpi?: number | null,
+};
+
+export type CompressScannedPdfRequest_Serialize = {
+	path: string | null,
+	inputPath: string | null,
+	taskId: string | null,
+	settings: CompressionSettingsPayload | null,
+	preset: string | null,
+	imageQuality: number | null,
+	/**
+	 *  Maximum image edge in pixels — same semantics as `CompressPdfRequest`.
+	 *  (The historical `downsampleDpi`/`targetDpi` names were misnomers: the
+	 *  value was always consumed as a pixel bound, not a DPI.)
+	 */
+	maxImageSizePx: number | null,
 	grayscale: boolean | null,
 	stripMetadata: boolean | null,
 	removeMetadata: boolean | null,
@@ -114,6 +165,8 @@ export type CompressionSettingsPayload = {
 	optimizeImages: boolean | null,
 	compressStreams: boolean | null,
 	stripMetadata: boolean | null,
+	/**  Re-encode color images as grayscale (best for black-and-white scans). */
+	grayscale?: boolean | null,
 	outputDir: string | null,
 };
 

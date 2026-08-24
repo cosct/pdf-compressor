@@ -15,6 +15,8 @@
 pub mod error;
 pub mod models;
 pub mod pdf;
+#[cfg(feature = "testutil")]
+pub mod testutil;
 
 pub use error::{AppError, AppErrorPayload};
 pub use pdf::{

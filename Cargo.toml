@@ -25,3 +25,11 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 debug = false
+
+# Image hot loops (decode/resize/encode) benefit from cross-crate inlining and
+# single-unit scheduling; `strip` keeps the shipped binary lean. No
+# `panic = "abort"` — Tauri's spawn_blocking JoinError handling relies on unwind.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
