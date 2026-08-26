@@ -164,6 +164,12 @@ const en = {
     'analysis.note.smallPdf': {
       body: 'Small PDFs often have less room to shrink dramatically.',
     },
+    'analysis.warning.unsupportedImageCodecs': {
+      body: '{count} images use codecs (JBIG2, JPX, CCITT) that this version cannot re-encode; they are preserved as-is and excluded from the estimate.',
+    },
+    'analysis.note.encryptedUnlocked': {
+      body: 'This PDF used owner-password encryption and was unlocked with the empty user password; the compressed export will be unencrypted.',
+    },
     'compress.note.appliedProfile': {
       body: "Applied the '{preset}' profile with JPEG quality {quality} and max image edge {maxImageSizePx} px.",
     },
@@ -188,6 +194,12 @@ const en = {
     'compress.warning.targetSizeMissed': {
       body: 'Could not reach the {targetKb} KB target; produced the best achievable result instead.',
     },
+    'compress.note.decryptedInput': {
+      body: 'The input used owner-password encryption and was read with the empty user password; the output is written unencrypted.',
+    },
+    'compress.warning.outputNotSmaller': {
+      body: 'Optimization could not beat the original {originalBytes} bytes (best result: {bestBytes} bytes); nothing was written.',
+    },
     'compress.warning.imageSkipped': {
       body: 'Skipped image object {objectId}: {reason}',
     },
@@ -198,6 +210,9 @@ const en = {
     },
     'error.invalidPdfPath': {
       body: 'The selected file is not a PDF: {path}',
+    },
+    'error.encryptedPdf': {
+      body: 'This PDF is password-protected or DRM-encrypted; encrypted documents are not supported.',
     },
     'error.image': {
       body: 'Image processing failed: {detail}',

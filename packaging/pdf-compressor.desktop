@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=PDF Compressor
+Name[zh_CN]=PDF 压缩器
+Comment=Compress PDF files locally
+Comment[zh_CN]=本地压缩 PDF 文件
+Exec=pdf-compressor
+Icon=pdf-compressor
+Terminal=false
+Categories=Office;Utility;
+MimeType=application/pdf;
+StartupNotify=true

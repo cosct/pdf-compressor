@@ -33,9 +33,10 @@ cargo test --workspace       # Rust 单元 + 集成测试 + bindings 再生成
 cargo clippy --workspace --all-targets -- -D warnings   # CI 同款 lint
 cargo bench -p pdf-core      # 压缩性能基准（criterion）
 
-cargo run -p pdf-core --bin pdf-cli -- analyze <file.pdf>
-cargo run -p pdf-core --bin pdf-cli -- compress <file.pdf> --preset maximum
-cargo run -p pdf-core --bin pdf-cli -- compress <file.pdf> --target-size 5MB
+cargo run -p pdf-core --bin pdf-compressor-cli -- analyze <file.pdf>
+cargo run -p pdf-core --bin pdf-compressor-cli -- compress <file.pdf> --preset maximum
+cargo run -p pdf-core --bin pdf-compressor-cli -- compress <file.pdf> --target-size 5MB
+cargo run -p pdf-core --bin pdf-compressor-cli -- quick <file.pdf> --grayscale   # 后台模式（右键集成用）
 ```
 
 ## 3. 架构总览
@@ -59,7 +60,7 @@ cargo run -p pdf-core --bin pdf-cli -- compress <file.pdf> --target-size 5MB
 - **`crates/pdf-core`**：纯 PDF 引擎，不依赖 Tauri/UI。公共 API 只有
   `analyze_pdf_with_progress`、`compress_pdf_with_progress`、
   `compress_pdf_to_target_size`、`CompressionSettings(Overrides)` 与错误/模型类型，
-  在 `src/lib.rs` 统一导出。四个前端共享它：Tauri 应用、`pdf-cli`、criterion 基准、cargo-fuzz。
+  在 `src/lib.rs` 统一导出。四个前端共享它：Tauri 应用、`pdf-compressor-cli`、criterion 基准、cargo-fuzz。
   引擎内部分层：`pdf/compressor.rs`（文档编排与批量调度）、`pdf/encode.rs`（单图
   编解码：跳过启发式/解码/缩放/JPEG 重编码/软蒙版）、`pdf/search.rs`（目标大小搜索
   状态：逐图缓存与探测/物化）、`pdf/target_size.rs`（搜索调度与入口）、
@@ -88,8 +89,8 @@ cargo run -p pdf-core --bin pdf-cli -- compress <file.pdf> --target-size 5MB
 | --- | --- | --- |
 | 前端单元 | `npm test` | 队列/调度/取消（usePdfCompressor）、通知计时（useErrorToasts）、右键菜单键盘可达性、设置面板（预设/校验/应用到全部）、App 装配冒烟、en/zh-CN key 树一致性 |
 | 引擎单元 | `cargo test -p pdf-core --lib` | 设置夹紧与优先级、分析推荐公式、JPEG 头解析、worker 数量界、resize 行为、目标大小搜索调度数学（质量二分/边长收缩/边界重置） |
-| 引擎集成 | `cargo test -p pdf-core --lib`（`pdf/tests.rs`） | 真实 lopdf 构造的 PDF：往返保文本且缩减>50%、去重、SMask、灰度、目标大小、96 用例变异语料不 panic |
-| CLI 单元 | `cargo test -p pdf-core --bin pdf-cli` | `parse_size`/`flag_value` 参数解析 |
+| 引擎集成 | `cargo test -p pdf-core --lib`（`pdf/tests.rs`） | 真实 lopdf 构造的 PDF：往返保文本且缩减>50%、去重、SMask、灰度、目标大小、96 用例变异语料不 panic、真加密拒绝/owner-only 解锁、多图小流解除跳过、灰度强制重编码、不写更大输出、预估排除不可解码编码器 |
+| CLI 单元 | `cargo test -p pdf-core --bin pdf-compressor-cli` | `parse_size`/`flag_value`/`split_quick_inputs` 参数解析、quick 通知文案（en/zh） |
 | 桌面壳单元 | `cargo test -p app --lib` | 任务注册表（注册/取消/注销）、输出路径白名单（含规范化）、预设配置原子写/读回/清除/损坏 JSON、`existing_paths` 过滤 |
 | Bindings | `cargo test --workspace`（含 `export_bindings`） | 由 Rust 签名再生成 `src/lib/bindings.ts` —— **命令签名变更后必须运行并提交再生成结果** |
 | 基准 | `cargo bench -p pdf-core` | 全管线各预设、编码器对比（jpeg-encoder vs image crate）；夹具生成器共享自 `testutil` |
@@ -97,10 +98,31 @@ cargo run -p pdf-core --bin pdf-cli -- compress <file.pdf> --target-size 5MB
 | 模糊测试 | `cd crates/pdf-core && cargo +nightly fuzz run pipeline` | 任意字节跑 analyze+compress+目标大小搜索；CI 每次 push 冒烟 60s |
 
 夹具共享：`crates/pdf-core/src/testutil.rs` 提供确定性图片/JPEG 生成器
-（`deterministic_rgb_image`/`fixture_rgb_image`/`encode_jpeg`），由 `testutil` feature
+（`deterministic_rgb_image`/`gradient_rgb_image`/`fixture_rgb_image`/`encode_jpeg`），由 `testutil` feature
 控制，经 crate 对自身的 dev-dependency 只在测试/基准/示例中启用（resolver = "2"
 保证不泄漏进正常构建）。集成测试、两个 bench 与 `examples/make_fixture.rs` 共用它，
 不要在各处复制生成器。
+
+### 引擎加固要点（维护者备忘）
+
+- **lopdf 0.44 是硬要求**：0.38 的 `save_modern` 会把第 2 个及以后的 ObjStm 分配在
+  xref `/Index` 枚举上界之外（`create_xref_steam` 以构造时的 `size` 为界），poppler 渲染
+  时报 `Invalid XRef entry N`。升级前所有多 ObjStm 输出都带此警告；勿降级。
+- **SkipPolicy**（`encode.rs`）：小流跳过阈值是文档级策略——图片对象数 ≥ 24 或显式
+  灰度请求时解除（降到 6KB tiny 下限）。分析器的预估经 `image_is_actionable` 镜像同一
+  套启发式，两边必须同步改，否则预估重新失真。
+- **目标大小搜索**（`target_size.rs`）：经典二分求“适配预算的最高质量”；整个质量范围
+  失败才收缩边长，且新边长下 `hi` 重置为触发塌缩的质量（不是用户质量）。best-effort
+  兜底取“estimate 最小的探测参数”。**中间探测轮的 materialize 禁止 renumber**——
+  `save_and_build_response_with_renumber(…, false)`：renumber 会使搜索条目持有的
+  object id 全部失效，后续轮（或最优轮恢复）会在陈旧 id 上插入流，产出内容错乱的文件。
+- **加密守卫**（`pdf/mod.rs::ensure_not_encrypted`）：lopdf 加载时空密码解密成功的
+  文档（仅 owner 密码）trailer 已无 `/Encrypt`、状态记于 `Document::encryption_state`；
+  认证失败的（真用户密码/DRM）对象图未解析、页数为 0。守卫据此放行前者（清状态 +
+  双端通知）并拒绝后者。
+- **不写更大输出**（`compressor.rs::save_and_build_response_with_renumber`）：先在内存
+  序列化再比较原件，未胜出时不落盘、`output_path` 置空（前端据此禁用打开/显示），
+  并附 `compress.warning.outputNotSmaller` 通知。
 
 CI（`.github/workflows/ci.yml`）在每次 push/PR 执行：前端测试+类型检查+构建、
 Rust clippy `-D warnings` + 测试、两个 MSRV 检查、60s 模糊测试、依赖审计

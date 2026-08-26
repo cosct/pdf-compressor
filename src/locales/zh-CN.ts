@@ -164,6 +164,12 @@ const zhCN = {
     'analysis.note.smallPdf': {
       body: '小体积 PDF 通常难以大幅缩减。',
     },
+    'analysis.warning.unsupportedImageCodecs': {
+      body: '{count} 张图片使用了当前版本无法重编码的编码器（JBIG2、JPX、CCITT）；这些图片将原样保留，且不计入预估。',
+    },
+    'analysis.note.encryptedUnlocked': {
+      body: '该 PDF 使用了 owner 密码加密，已用空用户密码解锁；压缩导出件将是未加密的。',
+    },
     'compress.note.appliedProfile': {
       body: '已应用“{preset}”预设：JPEG 质量 {quality}，图片最大边长 {maxImageSizePx} px。',
     },
@@ -188,6 +194,12 @@ const zhCN = {
     'compress.warning.targetSizeMissed': {
       body: '无法达到 {targetKb} KB 的目标；已生成当前可达的最小结果。',
     },
+    'compress.note.decryptedInput': {
+      body: '输入文件使用 owner 密码加密，已用空用户密码读取；输出将以未加密形式写出。',
+    },
+    'compress.warning.outputNotSmaller': {
+      body: '优化结果（{bestBytes} 字节）未能小于原文件（{originalBytes} 字节）；未写入任何输出。',
+    },
     'compress.warning.imageSkipped': {
       body: '已跳过图片对象 {objectId}：{reason}',
     },
@@ -198,6 +210,9 @@ const zhCN = {
     },
     'error.invalidPdfPath': {
       body: '所选文件不是 PDF：{path}',
+    },
+    'error.encryptedPdf': {
+      body: '该 PDF 带有密码保护或 DRM 加密，暂不支持处理加密文档。',
     },
     'error.image': {
       body: '图片处理失败：{detail}',

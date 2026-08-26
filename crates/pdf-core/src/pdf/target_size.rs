@@ -30,12 +30,13 @@ use lopdf::Document;
 
 use super::compressor::{
     build_output_path, ensure_input_size_supported, estimated_decoded_bitmap_bytes,
-    image_worker_count, prepare_document, save_and_build_response, CompressionStats,
+    image_worker_count, prepare_document, CompressionStats,
 };
+use super::encode::SkipPolicy;
 use super::ensure_not_cancelled;
 use super::search::{
     enforce_bitmap_cache_budget, materialize_image_entry, probe_image_at,
-    take_image_search_entries, ImageSearchEntry, RoundParams,
+    take_image_search_entries, ImageSearchEntry, RoundParams, SearchContext,
 };
 use super::settings::CompressionSettings;
 use super::workers::run_worker_pool;
@@ -48,8 +49,10 @@ use crate::{
 /// destroy the document; the edge shrink takes over instead.
 const MIN_SEARCH_QUALITY: u8 = 15;
 
-/// Upper bound on probe attempts before settling for the best effort.
-const MAX_ATTEMPTS: usize = 6;
+/// Upper bound on probe attempts before settling for the best effort. Each
+/// probe re-encodes from cached decodes, so a generous cap buys tighter
+/// convergence without a proportional runtime cost.
+const MAX_ATTEMPTS: usize = 12;
 
 /// Never shrink the max edge below this while fighting for a budget.
 const MIN_SEARCH_EDGE: u16 = 400;
@@ -84,20 +87,15 @@ where
     ensure_input_size_supported(original_size_bytes)?;
     // The final file lands next to the source with the regular naming.
     let output_path = build_output_path(&input_path, &settings)?;
-    let materialize_context = MaterializeContext {
-        settings: &settings,
-        cancel_flag: &cancel_flag,
-        task_id: path,
-        output_path: &output_path,
-        original_size_bytes,
-        started_at,
-    };
 
     // --- Load the document once for the whole search ---
     ensure_not_cancelled(&cancel_flag, path)?;
     let mut document = Document::load(&input_path)
         .map_err(|e| AppError::PdfBuild(format!("Failed to load PDF: {e}")))?;
-    let mut stats = CompressionStats::default();
+    let mut stats = CompressionStats {
+        decrypted_with_empty_password: super::ensure_not_encrypted(&mut document)?,
+        ..CompressionStats::default()
+    };
 
     // --- Preparation shared by every probe round ---
     let preparation = prepare_document(
@@ -138,14 +136,40 @@ where
     let constant_bytes = baseline_bytes.saturating_sub(original_image_bytes);
 
     // --- Parameter search ---
+    // Classic bisection on JPEG quality for "the highest quality that fits":
+    // a fitting probe raises the floor so leftover budget is spent on quality,
+    // an over-budget probe lowers the ceiling. The edge only shrinks after the
+    // whole quality range failed, and never while a fitting round is known.
+    let skip_policy = SkipPolicy::for_document(entries.len(), settings.grayscale);
+    let search_context = SearchContext {
+        settings: &settings,
+        skip_policy,
+        cancel_flag: &cancel_flag,
+        task_id: path,
+    };
+    let materialize_context = MaterializeContext {
+        search: search_context,
+        output_path: &output_path,
+        original_size_bytes,
+        started_at,
+    };
+    let user_quality = i32::from(settings.image_quality.max(MIN_SEARCH_QUALITY));
     let mut lo = i32::from(MIN_SEARCH_QUALITY);
-    let mut hi = i32::from(settings.image_quality.max(MIN_SEARCH_QUALITY));
+    let mut hi = user_quality;
     let mut edge = settings.max_image_size_px;
-    let mut met: Option<RoundParams> = None;
+    let mut best: Option<(RoundParams, CompressionResponse)> = None;
+    let mut last_materialized: Option<RoundParams> = None;
+    // Quality whose failure collapsed the current range — the next smaller
+    // edge restarts the range at that quality instead of the user's, because
+    // higher qualities already proved over budget at a *larger* edge.
+    let mut collapse_quality = user_quality;
+    // Smallest estimated probe — the best-effort fallback when nothing fits,
+    // so the final output is a measured near-minimum rather than a guess.
+    let mut smallest_probe: Option<(RoundParams, u64)> = None;
     let mut attempts = 0usize;
-    // The schedule can repeat identical (quality, edge) pairs — e.g. the
-    // floor quality twice while waiting for the edge shrink to kick in.
-    // Identical parameters give an identical result, so reuse the estimate.
+    // The schedule can repeat identical (quality, edge) pairs after an edge
+    // reset. Identical parameters give an identical result, so reuse the
+    // estimate.
     let mut last_probed: Option<(RoundParams, u64)> = None;
 
     while attempts < MAX_ATTEMPTS {
@@ -153,36 +177,53 @@ where
             return Err(AppError::Cancelled(path.to_string()));
         }
 
-        // The quality/edge schedule for this attempt (pure — see below).
-        let params = round_params(attempts, lo, hi, edge);
-        let quality = i32::from(params.quality);
-        edge = params.edge;
+        if lo > hi {
+            if best.is_some() || edge <= MIN_SEARCH_EDGE {
+                break;
+            }
+            // The entire quality range is over budget at this edge — shrink
+            // and restart the range at the quality that collapsed it.
+            edge = shrink_search_edge(edge);
+            lo = i32::from(MIN_SEARCH_QUALITY);
+            hi = collapse_quality;
+        }
+
+        let params = RoundParams {
+            quality: next_quality(attempts, lo, hi),
+            edge,
+        };
         attempts += 1;
 
+        let percent = (10.0 + 10.0 * attempts as f32).min(90.0);
         report_progress(
-            ProgressUpdate::new("compressing", 10.0 + 12.0 * attempts as f32).with_message(
-                BackendNotice::new(
-                    "compress.note.targetAttempt",
-                    "neutral",
-                    format!(
-                        "Fitting to the target size: trying JPEG quality {quality} (attempt {attempts})."
-                    ),
-                )
-                .with_value("quality", quality.to_string())
-                .with_value("attempt", attempts.to_string()),
-            ),
+            ProgressUpdate::new("compressing", percent).with_message(BackendNotice::new(
+                "compress.note.targetAttempt",
+                "neutral",
+                format!(
+                    "Fitting to the target size: trying JPEG quality {} (attempt {attempts}).",
+                    params.quality
+                ),
+            )
+            .with_value("quality", params.quality.to_string())
+            .with_value("attempt", attempts.to_string())),
         );
 
         let estimated = match last_probed {
             Some((previous, previous_estimate)) if previous == params => previous_estimate,
             _ => {
-                let estimate = constant_bytes
-                    + run_probe_round(&mut entries, params, &settings, &cancel_flag, path)? as u64;
+                let estimate =
+                    constant_bytes + run_probe_round(&mut entries, params, &search_context)?
+                        as u64;
                 last_probed = Some((params, estimate));
+                if smallest_probe.is_none_or(|(_, size)| estimate < size) {
+                    smallest_probe = Some((params, estimate));
+                }
                 estimate
             }
         };
+        collapse_quality = i32::from(params.quality);
 
+        let mut fits = false;
         if estimated <= target_bytes {
             // Materialize the round and verify against the real budget —
             // the estimate ignores per-image dictionary shape shifts of a
@@ -194,75 +235,92 @@ where
                 params,
                 &materialize_context,
                 &mut stats,
+                false,
             )?;
+            last_materialized = Some(params);
+            fits = response.compressed_size_bytes <= target_bytes as f64;
 
-            if response.compressed_size_bytes <= target_bytes as f64 {
-                met = Some(params);
-                return Ok(with_target_notice(response, target_bytes, met));
+            if fits {
+                best = Some((params, response));
+                // The budget has headroom: try to spend it on quality.
             }
-
-            // Optimistic estimate: keep the written file as best effort and
-            // continue the search with tightened bounds.
+            // An optimistic estimate (fits == false) leaves the file on disk
+            // for now; the finish step restores the best round if one exists.
         }
-
-        let (next_lo, next_hi) = tighten_bounds(lo, hi, quality);
+        let (next_lo, next_hi) = update_quality_range(lo, hi, i32::from(params.quality), fits);
         lo = next_lo;
         hi = next_hi;
     }
 
-    // --- Best effort at the floor parameters ---
-    let final_params = met.unwrap_or(RoundParams {
-        quality: MIN_SEARCH_QUALITY,
-        edge,
-    });
-
-    report_progress(ProgressUpdate::new("writing", 92.0));
-    let response = materialize_and_save(
-        &mut document,
-        &mut entries,
-        final_params,
-        &materialize_context,
-        &mut stats,
-    )?;
+    // --- Finish: keep the best verified fit, else best effort at the floor ---
+    let met = best.as_ref().map(|(params, _)| *params);
+    let response = match best {
+        Some((params, response)) if last_materialized == Some(params) => response,
+        Some((params, _)) => {
+            // A later optimistic round clobbered the best file — restore it.
+            report_progress(ProgressUpdate::new("writing", 92.0));
+            materialize_and_save(
+                &mut document,
+                &mut entries,
+                params,
+                &materialize_context,
+                &mut stats,
+                true,
+            )?
+        }
+        None => {
+            // Best effort: the smallest estimated probe is a measured
+            // near-minimum; fall back to the floor when nothing was probed.
+            let final_params = smallest_probe
+                .map(|(params, _)| params)
+                .unwrap_or(RoundParams {
+                    quality: MIN_SEARCH_QUALITY,
+                    edge,
+                });
+            report_progress(ProgressUpdate::new("writing", 92.0));
+            materialize_and_save(
+                &mut document,
+                &mut entries,
+                final_params,
+                &materialize_context,
+                &mut stats,
+                true,
+            )?
+        }
+    };
 
     Ok(with_target_notice(response, target_bytes, met))
 }
 
 /// Everything the materialize step needs besides the document and entries.
 struct MaterializeContext<'a> {
-    settings: &'a CompressionSettings,
-    cancel_flag: &'a Arc<AtomicBool>,
-    task_id: &'a str,
+    search: SearchContext<'a>,
     output_path: &'a Path,
     original_size_bytes: u64,
     started_at: Instant,
 }
 
-/// Quality/edge parameters for attempt `attempts` (0-based) under the current
-/// bounds: the first attempt probes the upper quality bound, later attempts
-/// bisect; from the fourth attempt the edge shrinks to ¾ (floored).
-fn round_params(attempts: usize, lo: i32, hi: i32, mut edge: u16) -> RoundParams {
+/// Quality to probe next: the upper bound on the first attempt, then the
+/// midpoint of the remaining range. Always within `[MIN_SEARCH_QUALITY, 100]`.
+fn next_quality(attempts: usize, lo: i32, hi: i32) -> u8 {
     let quality = if attempts == 0 { hi } else { (lo + hi) / 2 };
-    if attempts >= 3 {
-        edge = ((u32::from(edge) * 3 / 4).max(u32::from(MIN_SEARCH_EDGE))) as u16;
-    }
-    RoundParams {
-        quality: quality.clamp(i32::from(MIN_SEARCH_QUALITY), i32::from(u8::MAX)) as u8,
-        edge,
+    quality.clamp(i32::from(MIN_SEARCH_QUALITY), i32::from(u8::MAX)) as u8
+}
+
+/// Range update after probing `quality`: a fit raises the floor (the leftover
+/// budget may allow higher quality), a miss lowers the ceiling.
+fn update_quality_range(lo: i32, hi: i32, quality: i32, fits: bool) -> (i32, i32) {
+    if fits {
+        (quality + 1, hi)
+    } else {
+        (lo, quality - 1)
     }
 }
 
-/// Binary-search bound update after probing `quality`: move the floor above
-/// it, or reset both bounds to the floor once the quality range is exhausted
-/// (later attempts then probe the floor quality with a shrinking edge).
-/// The current floor is irrelevant — it is always replaced.
-fn tighten_bounds(_lo: i32, hi: i32, quality: i32) -> (i32, i32) {
-    let lo = quality + 1;
-    if lo > hi {
-        (i32::from(MIN_SEARCH_QUALITY), i32::from(MIN_SEARCH_QUALITY))
-    } else {
-        (lo, hi)
-    }
+/// Edge for the next battle round: three quarters of the current edge,
+/// floored at `MIN_SEARCH_EDGE`.
+fn shrink_search_edge(edge: u16) -> u16 {
+    ((u32::from(edge) * 3 / 4).max(u32::from(MIN_SEARCH_EDGE))) as u16
 }
 
 /// Untouched byte footprint of an entry's streams.
@@ -277,12 +335,15 @@ fn original_entry_bytes(entry: &ImageSearchEntry) -> usize {
 /// Apply one round of parameters to the document and write the output file.
 /// Image counters are reset first: a previous over-budget materialization
 /// already counted its images, and stats must reflect the final parameters.
+/// `final_write` controls object renumbering — see
+/// `save_and_build_response_with_renumber`.
 fn materialize_and_save(
     document: &mut Document,
     entries: &mut [ImageSearchEntry],
     params: RoundParams,
     context: &MaterializeContext<'_>,
     stats: &mut CompressionStats,
+    final_write: bool,
 ) -> Result<CompressionResponse, AppError> {
     stats.images_recompressed = 0;
     stats.images_skipped = 0;
@@ -291,29 +352,22 @@ fn materialize_and_save(
     stats.notices.clear();
 
     for entry in entries.iter_mut() {
-        materialize_image_entry(
-            document,
-            entry,
-            params,
-            context.settings,
-            context.cancel_flag,
-            context.task_id,
-            stats,
-        )?;
+        materialize_image_entry(document, entry, params, &context.search, stats)?;
     }
 
     let final_settings = CompressionSettings {
         image_quality: params.quality,
         max_image_size_px: params.edge,
-        ..context.settings.clone()
+        ..context.search.settings.clone()
     };
-    save_and_build_response(
+    super::compressor::save_and_build_response_with_renumber(
         document,
         context.output_path,
         context.original_size_bytes,
         context.started_at,
         &final_settings,
         stats,
+        final_write,
     )
 }
 
@@ -324,9 +378,7 @@ fn materialize_and_save(
 fn run_probe_round(
     entries: &mut Vec<ImageSearchEntry>,
     params: RoundParams,
-    settings: &CompressionSettings,
-    cancel_flag: &Arc<AtomicBool>,
-    task_id: &str,
+    context: &SearchContext<'_>,
 ) -> Result<usize, AppError> {
     let count = entries.len().max(1);
     let max_bitmap_estimate = entries
@@ -339,7 +391,7 @@ fn run_probe_round(
     if entries.len() < 2 || worker_count <= 1 {
         let mut total = 0usize;
         for entry in entries.iter_mut() {
-            total += probe_image_at(entry, params, settings, cancel_flag, task_id)?;
+            total += probe_image_at(entry, params, context)?;
         }
         enforce_bitmap_cache_budget(entries);
         return Ok(total);
@@ -353,10 +405,10 @@ fn run_probe_round(
         queue,
         worker_count,
         worker_count,
-        cancel_flag,
-        task_id,
+        context.cancel_flag,
+        context.task_id,
         |mut entry: ImageSearchEntry| {
-            let contribution = probe_image_at(&mut entry, params, settings, cancel_flag, task_id);
+            let contribution = probe_image_at(&mut entry, params, context);
             (entry, contribution)
         },
         |(entry, contribution)| {
@@ -408,76 +460,82 @@ mod tests {
 
     #[test]
     fn first_round_probes_the_upper_quality_bound() {
-        let params = round_params(0, i32::from(MIN_SEARCH_QUALITY), 80, 1600);
-        assert_eq!(params.quality, 80);
-        assert_eq!(params.edge, 1600);
+        assert_eq!(next_quality(0, i32::from(MIN_SEARCH_QUALITY), 80), 80);
     }
 
     #[test]
-    fn later_rounds_bisect_the_quality_range_without_touching_the_edge() {
-        let params = round_params(1, 15, 80, 1600);
-        assert_eq!(params.quality, (15 + 80) / 2);
-        assert_eq!(params.edge, 1600);
-
-        let early = round_params(2, 15, 47, 1600);
-        assert_eq!(early.edge, 1600);
-    }
-
-    #[test]
-    fn edge_shrinks_from_the_fourth_attempt_with_a_floor() {
-        let params = round_params(3, 15, 80, 1600);
-        assert_eq!(params.edge, 1200);
-
-        // Shrinks compound attempt over attempt: 1200 → 900 → 675 → 506 → 400…
-        let compounded = round_params(7, 15, 15, 1200);
-        assert_eq!(compounded.edge, 900);
-
-        // Below the floor the edge clamps instead of undershooting.
-        let floored = round_params(6, 15, 15, 500);
-        assert_eq!(floored.edge, MIN_SEARCH_EDGE);
+    fn later_rounds_bisect_the_quality_range() {
+        assert_eq!(next_quality(1, 15, 80), (15 + 80) / 2);
+        assert_eq!(next_quality(2, 15, 47), (15 + 47) / 2);
     }
 
     #[test]
     fn quality_never_drops_below_the_search_floor() {
         // Degenerate bounds (lo > hi) still yield a usable in-range quality.
-        let params = round_params(2, 90, 80, 1600);
-        assert!(params.quality >= MIN_SEARCH_QUALITY);
-        assert!(params.quality <= 100);
+        let quality = next_quality(2, 90, 80);
+        assert!(quality >= MIN_SEARCH_QUALITY);
+        assert!(quality <= 100);
     }
 
     #[test]
-    fn bounds_move_up_after_a_miss_and_reset_once_exhausted() {
-        assert_eq!(tighten_bounds(15, 80, 50), (51, 80));
-        // quality = hi exhausts the range → reset to the floor so later
-        // attempts probe MIN_SEARCH_QUALITY with a shrinking edge.
-        assert_eq!(
-            tighten_bounds(15, 80, 80),
-            (
-                i32::from(MIN_SEARCH_QUALITY),
-                i32::from(MIN_SEARCH_QUALITY)
-            )
-        );
+    fn a_fit_raises_the_floor_and_a_miss_lowers_the_ceiling() {
+        assert_eq!(update_quality_range(15, 80, 50, true), (51, 80));
+        assert_eq!(update_quality_range(15, 80, 50, false), (15, 49));
     }
 
     #[test]
-    fn a_full_schedule_respects_the_attempt_cap_and_shrinks_the_edge() {
+    fn edge_shrink_compounds_with_a_floor() {
+        assert_eq!(shrink_search_edge(1600), 1200);
+        assert_eq!(shrink_search_edge(1200), 900);
+        // Below the floor the edge clamps instead of undershooting.
+        assert_eq!(shrink_search_edge(500), MIN_SEARCH_EDGE);
+    }
+
+    #[test]
+    fn bisection_converges_to_the_highest_fitting_quality() {
+        // Simulate the loop's range arithmetic against a synthetic "fits"
+        // predicate: quality 62 fits, anything higher does not.
+        let fits = |quality: i32| quality <= 62;
+        let mut lo = i32::from(MIN_SEARCH_QUALITY);
+        let mut hi = 80;
+        let mut best = None;
+        for attempts in 0..MAX_ATTEMPTS {
+            if lo > hi {
+                break;
+            }
+            let quality = i32::from(next_quality(attempts, lo, hi));
+            let (next_lo, next_hi) = update_quality_range(lo, hi, quality, fits(quality));
+            if fits(quality) {
+                best = Some(quality);
+            }
+            lo = next_lo;
+            hi = next_hi;
+        }
+        assert_eq!(best, Some(62));
+    }
+
+    #[test]
+    fn nothing_fitting_keeps_the_range_falling_until_the_floor() {
         let mut lo = i32::from(MIN_SEARCH_QUALITY);
         let mut hi = 80;
         let mut edge = 1600u16;
-        let mut last = None;
-
+        let mut shrinks = 0;
         for attempts in 0..MAX_ATTEMPTS {
-            let params = round_params(attempts, lo, hi, edge);
-            edge = params.edge;
-            let (next_lo, next_hi) = tighten_bounds(lo, hi, i32::from(params.quality));
+            if lo > hi {
+                if edge <= MIN_SEARCH_EDGE {
+                    break;
+                }
+                edge = shrink_search_edge(edge);
+                shrinks += 1;
+                lo = i32::from(MIN_SEARCH_QUALITY);
+                hi = 80;
+            }
+            let quality = i32::from(next_quality(attempts, lo, hi));
+            let (next_lo, next_hi) = update_quality_range(lo, hi, quality, false);
             lo = next_lo;
             hi = next_hi;
-            last = Some(params);
         }
-
-        let last = last.expect("schedule produced a round");
-        assert!(last.quality >= MIN_SEARCH_QUALITY);
-        assert!(last.edge >= MIN_SEARCH_EDGE);
-        assert!(last.edge < 1600, "edge must have shrunk by the last attempt");
+        assert!(shrinks >= 1, "edge must shrink once the quality range fails");
+        assert!(edge >= MIN_SEARCH_EDGE);
     }
 }

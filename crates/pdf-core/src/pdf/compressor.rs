@@ -20,7 +20,7 @@ use std::{
 
 use lopdf::{Document, Object, ObjectId, Stream};
 
-use super::encode::{optimize_image_stream, pixel_count, ImageOptimization};
+use super::encode::{optimize_image_stream, pixel_count, ImageOptimization, SkipPolicy};
 use super::ensure_not_cancelled;
 use super::settings::CompressionSettings;
 use super::workers::{run_worker_pool, CHANNEL_BUFFER_MULTIPLIER};
@@ -79,6 +79,9 @@ pub(crate) struct CompressionStats {
     pub(crate) images_deduplicated: usize,
     pub(crate) streams_compressed: usize,
     pub(crate) metadata_removed: bool,
+    /// The input carried `/Encrypt` but lopdf unlocked it with the empty user
+    /// password (owner-password-only restrictions); the output is plain.
+    pub(crate) decrypted_with_empty_password: bool,
     pub(crate) notices: Vec<BackendNotice>,
     pub(crate) image_skip_notices: usize,
     pub(crate) suppressed_skip_notices: usize,
@@ -141,7 +144,10 @@ where
     ensure_not_cancelled(&cancel_flag, path)?;
     let mut document = Document::load(&input_path)
         .map_err(|e| AppError::PdfBuild(format!("Failed to load PDF: {e}")))?;
-    let mut stats = CompressionStats::default();
+    let mut stats = CompressionStats {
+        decrypted_with_empty_password: super::ensure_not_encrypted(&mut document)?,
+        ..CompressionStats::default()
+    };
 
     report_progress(ProgressUpdate::new(
         "compressing",
@@ -193,23 +199,42 @@ pub(crate) fn save_and_build_response(
     settings: &CompressionSettings,
     stats: &mut CompressionStats,
 ) -> Result<CompressionResponse, AppError> {
-    // --- Cleanup & write output ---
+    save_and_build_response_with_renumber(
+        document,
+        output_path,
+        original_size_bytes,
+        started_at,
+        settings,
+        stats,
+        true,
+    )
+}
+
+/// `renumber_objects` must be `false` for intermediate target-size probe
+/// rounds: renumbering invalidates the object ids the search entries still
+/// hold, so a later round (or the best-round restore) would insert streams at
+/// stale ids. Only the final, kept write renumbers.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn save_and_build_response_with_renumber(
+    document: &mut Document,
+    output_path: &Path,
+    original_size_bytes: u64,
+    started_at: Instant,
+    settings: &CompressionSettings,
+    stats: &mut CompressionStats,
+    renumber_objects: bool,
+) -> Result<CompressionResponse, AppError> {
+    // --- Cleanup & serialize in memory ---
     document.prune_objects();
-    document.renumber_objects();
+    if renumber_objects {
+        document.renumber_objects();
+    }
 
-    let mut output_file = fs::File::create(output_path)?;
+    let mut serialized = Vec::new();
     document
-        .save_modern(&mut output_file)
+        .save_modern(&mut serialized)
         .map_err(|e| AppError::PdfBuild(format!("Failed to save optimized PDF: {e}")))?;
-
-    // --- Compute result metrics ---
-    let compressed_size_bytes = fs::metadata(output_path)?.len();
-    let saved_bytes = original_size_bytes.saturating_sub(compressed_size_bytes);
-    let savings_percent = if original_size_bytes == 0 {
-        0.0
-    } else {
-        (saved_bytes as f32 / original_size_bytes as f32) * 100.0
-    };
+    let compressed_size_bytes = serialized.len() as u64;
 
     // --- Build result notices ---
     stats.notices.insert(
@@ -233,6 +258,14 @@ pub(crate) fn save_and_build_response(
         "neutral",
         "The optimizer preserves text and vector instructions when a rewrite is not safe.",
     ));
+    if stats.decrypted_with_empty_password {
+        stats.notices.push(BackendNotice::new(
+            "compress.note.decryptedInput",
+            "neutral",
+            "The input used owner-password encryption and was read with the empty user \
+             password; the output is written unencrypted.",
+        ));
+    }
     if stats.suppressed_skip_notices > 0 {
         stats.notices.push(
             BackendNotice::new(
@@ -267,20 +300,61 @@ pub(crate) fn save_and_build_response(
         ));
     }
 
-    Ok(CompressionResponse {
-        output_path: output_path.to_string_lossy().to_string(),
+    let elapsed_ms = started_at.elapsed().as_millis().min(u32::MAX as u128) as u32;
+    let counters = CompressionResponse {
+        output_path: String::new(),
         original_size_bytes: original_size_bytes as f64,
         compressed_size_bytes: compressed_size_bytes as f64,
-        saved_bytes: saved_bytes as f64,
-        savings_percent,
-        elapsed_ms: started_at.elapsed().as_millis().min(u32::MAX as u128) as u32,
+        saved_bytes: 0.0,
+        savings_percent: 0.0,
+        elapsed_ms,
         images_recompressed: stats.images_recompressed as u32,
         images_skipped: stats.images_skipped as u32,
         images_deduplicated: stats.images_deduplicated as u32,
         streams_compressed: stats.streams_compressed as u32,
         metadata_removed: stats.metadata_removed,
-        output_was_smaller: compressed_size_bytes < original_size_bytes,
+        output_was_smaller: false,
         notices: std::mem::take(&mut stats.notices),
+    };
+
+    // --- Never leave an output that did not improve on the original ---
+    // Serialize-then-compare (instead of write-then-stat) so a non-improving
+    // result never touches the disk; a file left behind by an earlier
+    // optimistic round of the target-size search is removed.
+    if original_size_bytes > 0 && compressed_size_bytes >= original_size_bytes {
+        let _ = fs::remove_file(output_path);
+        let mut response = counters;
+        response.notices.insert(
+            0,
+            BackendNotice::new(
+                "compress.warning.outputNotSmaller",
+                "warning",
+                format!(
+                    "Optimization could not beat the original {original_size_bytes} bytes \
+                     (best result: {compressed_size_bytes} bytes); nothing was written."
+                ),
+            )
+            .with_value("originalBytes", original_size_bytes.to_string())
+            .with_value("bestBytes", compressed_size_bytes.to_string()),
+        );
+        return Ok(response);
+    }
+
+    fs::write(output_path, &serialized)?;
+
+    let saved_bytes = original_size_bytes.saturating_sub(compressed_size_bytes);
+    let savings_percent = if original_size_bytes == 0 {
+        0.0
+    } else {
+        (saved_bytes as f32 / original_size_bytes as f32) * 100.0
+    };
+
+    Ok(CompressionResponse {
+        output_path: output_path.to_string_lossy().to_string(),
+        saved_bytes: saved_bytes as f64,
+        savings_percent,
+        output_was_smaller: true,
+        ..counters
     })
 }
 
@@ -599,6 +673,7 @@ where
         .max()
         .unwrap_or(0);
     let worker_count = image_worker_count(task_count, max_bitmap_estimate);
+    let skip_policy = SkipPolicy::for_document(task_count, settings.grayscale);
 
     // --- Serial path (1 worker) ---
     if worker_count <= 1 {
@@ -616,6 +691,7 @@ where
                 settings,
                 runtime.cancel_flag,
                 runtime.task_id,
+                skip_policy,
                 None,
             )?;
             apply_image_optimization(document, object_id, stream, smask, optimization, stats);
@@ -652,6 +728,7 @@ where
                 settings,
                 runtime.cancel_flag,
                 runtime.task_id,
+                skip_policy,
                 None,
             );
             // The borrowed originals travel back with the outcome so

@@ -17,6 +17,7 @@ use lopdf::{Dictionary, Document, Object, ObjectId, Stream};
 use crate::{
     error::AppError,
     models::{AnalysisResponse, BackendNotice, ProgressUpdate},
+    pdf::encode::SkipPolicy,
     pdf::settings::CompressionPreset,
 };
 
@@ -44,9 +45,25 @@ struct AnalysisSignals {
 struct ImageDimensionStats {
     image_object_count: usize,
     longest_edges: Vec<u32>,
-    /// Total stored bytes of all image streams — the basis for the savings
-    /// estimate, since image recompression is where the wins come from.
+    /// Total stored bytes of all image streams.
     total_image_bytes: u64,
+    /// Bytes in images the compressor can plausibly act on — codec supported
+    /// and not skipped by the fast-path heuristics at the recommended edge.
+    /// The basis for the savings estimate; over-counting here is exactly how
+    /// "estimated 36%, delivered 1%" happens (e.g. JBIG2-only scans).
+    actionable_image_bytes: u64,
+    /// Images stored with codecs (JBIG2, JPX, CCITT, Crypt) that no safe
+    /// re-encode path exists for; they are preserved untouched.
+    unsupported_codec_count: usize,
+}
+
+/// One image XObject observed during the object scan.
+struct ImageStreamRecord {
+    bytes: u64,
+    longest_edge: Option<u32>,
+    pixels: Option<u64>,
+    is_jpeg: bool,
+    codec_supported: bool,
 }
 
 pub fn analyze_pdf_with_progress<F>(
@@ -62,14 +79,20 @@ where
     let file_size_bytes = fs::metadata(&input_path)?.len();
     ensure_input_size_supported(file_size_bytes)?;
 
-    let document = Document::load(&input_path)
+    let mut document = Document::load(&input_path)
         .map_err(|error| AppError::PdfBuild(format!("Failed to inspect PDF structure: {error}")))?;
+    let decrypted_with_empty_password = super::ensure_not_encrypted(&mut document)?;
 
     report_progress(ProgressUpdate::new("analyzing", 20.0));
 
     let page_map = document.get_pages();
     let page_count = page_map.len();
-    let image_stats = collect_image_stream_stats(&document);
+    let image_records = collect_image_stream_records(&document);
+    let image_object_count = image_records.len();
+    let longest_edges: Vec<u32> = image_records
+        .iter()
+        .filter_map(|record| record.longest_edge)
+        .collect();
 
     report_progress(ProgressUpdate::new("analyzing", 45.0));
 
@@ -89,7 +112,7 @@ where
             inspected_page_count,
         )
     } else {
-        average_per_page(image_stats.image_object_count as f32, page_count)
+        average_per_page(image_object_count as f32, page_count)
     };
     let text_page_ratio = ratio(signals.pages_with_extractable_text, inspected_page_count);
     let structural_text_ratio = ratio(
@@ -138,14 +161,19 @@ where
         CompressionPreset::Conservative
     };
 
+    let recommended_max_image_size_px =
+        recommend_max_image_size_px(recommended_preset, &longest_edges);
+    // Fold the raw records into stats under the recommended edge so the
+    // estimate mirrors the compressor's skip heuristics.
+    let image_stats =
+        summarize_image_records(image_records, u32::from(recommended_max_image_size_px));
+
     let estimated_savings_percent = estimate_savings_percent(
         recommended_preset,
-        image_stats.total_image_bytes,
+        image_stats.actionable_image_bytes,
         file_size_bytes,
     );
 
-    let recommended_max_image_size_px =
-        recommend_max_image_size_px(recommended_preset, &image_stats.longest_edges);
     let recommended_image_quality = recommended_preset.default_quality();
     let max_image_edge_px = if image_stats.longest_edges.is_empty() {
         0
@@ -209,6 +237,30 @@ where
             "analysis.warning.noImages",
             "warning",
             "No embedded image objects were detected, so savings may rely on stream compression and metadata cleanup.",
+        ));
+    }
+
+    if image_stats.unsupported_codec_count > 0 {
+        notices.push(
+            BackendNotice::new(
+                "analysis.warning.unsupportedImageCodecs",
+                "warning",
+                format!(
+                    "{} images use codecs (JBIG2, JPX, CCITT) that this version cannot \
+                     re-encode; they are preserved as-is and excluded from the estimate.",
+                    image_stats.unsupported_codec_count
+                ),
+            )
+            .with_value("count", image_stats.unsupported_codec_count.to_string()),
+        );
+    }
+
+    if decrypted_with_empty_password {
+        notices.push(BackendNotice::new(
+            "analysis.note.encryptedUnlocked",
+            "neutral",
+            "This PDF used owner-password encryption and was unlocked with the empty \
+             user password; the compressed export will be unencrypted.",
         ));
     }
 
@@ -330,8 +382,9 @@ fn build_analysis_page_sample(page_map: &BTreeMap<u32, ObjectId>) -> Vec<(u32, O
         .collect()
 }
 
-fn collect_image_stream_stats(document: &Document) -> ImageDimensionStats {
-    let mut stats = ImageDimensionStats::default();
+/// Scan every image XObject in the document into raw records.
+fn collect_image_stream_records(document: &Document) -> Vec<ImageStreamRecord> {
+    let mut records = Vec::new();
 
     for object in document.objects.values() {
         let Object::Stream(stream) = object else {
@@ -342,26 +395,68 @@ fn collect_image_stream_stats(document: &Document) -> ImageDimensionStats {
             continue;
         }
 
-        stats.image_object_count += 1;
-        stats.total_image_bytes += stream.content.len() as u64;
-
-        let Some(width) = optional_integer(stream, b"Width") else {
-            continue;
+        let width = optional_integer(stream, b"Width").filter(|value| *value > 0);
+        let height = optional_integer(stream, b"Height").filter(|value| *value > 0);
+        let (longest_edge, pixels) = match (width, height) {
+            (Some(width), Some(height)) => {
+                let (w, h) = (width as u32, height as u32);
+                (Some(w.max(h)), Some(u64::from(w) * u64::from(h)))
+            }
+            _ => (None, None),
         };
-        let Some(height) = optional_integer(stream, b"Height") else {
-            continue;
-        };
+        let (is_jpeg, codec_supported) = super::encode::image_codec_class(stream);
 
-        if width > 0 && height > 0 {
-            stats.longest_edges.push((width.max(height)) as u32);
+        records.push(ImageStreamRecord {
+            bytes: stream.content.len() as u64,
+            longest_edge,
+            pixels,
+            is_jpeg,
+            codec_supported,
+        });
+    }
+
+    records
+}
+
+/// Fold raw records into stats under the recommended preset's edge and the
+/// document-shaped skip policy.
+fn summarize_image_records(
+    records: Vec<ImageStreamRecord>,
+    recommended_edge: u32,
+) -> ImageDimensionStats {
+    let mut stats = ImageDimensionStats {
+        image_object_count: records.len(),
+        ..ImageDimensionStats::default()
+    };
+    let skip_policy = SkipPolicy::for_document(stats.image_object_count, false);
+    for record in &records {
+        stats.total_image_bytes += record.bytes;
+        if let Some(edge) = record.longest_edge {
+            stats.longest_edges.push(edge);
+        }
+        if !record.codec_supported {
+            stats.unsupported_codec_count += 1;
+            continue;
+        }
+        if super::encode::image_is_actionable(
+            record.is_jpeg,
+            record.codec_supported,
+            record.bytes,
+            record.longest_edge,
+            record.pixels,
+            recommended_edge,
+            skip_policy,
+        ) {
+            stats.actionable_image_bytes += record.bytes;
         }
     }
 
     stats
 }
 
-/// Estimate savings from what actually shrinks: image bytes re-encoded at the
-/// preset's quality/edge targets, plus a small flat gain from stream
+/// Estimate savings from what actually shrinks: the **actionable** image bytes
+/// (codec supported and not skipped by the fast-path heuristics) re-encoded at
+/// the preset's quality/edge targets, plus a small flat gain from stream
 /// compression and metadata cleanup of the non-image remainder. Falls back to
 /// a modest floor for image-free documents.
 fn estimate_savings_percent(

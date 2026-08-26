@@ -1,0 +1,39 @@
+[Desktop Entry]
+Type=Service
+MimeType=application/pdf;
+Actions=pdfCompressBalanced;pdfCompressMaximum;pdfCompressScanned;pdfCompressTarget;
+X-KDE-Priority=TopLevel
+X-KDE-Submenu=PDF Compressor
+X-KDE-Submenu[zh_CN]=PDF 压缩
+
+[Desktop Action pdfCompressBalanced]
+Name=Compress PDF (balanced)
+Name[zh_CN]=压缩 PDF（均衡）
+Comment=Shrink this PDF next to the original, no window opened
+Comment[zh_CN]=在原文件旁生成压缩副本，不打开窗口
+Exec=pdf-compressor-cli quick %F
+Icon=pdf-compressor
+
+[Desktop Action pdfCompressMaximum]
+Name=Compress PDF (maximum)
+Name[zh_CN]=压缩 PDF（最大化）
+Comment=Aggressive shrink with smaller images
+Comment[zh_CN]=更激进的图像压缩
+Exec=pdf-compressor-cli quick --preset maximum %F
+Icon=pdf-compressor
+
+[Desktop Action pdfCompressScanned]
+Name=Compress scanned PDF (grayscale)
+Name[zh_CN]=压缩扫描件（灰度）
+Comment=Best for black-and-white scans
+Comment[zh_CN]=适合黑白扫描文档
+Exec=pdf-compressor-cli quick --grayscale %F
+Icon=pdf-compressor
+
+[Desktop Action pdfCompressTarget]
+Name=Compress PDF under 5 MB
+Name[zh_CN]=压缩 PDF 至 5MB 以内
+Comment=Search settings until the output fits the budget
+Comment[zh_CN]=自动搜索参数直到满足大小预算
+Exec=pdf-compressor-cli quick --target-size 5MB %F
+Icon=pdf-compressor

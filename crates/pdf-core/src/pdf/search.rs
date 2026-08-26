@@ -7,7 +7,7 @@ use std::{collections::HashSet, sync::{atomic::AtomicBool, Arc}};
 use lopdf::{Document, Object, ObjectId, Stream};
 
 use super::compressor::{record_image_skip, take_image_tasks, CompressionStats, ImageTask};
-use super::encode::{optimize_image_stream, ImageOptimization, ImageSearchCache};
+use super::encode::{optimize_image_stream, ImageOptimization, ImageSearchCache, SkipPolicy};
 use super::settings::CompressionSettings;
 use crate::error::AppError;
 
@@ -39,6 +39,15 @@ pub(crate) struct RoundParams {
     pub edge: u16,
 }
 
+/// Shared per-run context for probing and materializing search entries.
+#[derive(Clone, Copy)]
+pub(crate) struct SearchContext<'a> {
+    pub settings: &'a CompressionSettings,
+    pub skip_policy: SkipPolicy,
+    pub cancel_flag: &'a Arc<AtomicBool>,
+    pub task_id: &'a str,
+}
+
 /// Move the image objects (and their exclusive soft masks) out of the
 /// document as search entries, largest first. Mirrors `take_image_tasks`.
 pub(crate) fn take_image_search_entries(
@@ -65,21 +74,20 @@ pub(crate) fn take_image_search_entries(
 pub(crate) fn probe_image_at(
     entry: &mut ImageSearchEntry,
     params: RoundParams,
-    settings: &CompressionSettings,
-    cancel_flag: &Arc<AtomicBool>,
-    task_id: &str,
+    context: &SearchContext<'_>,
 ) -> Result<usize, AppError> {
     let round_settings = CompressionSettings {
         image_quality: params.quality,
         max_image_size_px: params.edge,
-        ..settings.clone()
+        ..context.settings.clone()
     };
     let optimization = optimize_image_stream(
         &entry.stream,
         entry.smask.as_ref().map(|(_, smask)| smask),
         &round_settings,
-        cancel_flag,
-        task_id,
+        context.cancel_flag,
+        context.task_id,
+        context.skip_policy,
         Some(&mut entry.cache),
     )?;
     let contribution = image_contribution(entry, &optimization);
@@ -116,9 +124,7 @@ pub(crate) fn materialize_image_entry(
     document: &mut Document,
     entry: &mut ImageSearchEntry,
     params: RoundParams,
-    settings: &CompressionSettings,
-    cancel_flag: &Arc<AtomicBool>,
-    task_id: &str,
+    context: &SearchContext<'_>,
     stats: &mut CompressionStats,
 ) -> Result<(), AppError> {
     if !entry
@@ -126,7 +132,7 @@ pub(crate) fn materialize_image_entry(
         .as_ref()
         .is_some_and(|last| last.params == params)
     {
-        probe_image_at(entry, params, settings, cancel_flag, task_id)?;
+        probe_image_at(entry, params, context)?;
     }
 
     let optimization = &entry

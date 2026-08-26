@@ -47,6 +47,32 @@ pub fn fixture_rgb_image(width: u32, height: u32) -> RgbImage {
     deterministic_rgb_image(width, height, FIXTURE_SEED)
 }
 
+/// Smooth gradient with a light deterministic dither: compresses to the
+/// "small but not tiny" JPEG range (a few tens of KB at moderate quality),
+/// mimicking compact real-world scans for skip-heuristic tests. Reproducible
+/// for a given `seed`.
+pub fn gradient_rgb_image(width: u32, height: u32, seed: u32) -> RgbImage {
+    let mut image = RgbImage::new(width, height);
+    let mut state: u32 = seed;
+    let band = (width / 32).max(1);
+
+    for y in 0..height {
+        for x in 0..width {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let dither = ((state >> 28) & 0x7) as i32 - 4;
+            let wave = ((x + y + (seed % 64)) / band) as i32 * 3;
+            let components = [
+                (128 + wave + dither).clamp(0, 255) as u8,
+                (96 + wave / 2 + dither).clamp(0, 255) as u8,
+                (160 + wave * 2 / 3 + dither).clamp(0, 255) as u8,
+            ];
+            image.put_pixel(x, y, Rgb(components));
+        }
+    }
+
+    image
+}
+
 /// Encode an RGB image as JPEG with the image crate's built-in encoder.
 pub fn encode_jpeg(image: RgbImage, quality: u8) -> Vec<u8> {
     let dynamic = DynamicImage::ImageRgb8(image);

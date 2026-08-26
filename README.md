@@ -15,12 +15,19 @@ This project is designed for selective PDF optimization rather than blind whole-
 - Embedded image streams can be recompressed as JPEG and resized when needed
 - Images carrying transparency (`/SMask`) are rewritten with their alpha plane preserved
 - Byte-identical duplicate images (logos, stamps) are losslessly merged into shared references
-- A target-size mode searches quality/resolution parameters until the output fits a byte budget (UI, CLI `--target-size`, and IPC)
+- A target-size mode searches quality/resolution parameters until the output fits a byte budget (UI, CLI `--target-size`, and IPC) — it bisects for the highest quality that fits, spends leftover budget on quality, and only shrinks the image edge once the whole quality range failed
 - Eligible non-image PDF streams can be compressed
 - Document metadata can be removed
-- The UI runs an analysis pass first so the user can review likely savings and a suggested preset before export
+- The UI runs an analysis pass first so the user can review likely savings and a suggested preset before export; the estimate only counts images the compressor can actually act on (JBIG2/JPX/CCITT-coded images are reported as preserved instead of promised as savings)
+- Safety rails: encrypted documents that need a real password are rejected up front, owner-password-only files are unlocked and re-written unencrypted, and a result that would not beat the original is never written to disk
 
 The application is desktop-first and local-first. There is no upload flow and no cloud processing. The desktop release supports a local queue so multiple PDFs can be analyzed and compressed in batch.
+
+### Engine behavior notes
+
+- **Image-heavy documents**: when a PDF carries many image objects (24+), the small-stream skip heuristics are lifted — hundreds of compact scans add up to real savings, while the per-image "only replace when smaller" rule still guarantees no bloat. An explicit grayscale request lifts the skips the same way.
+- **Right-click quick mode never leaves a worse file**: see [Background mode](#background-mode-right-click-quick-compress).
+- **CJK documents**: text, embedded font subsets, and ToUnicode maps are preserved verbatim (objects are moved, not re-interpreted); verified end-to-end on a 42-page Chinese document and a Japanese sample — character-extraction multisets are identical and renders are pixel-comparable.
 
 ## Installation
 
@@ -213,7 +220,7 @@ Vue UI -> Tauri bridge -> Rust commands -> PDF analysis/compression engine -> ou
 - `crates/pdf-core/src/pdf/settings.rs` — Settings normalization with backend defaults and range clamping
 - `crates/pdf-core/src/models.rs` — Analysis/compression payloads serialized between Rust and callers
 - `crates/pdf-core/src/error.rs` — Shared engine error type with i18n-compatible error codes
-- `crates/pdf-core/src/bin/pdf-cli.rs` — `pdf-cli` binary (analyze / compress, with `--preset` and `--target-size`)
+- `crates/pdf-core/src/bin/pdf-compressor-cli.rs` — `pdf-compressor-cli` binary (analyze / compress, and the headless `quick` mode with desktop notifications)
 - `crates/pdf-core/benches/` — Criterion benchmarks (compression pipeline, JPEG encoder comparison)
 - `crates/pdf-core/fuzz/fuzz_targets/pipeline.rs` — cargo-fuzz target
 
@@ -277,7 +284,7 @@ Vue UI -> Tauri bridge -> Rust commands -> PDF analysis/compression engine -> ou
 │     │  │  └─ tests.rs             # Pipeline integration tests
 │     │  ├─ testutil.rs             # Deterministic fixture builders (tests/benches/examples)
 │     │  └─ bin/
-│     │     └─ pdf-cli.rs           # pdf-cli binary
+│     │     └─ pdf-compressor-cli.rs # pdf-compressor-cli binary
 │     ├─ benches/                   # Criterion benchmarks
 │     ├─ examples/                  # Fixture generators for manual benchmarking
 │     └─ fuzz/                      # cargo-fuzz target (pipeline)
@@ -351,15 +358,28 @@ cargo test --workspace      # Rust unit + pipeline integration tests
 cargo bench -p pdf-core     # Compression benchmarks (criterion)
 ```
 
-The Rust code is a Cargo workspace: `crates/pdf-core` is the pure PDF engine (analyzer, compressor, models, a `pdf-cli` binary, benchmarks, and the cargo-fuzz target), and `src-tauri` is the desktop shell. The Rust test suite includes an `export_bindings` test that regenerates `src/lib/bindings.ts` (the typed IPC layer produced by tauri-specta). Whenever a Tauri command signature changes, run `cargo test --workspace` and commit the regenerated bindings alongside the change.
+The Rust code is a Cargo workspace: `crates/pdf-core` is the pure PDF engine (analyzer, compressor, models, a `pdf-compressor-cli` binary, benchmarks, and the cargo-fuzz target), and `src-tauri` is the desktop shell. The Rust test suite includes an `export_bindings` test that regenerates `src/lib/bindings.ts` (the typed IPC layer produced by tauri-specta). Whenever a Tauri command signature changes, run `cargo test --workspace` and commit the regenerated bindings alongside the change.
 
 A small CLI is available for shell use and debugging:
 
 ```bash
-cargo run -p pdf-core --bin pdf-cli -- analyze <file.pdf>
-cargo run -p pdf-core --bin pdf-cli -- compress <file.pdf> --preset maximum
-cargo run -p pdf-core --bin pdf-cli -- compress <file.pdf> --target-size 5MB
+cargo run -p pdf-core --bin pdf-compressor-cli -- analyze <file.pdf>
+cargo run -p pdf-core --bin pdf-compressor-cli -- compress <file.pdf> --preset maximum
+cargo run -p pdf-core --bin pdf-compressor-cli -- compress <file.pdf> --target-size 5MB
 ```
+
+### Background mode (right-click quick compress)
+
+`pdf-compressor-cli quick` is the headless mode behind the file-manager integration. It compresses each input next to the original (standard `__optimized-<preset>` naming), deletes outputs that did not get smaller, prints a JSON summary, and posts a desktop notification through `notify-send` when available:
+
+```bash
+pdf-compressor-cli quick file1.pdf file2.pdf          # balanced preset
+pdf-compressor-cli quick --preset maximum scans.pdf  # aggressive
+pdf-compressor-cli quick --grayscale book-scan.pdf   # best for B&W scans
+pdf-compressor-cli quick --target-size 5MB report.pdf --no-notify
+```
+
+On KDE Plasma, the Arch package installs a Dolphin service menu (`packaging/servicemenus/pdf-compressor.desktop` → `/usr/share/kio/servicemenus/`), so right-clicking PDFs offers a *PDF Compressor* submenu with balanced / maximum / grayscale / target-size actions — no GUI window is opened. Encrypted PDFs are rejected up front with `error.encryptedPdf`; quick mode never leaves a file that is larger than the original.
 
 The PDF engine also has a cargo-fuzz target (`crates/pdf-core/fuzz`) — run it from `crates/pdf-core` with `cargo +nightly fuzz run pipeline`.
 

@@ -20,6 +20,9 @@ pub enum AppError {
     #[error("The selected file is not a PDF: {0}")]
     InvalidPdfPath(PathBuf),
 
+    #[error("The PDF is password-protected or DRM-encrypted; encrypted documents are not supported")]
+    Encrypted,
+
     #[error("Image processing failed: {0}")]
     Image(#[from] ImageError),
 
@@ -63,6 +66,13 @@ impl From<AppError> for AppErrorPayload {
                 code: "error.invalidPdfPath".to_string(),
                 values: BTreeMap::from([("path".to_string(), path.to_string_lossy().to_string())]),
                 fallback: format!("The selected file is not a PDF: {}", path.to_string_lossy()),
+            },
+            AppError::Encrypted => Self {
+                code: "error.encryptedPdf".to_string(),
+                values: BTreeMap::new(),
+                fallback: "The PDF is password-protected or DRM-encrypted; encrypted \
+                           documents are not supported"
+                    .to_string(),
             },
             AppError::Image(error) => Self {
                 code: "error.image".to_string(),

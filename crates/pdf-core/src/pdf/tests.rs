@@ -7,15 +7,17 @@ use std::{
     io::Cursor,
     path::{Path, PathBuf},
     sync::{atomic::AtomicBool, Arc},
+    time::Instant,
 };
 
 use image::{codecs::jpeg::JpegEncoder, DynamicImage, GenericImageView};
-use lopdf::{dictionary, Document, Object, Stream};
+use lopdf::{dictionary, Document, Object, Stream, StringFormat};
 
 use super::analyzer::analyze_pdf_with_progress;
 use super::compressor::compress_pdf_with_progress;
 use super::settings::{CompressionSettings, CompressionSettingsOverrides};
 use super::target_size::compress_pdf_to_target_size;
+use crate::error::AppError;
 use crate::testutil::{encode_jpeg, fixture_rgb_image};
 
 const FIXTURE_TEXT: &str = "Pipeline integration fixture";
@@ -172,6 +174,112 @@ fn analyze_reports_expected_signals() {
         "fixture should be sizable"
     );
     assert!(response.max_image_edge_px >= 1200);
+}
+
+/// Encrypt a saved fixture in place with the given passwords using lopdf's
+/// standard security handler (V1/RC4).
+fn encrypt_fixture(path: &Path, owner_password: &str, user_password: &str) {
+    let mut document = Document::load(path).expect("load fixture for encryption");
+    // The standard security handler derives its key from the file ID.
+    if !document.trailer.has(b"ID") {
+        document.trailer.set(
+            "ID",
+            Object::Array(vec![
+                Object::String(vec![0x11; 16], StringFormat::Hexadecimal),
+                Object::String(vec![0x22; 16], StringFormat::Hexadecimal),
+            ]),
+        );
+    }
+    let version = lopdf::EncryptionVersion::V1 {
+        document: &document,
+        owner_password,
+        user_password,
+        permissions: lopdf::Permissions::all(),
+    };
+    let state = lopdf::EncryptionState::try_from(version).expect("build encryption state");
+    document.encrypt(&state).expect("encrypt fixture");
+    document.save(path).expect("save encrypted fixture");
+}
+
+#[test]
+fn encrypted_document_is_rejected_not_corrupted() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = fresh_fixture(dir.path());
+    // A real user password: lopdf's empty-password auto-decrypt on load fails,
+    // the object graph stays unparsed, and the guard must refuse the file.
+    encrypt_fixture(&path, "owner", "user");
+
+    for label in ["analyze", "compress", "target-size"] {
+        let result = match label {
+            "analyze" => analyze_pdf_with_progress(path.to_str().unwrap(), |_| {}).map(|_| ()),
+            "compress" => compress_pdf_with_progress(
+                path.to_str().unwrap(),
+                maximum_settings(),
+                noop_cancel_flag(),
+                |_| {},
+            )
+            .map(|_| ()),
+            _ => compress_pdf_to_target_size(
+                path.to_str().unwrap(),
+                100_000,
+                maximum_settings(),
+                noop_cancel_flag(),
+                &mut |_| {},
+            )
+            .map(|_| ()),
+        };
+        match result {
+            Err(AppError::Encrypted) => {}
+            other => panic!("{label} must reject encrypted input, got {other:?}"),
+        }
+    }
+
+    // No `__optimized-*.pdf` shell file may be left behind.
+    let leftovers: Vec<_> = fs::read_dir(dir.path())
+        .expect("read dir")
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .contains("__optimized-")
+        })
+        .collect();
+    assert!(leftovers.is_empty(), "no output expected for encrypted PDF");
+}
+
+#[test]
+fn owner_password_only_document_unlocks_and_compresses() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = fresh_fixture(dir.path());
+    // Empty user password (owner-password-only): readable without a password.
+    encrypt_fixture(&path, "owner-secret", "");
+
+    let analysis = analyze_pdf_with_progress(path.to_str().unwrap(), |_| {})
+        .expect("owner-password-only PDF must analyze");
+    assert_eq!(analysis.page_count, 1);
+    assert!(analysis.notices.iter().any(|notice| {
+        notice.code == "analysis.note.encryptedUnlocked"
+    }));
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(),
+        maximum_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("owner-password-only PDF must compress");
+
+    // The output must be a plain, readable, unencrypted PDF.
+    let output = Document::load(&response.output_path).expect("reload output");
+    assert_eq!(output.get_pages().len(), 1);
+    assert!(
+        !output.trailer.has(b"Encrypt"),
+        "output must not carry the /Encrypt dictionary"
+    );
+    assert!(response.notices.iter().any(|notice| {
+        notice.code == "compress.note.decryptedInput"
+    }));
 }
 
 #[test]
@@ -520,4 +628,274 @@ fn target_size_mode_reports_best_effort() {
         .notices
         .iter()
         .any(|n| n.code == "compress.warning.targetSizeMissed"));
+}
+
+// ---------------------------------------------------------------------------
+// Skip-policy adaptive behavior (image-heavy documents, grayscale forcing)
+// ---------------------------------------------------------------------------
+
+/// Build a PDF with `count` distinct small gradient JPEG images (one per
+/// page), each sized to land between the tiny and small skip thresholds.
+fn build_many_small_image_pdf(dir: &Path, count: usize) -> PathBuf {
+    use crate::testutil::{encode_jpeg, gradient_rgb_image};
+
+    let mut doc = Document::with_version("1.5");
+    let pages_id = doc.new_object_id();
+    let mut kids = Vec::new();
+
+    for index in 0..count {
+        let image = gradient_rgb_image(800, 600, 0xA1B2_C3D4u32.wrapping_add(index as u32));
+        let jpeg = encode_jpeg(image, 90);
+        let image_id = doc.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject",
+                "Subtype" => "Image",
+                "Width" => 800,
+                "Height" => 600,
+                "ColorSpace" => "DeviceRGB",
+                "BitsPerComponent" => 8,
+                "Filter" => "DCTDecode",
+            },
+            jpeg,
+        ));
+        let resources_id = doc.add_object(dictionary! {
+            "XObject" => dictionary! { "Im0" => image_id },
+        });
+        let content_id = doc.add_object(Stream::new(
+            dictionary! {},
+            b"q 500 0 0 375 48 400 cm /Im0 Do Q\n".to_vec(),
+        ));
+        let page_id = doc.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "Contents" => content_id,
+            "Resources" => resources_id,
+            "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+        });
+        kids.push(Object::Reference(page_id));
+    }
+
+    doc.objects.insert(
+        pages_id,
+        Object::Dictionary(dictionary! {
+            "Type" => "Pages",
+            "Kids" => kids,
+            "Count" => count as i64,
+        }),
+    );
+    let catalog_id = doc.add_object(dictionary! {
+        "Type" => "Catalog",
+        "Pages" => pages_id,
+    });
+    doc.trailer.set("Root", catalog_id);
+
+    let path = dir.join("many-small-images.pdf");
+    doc.save(&path).expect("save many-image fixture");
+    path
+}
+
+fn balanced_settings() -> CompressionSettings {
+    CompressionSettings::from_sources(
+        None,
+        CompressionSettingsOverrides {
+            preset: Some("balanced".to_string()),
+            ..Default::default()
+        },
+    )
+}
+
+#[test]
+fn image_heavy_documents_recompress_small_streams() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = build_many_small_image_pdf(dir.path(), 30);
+
+    // Sanity: every image sits between the tiny floor and the small-stream
+    // skip threshold, within the balanced edge — the exact band the lift
+    // is designed to unlock.
+    let document = Document::load(&path).expect("load fixture");
+    let sizes: Vec<usize> = document
+        .objects
+        .values()
+        .filter_map(|object| match object {
+            Object::Stream(stream) if stream.dict.get(b"Filter").is_ok() => {
+                Some(stream.content.len())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(sizes.len(), 30);
+    for size in sizes {
+        assert!(
+            size > super::encode::TINY_JPEG_STREAM_BYTES && size <= 64 * 1024,
+            "fixture image of {size} bytes is outside the small-stream band"
+        );
+    }
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(),
+        balanced_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+    assert_eq!(
+        response.images_recompressed, 30,
+        "image-heavy documents must re-encode compact small images"
+    );
+    assert!(response.compressed_size_bytes < response.original_size_bytes);
+}
+
+#[test]
+fn small_document_keeps_skipping_small_streams() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = build_many_small_image_pdf(dir.path(), 4);
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(),
+        balanced_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+    assert_eq!(
+        response.images_recompressed, 0,
+        "below the image-count threshold, small within-target images stay skipped"
+    );
+}
+
+#[test]
+fn grayscale_mode_forces_small_image_recompression() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = build_many_small_image_pdf(dir.path(), 4);
+    let settings = CompressionSettings::from_sources(
+        None,
+        CompressionSettingsOverrides {
+            preset: Some("balanced".to_string()),
+            grayscale: Some(true),
+            ..Default::default()
+        },
+    );
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(),
+        settings,
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+    assert_eq!(
+        response.images_recompressed, 4,
+        "an explicit grayscale request must override the small-stream skip"
+    );
+
+    // The rewritten images must be DeviceGray.
+    let output = Document::load(&response.output_path).expect("reload output");
+    let gray_images = output
+        .objects
+        .values()
+        .filter_map(|object| match object {
+            Object::Stream(stream) => Some(stream),
+            _ => None,
+        })
+        .filter(|stream| {
+            stream
+                .dict
+                .get(b"Subtype")
+                .ok()
+                .and_then(|value| value.as_name().ok())
+                == Some(b"Image".as_slice())
+        })
+        .filter(|stream| {
+            stream
+                .dict
+                .get(b"ColorSpace")
+                .ok()
+                .and_then(|value| value.as_name().ok())
+                == Some(b"DeviceGray".as_slice())
+        })
+        .count();
+    assert_eq!(gray_images, 4);
+}
+
+// ---------------------------------------------------------------------------
+// Output-not-smaller guard
+// ---------------------------------------------------------------------------
+
+#[test]
+fn compress_never_writes_a_larger_output() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = fresh_fixture(dir.path());
+    let original_bytes = fs::read(&path).expect("read original");
+
+    let mut document = Document::load(&path).expect("load fixture");
+    document.prune_objects();
+    let mut stats = crate::pdf::compressor::CompressionStats::default();
+    let output_path = dir.path().join("would-be-output.pdf");
+
+    // Claim an original far smaller than any serialization can be.
+    let response = super::compressor::save_and_build_response(
+        &mut document,
+        &output_path,
+        64,
+        Instant::now(),
+        &maximum_settings(),
+        &mut stats,
+    )
+    .expect("response must be built");
+
+    assert!(!response.output_was_smaller);
+    assert_eq!(response.output_path, "");
+    assert_eq!(response.saved_bytes, 0.0);
+    assert_eq!(response.savings_percent, 0.0);
+    assert!(
+        !output_path.exists(),
+        "nothing may be written when it cannot win"
+    );
+    assert!(response
+        .notices
+        .iter()
+        .any(|notice| notice.code == "compress.warning.outputNotSmaller"));
+    assert_eq!(fs::read(&path).expect("re-read original"), original_bytes);
+}
+
+// ---------------------------------------------------------------------------
+// Analyzer estimate honesty (unsupported codecs excluded)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn analysis_estimate_excludes_undecodable_codecs() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = fresh_fixture(dir.path());
+
+    // Relabel the fixture image as JPXDecode — a codec with no safe
+    // re-encode path — so nothing image-based is actionable anymore.
+    let mut document = Document::load(&path).expect("load fixture");
+    for object in document.objects.values_mut() {
+        if let Object::Stream(stream) = object {
+            if stream
+                .dict
+                .get(b"Subtype")
+                .ok()
+                .and_then(|value| value.as_name().ok())
+                == Some(b"Image".as_slice())
+            {
+                stream.dict.set("Filter", Object::Name(b"JPXDecode".to_vec()));
+            }
+        }
+    }
+    document.save(&path).expect("save relabeled fixture");
+
+    let analysis = analyze_pdf_with_progress(path.to_str().unwrap(), |_| {})
+        .expect("analysis must succeed");
+    assert!(analysis
+        .notices
+        .iter()
+        .any(|notice| notice.code == "analysis.warning.unsupportedImageCodecs"));
+    // With the only image excluded, the estimate must fall to its floor band
+    // instead of promising double-digit image savings.
+    assert!(
+        analysis.estimated_savings_percent < 10.0,
+        "estimate must exclude undecodable image bytes, got {}",
+        analysis.estimated_savings_percent
+    );
 }

@@ -3,10 +3,10 @@
 //!
 //! This crate is the reusable core: it owns the analyzer, compressor,
 //! settings normalization, wire models, and error types. The Tauri app, the
-//! criterion bench, the `pdf-cli` binary, and cargo-fuzz all drive this same
-//! engine.
+//! criterion bench, the `pdf-compressor-cli` binary, and cargo-fuzz all drive
+//! this same engine.
 //! 本 crate 是可复用的核心：分析器、压缩器、设置规范化、线上传输模型和错误类型
-//! 都在这里。Tauri 应用、criterion 基准、pdf-cli 与 cargo-fuzz 驱动同一引擎。
+//! 都在这里。Tauri 应用、criterion 基准、pdf-compressor-cli 与 cargo-fuzz 驱动同一引擎。
 //!
 //! Feature `specta`: derives `specta::Type` on the wire models so the desktop
 //! app can generate TypeScript IPC bindings.
@@ -19,6 +19,7 @@ pub mod pdf;
 pub mod testutil;
 
 pub use error::{AppError, AppErrorPayload};
+pub use models::CompressionResponse;
 pub use pdf::{
     analyze_pdf_with_progress, compress_pdf_to_target_size, compress_pdf_with_progress,
     CompressionSettings, CompressionSettingsOverrides,

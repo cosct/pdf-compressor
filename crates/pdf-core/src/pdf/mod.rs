@@ -22,7 +22,7 @@ use std::sync::{
     Arc,
 };
 
-use lopdf::{Object, Stream};
+use lopdf::{Document, Object, Stream};
 
 use crate::error::AppError;
 
@@ -59,6 +59,41 @@ pub(crate) fn validate_input_path(path: &str) -> Result<std::path::PathBuf, AppE
     }
 
     Ok(candidate)
+}
+
+/// Guard against encrypted documents, with a supported escape hatch.
+///
+/// lopdf transparently decrypts owner-password-only files with the empty user
+/// password during `Document::load`, strips `/Encrypt` from the trailer, and
+/// records the unlock in `Document::encryption_state`. Files that need a real
+/// password — or use DRM handlers like EBX — fail authentication, leave the
+/// object graph unparsed, and are rejected here: re-saving one without its
+/// `/Encrypt` dictionary would emit a corrupt shell document (a real
+/// data-loss hazard reported as "success").
+///
+/// Returns `true` when the input was encrypted and unlocked with the empty
+/// user password; the caller reports it so users know the output is plain.
+/// 拒绝需要真实密码的加密文档；空用户密码可解锁的（仅 owner 密码）放行并告知。
+pub(crate) fn ensure_not_encrypted(document: &mut Document) -> Result<bool, AppError> {
+    if document.trailer.has(b"Encrypt") {
+        if document.get_pages().is_empty() {
+            return Err(AppError::Encrypted);
+        }
+        // Defensive: an /Encrypt that survived a parsed load (lopdf normally
+        // strips it after a successful empty-password decrypt).
+        document.trailer.remove(b"Encrypt");
+        document.encryption_state = None;
+        return Ok(true);
+    }
+
+    // lopdf records the state of a successful empty-password decrypt; a plain
+    // re-save must not carry it into an incremental-save restore path.
+    if document.encryption_state.is_some() {
+        document.encryption_state = None;
+        return Ok(true);
+    }
+
+    Ok(false)
 }
 
 /// Read an optional integer value from a PDF stream dictionary.

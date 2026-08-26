@@ -15,12 +15,19 @@ PDF Compressor 是一个本地优先的桌面 PDF 压缩应用，后端使用 Ru
 - 可处理的嵌入图片流可以重新编码为 JPEG，并在需要时缩小尺寸
 - 带透明度（`/SMask`）的图片会在保留 Alpha 通道的前提下重写
 - 字节级相同的重复图片（Logo、印章）会被无损合并为共享引用
-- 目标大小模式会在质量/分辨率参数空间中搜索，直到输出满足字节预算（UI、CLI `--target-size` 与 IPC 均可使用）
+- 目标大小模式会在质量/分辨率参数空间中搜索，直到输出满足字节预算（UI、CLI `--target-size` 与 IPC 均可使用）——二分查找“能适配预算的最高质量”，把剩余预算花在画质上；只有整个质量范围都失败时才收缩图片边长
 - 符合条件的非图片 PDF 流可以进行压缩
 - 文档元数据可以移除
-- UI 会先执行一次分析，让用户在导出前查看预估收益和推荐预设
+- UI 会先执行一次分析，让用户在导出前查看预估收益和推荐预设；预估只统计压缩器真正能处理的图片（JBIG2/JPX/CCITT 编码的图片会如实报告为“原样保留”，而不是被算进预计收益）
+- 安全护栏：需要真实密码的加密文档会在入口被拒绝；仅 owner 密码（空用户密码可读）的文件会被解锁并以未加密形式重写；优化结果若不能小于原文件，则不会写入磁盘
 
 本应用以桌面优先、本地优先为前提。没有上传流程，没有云端处理。桌面版支持本地队列，可以批量分析和压缩多个 PDF。
+
+### 引擎行为说明
+
+- **图片密集文档**：当 PDF 含有大量图片对象（24 张及以上）时，小流跳过启发式会被解除——数百张紧凑扫描图的累计收益是真实的，而逐图“只有更小才替换”的规则仍保证不会变大。显式请求灰度转换时同样解除跳过。
+- **右键快速模式绝不留下更差的文件**：见[后台模式](#后台模式右键快速压缩)。
+- **CJK 文档**：文本、嵌入字体子集与 ToUnicode 映射按原样保留（对象只被搬运，不被重新解释）；已在 42 页中文文档与日文样本上端到端验证——字符抽取多重集合一致，渲染像素级可比。
 
 ## 安装
 
@@ -169,7 +176,7 @@ Vue UI -> Tauri bridge -> Rust commands -> PDF analysis/compression engine -> ou
 - `crates/pdf-core/src/pdf/settings.rs` — 设置规范化，应用后端默认值并限制范围
 - `crates/pdf-core/src/models.rs` — Rust 与调用方之间序列化传输的分析/压缩载荷结构
 - `crates/pdf-core/src/error.rs` — 引擎统一错误类型，带 i18n 兼容的错误码
-- `crates/pdf-core/src/bin/pdf-cli.rs` — `pdf-cli` 命令行工具（analyze / compress，支持 `--preset` 与 `--target-size`）
+- `crates/pdf-core/src/bin/pdf-compressor-cli.rs` — `pdf-compressor-cli` 命令行工具（analyze / compress / 后台 quick 模式，支持桌面通知）
 - `crates/pdf-core/benches/` — criterion 基准测试（压缩管线、JPEG 编码器对比）
 - `crates/pdf-core/fuzz/fuzz_targets/pipeline.rs` — cargo-fuzz 目标
 
@@ -233,7 +240,7 @@ Vue UI -> Tauri bridge -> Rust commands -> PDF analysis/compression engine -> ou
 │     │  │  └─ tests.rs             # 管线集成测试
 │     │  ├─ testutil.rs             # 确定性夹具生成器（测试/基准/示例共用）
 │     │  └─ bin/
-│     │     └─ pdf-cli.rs           # pdf-cli 命令行工具
+│     │     └─ pdf-compressor-cli.rs # pdf-compressor-cli 命令行工具
 │     ├─ benches/                   # criterion 基准测试
 │     └─ fuzz/                      # cargo-fuzz 目标（pipeline）
 ├─ src-tauri/
@@ -304,15 +311,28 @@ cargo test --workspace      # Rust 单元 + 管线集成测试
 cargo bench -p pdf-core     # 压缩基准测试（criterion）
 ```
 
-Rust 代码是一个 Cargo workspace：`crates/pdf-core` 是纯 PDF 引擎（分析器、压缩器、模型、`pdf-cli` 二进制、基准测试和 cargo-fuzz 目标），`src-tauri` 是桌面壳。Rust 测试套件中有一个 `export_bindings` 测试，负责重新生成 `src/lib/bindings.ts`（由 tauri-specta 产出的类型化 IPC 层）。每当 Tauri 命令签名发生变化，运行 `cargo test --workspace` 并把再生成后的绑定随改动一起提交。
+Rust 代码是一个 Cargo workspace：`crates/pdf-core` 是纯 PDF 引擎（分析器、压缩器、模型、`pdf-compressor-cli` 二进制、基准测试和 cargo-fuzz 目标），`src-tauri` 是桌面壳。Rust 测试套件中有一个 `export_bindings` 测试，负责重新生成 `src/lib/bindings.ts`（由 tauri-specta 产出的类型化 IPC 层）。每当 Tauri 命令签名发生变化，运行 `cargo test --workspace` 并把再生成后的绑定随改动一起提交。
 
 另有一个小型 CLI 可供 shell 使用和调试：
 
 ```bash
-cargo run -p pdf-core --bin pdf-cli -- analyze <file.pdf>
-cargo run -p pdf-core --bin pdf-cli -- compress <file.pdf> --preset maximum
-cargo run -p pdf-core --bin pdf-cli -- compress <file.pdf> --target-size 5MB
+cargo run -p pdf-core --bin pdf-compressor-cli -- analyze <file.pdf>
+cargo run -p pdf-core --bin pdf-compressor-cli -- compress <file.pdf> --preset maximum
+cargo run -p pdf-core --bin pdf-compressor-cli -- compress <file.pdf> --target-size 5MB
 ```
+
+### 后台模式（右键快速压缩）
+
+`pdf-compressor-cli quick` 是文件管理器集成背后的无界面模式：在原文件旁生成压缩副本（沿用 `__optimized-<preset>` 命名），比原文件大时自动丢弃输出，向 stdout 输出 JSON 摘要，并在检测到 `notify-send` 时发送桌面通知：
+
+```bash
+pdf-compressor-cli quick file1.pdf file2.pdf          # 均衡预设
+pdf-compressor-cli quick --preset maximum scans.pdf  # 最大化压缩
+pdf-compressor-cli quick --grayscale book-scan.pdf   # 黑白扫描件最佳
+pdf-compressor-cli quick --target-size 5MB report.pdf --no-notify
+```
+
+在 KDE Plasma 上，Arch 软件包会安装 Dolphin 服务菜单（`packaging/servicemenus/pdf-compressor.desktop` → `/usr/share/kio/servicemenus/`）：右键 PDF 即可看到「PDF 压缩」子菜单，提供均衡 / 最大化 / 灰度 / 目标大小四种动作，全程不打开 GUI 窗口。加密 PDF 会在入口处以 `error.encryptedPdf` 拒绝；quick 模式绝不留下比原文件更大的输出。
 
 PDF 引擎还有 cargo-fuzz 目标（`crates/pdf-core/fuzz`）— 在 `crates/pdf-core` 目录下运行 `cargo +nightly fuzz run pipeline`。
 

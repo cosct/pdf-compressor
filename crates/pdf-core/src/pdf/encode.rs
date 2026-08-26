@@ -14,16 +14,49 @@ use crate::error::AppError;
 
 /// JPEG streams smaller than this are skipped outright — the decode+encode
 /// round-trip cost exceeds any realistic savings on tiny streams.
-const TINY_JPEG_STREAM_BYTES: usize = 6 * 1024;
+pub(super) const TINY_JPEG_STREAM_BYTES: usize = 6 * 1024;
 
 /// Streams below this byte count are considered "small". For small JPEGs that
 /// are already within the target dimensions, recompression is skipped because
 /// the potential savings are negligible.
 const SMALL_IMAGE_STREAM_BYTES: usize = 64 * 1024;
 
+/// Documents with at least this many image objects are "image-heavy": the
+/// per-image small-stream skip is lifted because aggregate savings across
+/// hundreds of small scans justify the decode cost. The final
+/// "only replace when smaller" check still guarantees no per-image bloat.
+pub(super) const SMALL_SKIP_LIFT_IMAGE_OBJECTS: usize = 24;
+
+/// Document-level skip policy — how aggressively already-compact images may
+/// be skipped. Derived once per run and shared with the analyzer so the
+/// savings estimate mirrors what the compressor will actually do.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SkipPolicy {
+    /// Streams at or below this size that already fit the target dimensions
+    /// are skipped. Drops to the tiny floor for image-heavy documents (many
+    /// small scans add up) and when grayscale conversion was requested (the
+    /// user asked for a conversion, not just shrinkage).
+    pub small_stream_bytes: usize,
+}
+
+impl SkipPolicy {
+    /// Policy for a document with `image_object_count` image objects under
+    /// the given grayscale request.
+    pub fn for_document(image_object_count: usize, grayscale_requested: bool) -> Self {
+        let lifted = grayscale_requested || image_object_count >= SMALL_SKIP_LIFT_IMAGE_OBJECTS;
+        Self {
+            small_stream_bytes: if lifted {
+                TINY_JPEG_STREAM_BYTES
+            } else {
+                SMALL_IMAGE_STREAM_BYTES
+            },
+        }
+    }
+}
+
 /// Images with fewer total pixels than this are skipped entirely.
 /// Recompressing a 100×100 icon yields almost no savings.
-const TRIVIAL_PIXEL_COUNT: u64 = 10_000;
+pub(super) const TRIVIAL_PIXEL_COUNT: u64 = 10_000;
 
 /// For small JPEG images that are already at or below the target edge, skip
 /// if pixel count is under this threshold (roughly 500×500).
@@ -98,6 +131,54 @@ impl ImageSearchCache {
     }
 }
 
+/// Codec classification of an image stream: `(is_jpeg, codec_supported)`.
+/// Shared with the analyzer so the savings estimate can mirror what the
+/// compressor would actually attempt.
+pub(crate) fn image_codec_class(stream: &Stream) -> (bool, bool) {
+    let info = stream_filter_info(stream);
+    (info.has_jpeg, !info.has_unsupported_filter)
+}
+
+/// Would the compressor plausibly re-encode an image with these observed
+/// properties at `target_edge` under `policy`? Mirrors the fast-path skip
+/// heuristics of `optimize_image_stream` — used by the analyzer so the
+/// estimated savings only count images that can actually shrink.
+pub(crate) fn image_is_actionable(
+    is_jpeg: bool,
+    codec_supported: bool,
+    bytes: u64,
+    longest_edge: Option<u32>,
+    pixels: Option<u64>,
+    target_edge: u32,
+    policy: SkipPolicy,
+) -> bool {
+    if !codec_supported {
+        return false;
+    }
+    if let Some(pixels) = pixels {
+        if pixels <= TRIVIAL_PIXEL_COUNT {
+            return false;
+        }
+    }
+    if is_jpeg && bytes <= TINY_JPEG_STREAM_BYTES as u64 {
+        return false;
+    }
+    if let Some(edge) = longest_edge {
+        if edge <= target_edge {
+            // Mirrors the two "already compact for the target" fast skips.
+            if bytes <= policy.small_stream_bytes as u64 {
+                return false;
+            }
+            if let Some(pixels) = pixels {
+                if is_jpeg && pixels <= SMALL_JPEG_PIXEL_COUNT {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
 /// Decide whether to recompress a single image stream. Returns quickly for
 /// images that cannot benefit from recompression (fast-path skips). Decode and
 /// encode failures are reported as skips with a reason; only cancellation
@@ -117,6 +198,7 @@ pub(super) fn optimize_image_stream(
     settings: &CompressionSettings,
     cancel_flag: &Arc<AtomicBool>,
     task_id: &str,
+    skip_policy: SkipPolicy,
     mut search_cache: Option<&mut ImageSearchCache>,
 ) -> Result<ImageOptimization, AppError> {
     ensure_not_cancelled(cancel_flag, task_id)?;
@@ -175,7 +257,7 @@ pub(super) fn optimize_image_stream(
             let longest = w.max(h);
 
             // Already within target AND stream is compact → skip.
-            if longest <= max_edge && stream.content.len() <= SMALL_IMAGE_STREAM_BYTES {
+            if longest <= max_edge && stream.content.len() <= skip_policy.small_stream_bytes {
                 return Ok(ImageOptimization::Skipped {
                     reason: "JPEG already within target dimensions and stream size".into(),
                 });
@@ -183,7 +265,9 @@ pub(super) fn optimize_image_stream(
 
             // Near target edge AND very small stream → skip for speed.
             let tolerance_edge = (max_edge as f32 * RESIZE_EDGE_TOLERANCE) as u32;
-            if longest <= tolerance_edge && stream.content.len() <= SMALL_IMAGE_STREAM_BYTES / 2 {
+            if longest <= tolerance_edge
+                && stream.content.len() <= skip_policy.small_stream_bytes / 2
+            {
                 return Ok(ImageOptimization::Skipped {
                     reason: "JPEG near target dimensions with small stream".into(),
                 });
@@ -195,7 +279,7 @@ pub(super) fn optimize_image_stream(
     if let Some(edge) = longest_edge(stream) {
         if filter_info.has_jpeg
             && edge <= max_edge
-            && stream.content.len() <= SMALL_IMAGE_STREAM_BYTES
+            && stream.content.len() <= skip_policy.small_stream_bytes
         {
             return Ok(ImageOptimization::Skipped {
                 reason: "already below target size and unlikely to shrink".into(),
@@ -204,7 +288,7 @@ pub(super) fn optimize_image_stream(
     }
 
     // --- Additional heuristic skip checks ---
-    if let Some(reason) = skip_recompression_reason(stream, settings, filter_info) {
+    if let Some(reason) = skip_recompression_reason(stream, settings, filter_info, skip_policy) {
         return Ok(ImageOptimization::Skipped { reason });
     }
 
@@ -449,13 +533,14 @@ fn skip_recompression_reason(
     stream: &Stream,
     settings: &CompressionSettings,
     filter_info: StreamFilterInfo,
+    skip_policy: SkipPolicy,
 ) -> Option<String> {
     let edge = longest_edge(stream)?;
     if edge > u32::from(settings.max_image_size_px) {
         return None;
     }
 
-    if stream.content.len() <= SMALL_IMAGE_STREAM_BYTES {
+    if stream.content.len() <= skip_policy.small_stream_bytes {
         return Some("already below target and unlikely to shrink meaningfully".into());
     }
 
