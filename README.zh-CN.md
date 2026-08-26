@@ -41,6 +41,13 @@ yay -S pdf-compressor      # 或：paru -S pdf-compressor
 
 若要基于提供的文件在本地构建，请参考 [`aur/pdf-compressor/README.md`](aur/pdf-compressor/README.md)，其中说明了如何替换源码校验和、重新生成 `.SRCINFO`，以及在发布归档之前创建本地源码 tarball 进行测试。
 
+日常从已提交代码树做本地构建，直接用辅助脚本 —— 它用 `git archive HEAD` 裁剪源码 tarball（保证包内容与提交内容完全一致），从发布模板派生 PKGBUILD，并把产物写入被 gitignore 的 `pdf-compressor-local/` 目录：
+
+```bash
+scripts/build-arch-local.sh            # 构建到 pdf-compressor-local/
+scripts/build-arch-local.sh --install  # 构建后经 pkexec 安装
+```
+
 ### 其他平台
 
 目前尚未发布预编译安装包。请按照[构建与发布](#构建与发布)从源码构建。在 Windows 上会生成 NSIS 安装包和便携版可执行文件。

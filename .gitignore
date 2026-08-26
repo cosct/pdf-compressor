@@ -39,3 +39,6 @@ yarn.lock
 *.sw?
 AGENTS.md
 RTK.md
+
+# Local Arch package build outputs (scripts/build-arch-local.sh)
+pdf-compressor-local/

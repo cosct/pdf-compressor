@@ -41,6 +41,13 @@ yay -S pdf-compressor      # or: paru -S pdf-compressor
 
 To build the package locally from the provided files, follow [`aur/pdf-compressor/README.md`](aur/pdf-compressor/README.md). It covers replacing the source checksum, regenerating `.SRCINFO`, and creating a local source tarball for testing before a release archive is published.
 
+For day-to-day local builds from the committed tree, use the helper instead — it cuts the source tarball with `git archive HEAD` (so the package contains exactly what is committed), derives the PKGBUILD from the release template, and writes the package into the gitignored `pdf-compressor-local/` directory:
+
+```bash
+scripts/build-arch-local.sh            # build into pdf-compressor-local/
+scripts/build-arch-local.sh --install  # additionally install via pkexec
+```
+
 ### Other platforms
 
 No prebuilt installers are published yet. Build from source as described in [Build and Release](#build-and-release). On Windows this produces an NSIS installer and a portable executable.
