@@ -27,6 +27,9 @@ pub struct CompressionSettingsPayload {
     /// `"ccitt-g4"` (lossless ITU T.6, best for text scans).
     #[serde(default)]
     pub bilevel_codec: Option<String>,
+    /// Shrink embedded Type0/CIDFontType2 TrueType fonts to the used glyphs.
+    #[serde(default)]
+    pub subset_fonts: Option<bool>,
     pub output_dir: Option<String>,
 }
 

@@ -182,6 +182,8 @@ export type CompressionSettingsPayload = {
 	 *  `"ccitt-g4"` (lossless ITU T.6, best for text scans).
 	 */
 	bilevelCodec?: string | null,
+	/**  Shrink embedded Type0/CIDFontType2 TrueType fonts to the used glyphs. */
+	subsetFonts?: boolean | null,
 	outputDir: string | null,
 };
 

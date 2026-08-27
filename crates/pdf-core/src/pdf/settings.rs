@@ -99,6 +99,9 @@ pub struct CompressionSettings {
     pub grayscale: bool,
     /// Output codec for near-bilevel planes (see `BilevelCodec`).
     pub bilevel_codec: BilevelCodec,
+    /// Shrink embedded Type0/CIDFontType2 TrueType fonts to the used glyphs
+    /// (opt-in; `subset-fonts` feature). Non-eligible fonts are untouched.
+    pub subset_fonts: bool,
     pub output_dir: Option<String>,
 }
 
@@ -112,6 +115,7 @@ pub struct CompressionSettingsOverrides {
     pub strip_metadata: Option<bool>,
     pub grayscale: Option<bool>,
     pub bilevel_codec: Option<BilevelCodec>,
+    pub subset_fonts: Option<bool>,
     pub output_dir: Option<String>,
 }
 
@@ -130,6 +134,7 @@ impl CompressionSettings {
         let payload_compress_streams = payload.as_ref().and_then(|value| value.compress_streams);
         let payload_strip_metadata = payload.as_ref().and_then(|value| value.strip_metadata);
         let payload_grayscale = payload.as_ref().and_then(|value| value.grayscale);
+        let payload_subset_fonts = payload.as_ref().and_then(|value| value.subset_fonts);
         let payload_bilevel_codec = payload
             .as_ref()
             .and_then(|value| value.bilevel_codec.as_deref())
@@ -165,6 +170,10 @@ impl CompressionSettings {
                 .bilevel_codec
                 .or(payload_bilevel_codec)
                 .unwrap_or_default(),
+            subset_fonts: overrides
+                .subset_fonts
+                .or(payload_subset_fonts)
+                .unwrap_or(false),
             output_dir: overrides.output_dir.or(payload_output_dir),
         }
     }
@@ -188,6 +197,7 @@ mod tests {
             strip_metadata: None,
             grayscale: None,
             bilevel_codec: None,
+            subset_fonts: None,
             output_dir: None,
         })
     }

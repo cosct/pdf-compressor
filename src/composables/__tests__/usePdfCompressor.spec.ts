@@ -118,6 +118,7 @@ describe('normalizeSettings', () => {
       stripMetadata: true,
       grayscale: false,
       bilevelCodec: 'jpeg',
+      subsetFonts: false,
       outputDir: '  /tmp/out  ',
       targetFileSizeMb: 99999,
     })
@@ -135,6 +136,7 @@ describe('normalizeSettings', () => {
       stripMetadata: true,
       grayscale: false,
       bilevelCodec: 'jpeg',
+      subsetFonts: false,
       outputDir: null,
       targetFileSizeMb: 0,
     }).targetFileSizeMb).toBeNull()
@@ -151,6 +153,7 @@ describe('normalizeSettings', () => {
       stripMetadata: true,
       grayscale: undefined as unknown as boolean,
       bilevelCodec: undefined as unknown as 'jpeg',
+      subsetFonts: undefined as unknown as boolean,
       outputDir: null,
       targetFileSizeMb: null,
     })
@@ -169,10 +172,12 @@ describe('normalizeSettings', () => {
       stripMetadata: true,
       grayscale: true,
       bilevelCodec: 'ccitt-g4',
+      subsetFonts: true,
       outputDir: null,
       targetFileSizeMb: null,
     })
     expect(normalized.bilevelCodec).toBe('ccitt-g4')
+    expect(normalized.subsetFonts).toBe(true)
   })
 })
 

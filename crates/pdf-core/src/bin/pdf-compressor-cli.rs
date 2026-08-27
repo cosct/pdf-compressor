@@ -45,6 +45,7 @@ QUICK OPTIONS (background mode, used by file-manager context menus):
     --grayscale           Re-encode color images as grayscale
     --bilevel <CODEC>     Codec for near-black-and-white images: g4 | jpeg
                           (g4 = lossless CCITT Group 4, best for text scans)
+    --subset-fonts       Shrink embedded CID TrueType fonts to used glyphs
     --keep-metadata       Keep document metadata (removed by default)
     --target-size <SIZE>  Fit the output under this size (e.g. 5MB, 500K)
     --no-notify           Skip the desktop notification
@@ -157,6 +158,11 @@ fn compression_overrides(rest: &[String]) -> Result<CompressionSettingsOverrides
         output_dir: flag_value(rest, "--output-dir").map_err(config_error)?,
         bilevel_codec,
         grayscale: if rest.iter().any(|arg| arg == "--grayscale") {
+            Some(true)
+        } else {
+            None
+        },
+        subset_fonts: if rest.iter().any(|arg| arg == "--subset-fonts") {
             Some(true)
         } else {
             None

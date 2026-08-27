@@ -35,6 +35,8 @@ export interface CompressionSettings {
   /** Codec used when the decoded plane is near-bilevel: `'ccitt-g4'` switches
    * those images to lossless CCITT Group 4 (text scans). */
   bilevelCodec: BilevelCodec
+  /** Shrink embedded CID TrueType fonts to the used glyphs (opt-in). */
+  subsetFonts: boolean
   outputDir: string | null
   /** Optional target output size in MB — the backend searches quality/edge
    * parameters until the output fits (best effort). `null` disables. */

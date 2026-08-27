@@ -406,6 +406,7 @@ pub async fn compress_pdf(
             // still arrive via the settings payload.
             grayscale: None,
             bilevel_codec: None,
+            subset_fonts: None,
             output_dir: request.output_dir,
         },
     );
@@ -456,6 +457,7 @@ pub async fn compress_scanned_pdf(
                 .bilevel_codec
                 .as_deref()
                 .map(|value| BilevelCodec::from_optional_str(Some(value))),
+            subset_fonts: None,
             strip_metadata: request.strip_metadata.or(request.remove_metadata),
             output_dir: request.output_dir,
         },

@@ -83,6 +83,10 @@ pub(crate) struct CompressionStats {
     /// `/Font` and `/XObject` resource entries removed because no content
     /// stream in the owning tree referenced them.
     pub(crate) resources_removed: usize,
+    /// Embedded Type0/CIDFontType2 fonts shrunk to their used glyphs.
+    pub(crate) fonts_subsetted: usize,
+    /// Font program bytes shed by subsetting.
+    pub(crate) font_bytes_saved: u64,
     /// Recompressed images whose rebuilt stream carries CCITT Group 4.
     pub(crate) images_bilevel_encoded: usize,
     pub(crate) streams_compressed: usize,
@@ -340,6 +344,21 @@ pub(crate) fn save_and_build_response_with_renumber(
             .with_value("count", stats.resources_removed.to_string()),
         );
     }
+    if stats.fonts_subsetted > 0 {
+        let saved_kb = (stats.font_bytes_saved as f64 / 1024.0).round() as u64;
+        stats.notices.push(
+            BackendNotice::new(
+                "compress.note.fontsSubsetted",
+                "neutral",
+                format!(
+                    "Subset {} embedded font(s) to their used glyphs, shedding {saved_kb} KB of font data.",
+                    stats.fonts_subsetted
+                ),
+            )
+            .with_value("count", stats.fonts_subsetted.to_string())
+            .with_value("savedKb", saved_kb.to_string()),
+        );
+    }
     if !stats.metadata_removed {
         stats.notices.push(BackendNotice::new(
             "compress.note.metadataKept",
@@ -492,6 +511,21 @@ where
     // --- Lossless pass: drop /Font and /XObject resource entries no content
     // stream references (conservative — unsafe-looking pages keep everything) ---
     stats.resources_removed = super::resources::remove_unused_resources(document);
+
+    // --- Optional pass: shrink embedded CID TrueType fonts to used glyphs ---
+    if settings.subset_fonts {
+        #[cfg(feature = "subset-fonts")]
+        {
+            let outcome =
+                super::fonts::subset_embedded_fonts(document, cancel_flag, task_id)?;
+            stats.fonts_subsetted += outcome.fonts_subsetted;
+            stats.font_bytes_saved += outcome.bytes_saved;
+        }
+        // Without the `subset-fonts` feature the flag is accepted but inert;
+        // the build simply does not contain the subsetting engine.
+        #[cfg(not(feature = "subset-fonts"))]
+        let _ = (cancel_flag, task_id);
+    }
 
     // Soft-mask streams carry Subtype /Image too — collect the ids referenced
     // as /SMask so the scan treats them as alpha auxiliaries of their parent

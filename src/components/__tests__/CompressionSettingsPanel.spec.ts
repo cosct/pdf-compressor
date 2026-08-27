@@ -43,6 +43,7 @@ function makeSettings(overrides: Partial<CompressionSettings> = {}): Compression
     stripMetadata: true,
     grayscale: false,
     bilevelCodec: 'jpeg',
+    subsetFonts: false,
     outputDir: null,
     targetFileSizeMb: null,
     ...overrides,

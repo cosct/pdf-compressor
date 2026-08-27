@@ -57,6 +57,7 @@ const zhCN = {
     colorModeColor: '彩色',
     colorModeGray: '灰度',
     colorModeBw: '黑白（G4）',
+    subsetFonts: '字体子集化',
     outputDir: '输出目录',
     outputDirDefault: '与原文件相同',
     outputDirBrowse: '选择',
@@ -178,6 +179,9 @@ const zhCN = {
     },
     'compress.note.resourcesCleaned': {
       body: '已移除 {count} 个从未被内容流引用的字体/XObject 资源条目。',
+    },
+    'compress.note.fontsSubsetted': {
+      body: '已将 {count} 个内嵌字体子集化到实际使用的字形，减少 {savedKb} KB 字体数据。',
     },
     'analysis.note.encryptedUnlocked': {
       body: '该 PDF 使用了 owner 密码加密，已用空用户密码解锁；压缩导出件将是未加密的。',

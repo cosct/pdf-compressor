@@ -149,6 +149,19 @@ cargo run -p pdf-core --bin pdf-compressor-cli -- quick <file.pdf> --grayscale  
   **保守失败**：带 /AP 的注解、/Pattern 非空、Type3 字体、Form 缺自身 /Resources、
   名字在当前字典解析不到（可能依赖继承回退）、内容解码失败——任一命中即整页保留。
   逐页独立 /Resources 与共享 /Resources 对象（按 id 分组取名字并集）都支持。
+- **线性化（Fast Web View）暂缓**：lopdf 0.44 的 `SaveOptions::linearize` 是**空壳**——
+  `save_with_options` 完全忽略该标志（writer 无任何 hint 表/首页分区逻辑，仅
+  `object_stream.rs` 里有个“已是线性化文档”的读取侧判断）。自研需按 PDF 32000
+  Annex F 实现 hint 流与对象分区，属多周工程；等 lopdf 上游实现或单独立项。
+- **字体子集化**（`fonts.rs`，feature `subset-fonts` 默认开、设置 `subset_fonts`
+  默认关）：仅覆盖 Type0→CIDFontType2→FontFile2（TrueType 轮廓）且编码为
+  Identity-H/V 的字体。typst subsetter 按字形 id 保留并剥离 cmap，故子集只能作
+  CID 字体——**内容流零改写**，新字形编号用生成的 `/CIDToGIDMap` 流桥接（BE u16
+  per CID），`/W` 宽度数组同步重映射（宽度对象原样保留避免浮点漂移）。字形收集
+  解析 Tf/Tj/TJ/'/" 操作数（当前字体状态跟踪 + Form 递归）；任一 `Tf` 名字在当前
+  资源字典解析不到（可能是继承回退）→ **整轮放弃**。共享同一 FontFile2 的多个
+  Type0 字体取字形并集、子集化一次。测试字体 `assets/test-font.ttf` 由 pyftsubset
+  生成（77 字形），gid 常量见 `testutil.rs`；勿手改。
 
 CI（`.github/workflows/ci.yml`）在每次 push/PR 执行：前端测试+类型检查+构建、
 Rust clippy `-D warnings` + 测试、两个 MSRV 检查、60s 模糊测试、依赖审计

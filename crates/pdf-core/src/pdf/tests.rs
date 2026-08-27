@@ -833,6 +833,188 @@ fn keeps_resources_when_annotation_appearance_present() {
 }
 
 // ---------------------------------------------------------------------------
+// Font subsetting
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "subset-fonts")]
+fn subset_settings() -> CompressionSettings {
+    CompressionSettings::from_sources(
+        None,
+        CompressionSettingsOverrides {
+            preset: Some("maximum".to_string()),
+            subset_fonts: Some(true),
+            ..Default::default()
+        },
+    )
+}
+
+#[cfg(feature = "subset-fonts")]
+#[test]
+fn subsets_cid_truetype_font_to_used_glyphs() {
+    use crate::testutil::{
+        build_type0_pdf_bytes, TEST_FONT, TEST_FONT_GID_A, TEST_FONT_GID_D, TEST_FONT_GID_F,
+        TEST_FONT_GID_P,
+    };
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_fixture(dir.path(), "type0.pdf", &build_type0_pdf_bytes());
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(),
+        subset_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+
+    assert!(
+        response
+            .notices
+            .iter()
+            .any(|n| n.code == "compress.note.fontsSubsetted"),
+        "expected a font subsetting notice, got {:?}",
+        response.notices
+    );
+
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+
+    // FontFile2 must be much smaller and still carry a valid TrueType header.
+    let mut font_file_len = 0usize;
+    let mut descendant: Option<&lopdf::Dictionary> = None;
+    for object in reloaded.objects.values() {
+        match object {
+            Object::Stream(stream) if stream.dict.get(b"Length1").is_ok() => {
+                let program = stream.get_plain_content().unwrap_or_default();
+                font_file_len = program.len();
+                assert!(
+                    program.len() < TEST_FONT.len() / 2,
+                    "subset must be far smaller: {} vs {}",
+                    program.len(),
+                    TEST_FONT.len()
+                );
+                assert_eq!(&program[..4], b"\x00\x01\x00\x00", "still a TrueType file");
+            }
+            Object::Dictionary(dict)
+                if matches!(dict.get(b"Subtype"), Ok(Object::Name(sub)) if sub.as_slice() == b"CIDFontType2") =>
+            {
+                descendant = Some(dict);
+            }
+            _ => {}
+        }
+    }
+    assert!(font_file_len > 0, "FontFile2 must survive");
+
+    // CIDToGIDMap bridges the unchanged CIDs to the new numbering.
+    let descendant = descendant.expect("descendant CIDFont must survive");
+    let map_id = match descendant.get(b"CIDToGIDMap") {
+        Ok(Object::Reference(map_id)) => *map_id,
+        other => panic!("expected a CIDToGIDMap stream, got {other:?}"),
+    };
+    let Object::Stream(map_stream) = reloaded.objects.get(&map_id).expect("map object") else {
+        panic!("CIDToGIDMap must be a stream");
+    };
+    let cid_to_gid_map = map_stream.get_plain_content().expect("map content");
+    let gid_at = |cid: u16| {
+        let offset = cid as usize * 2;
+        u16::from_be_bytes([cid_to_gid_map[offset], cid_to_gid_map[offset + 1]])
+    };
+    let new_gid_p = gid_at(TEST_FONT_GID_P);
+    let new_gid_d = gid_at(TEST_FONT_GID_D);
+    let new_gid_f = gid_at(TEST_FONT_GID_F);
+    assert_ne!(new_gid_p, 0, "used CID must map to a real glyph");
+    assert_ne!(new_gid_d, 0);
+    assert_ne!(new_gid_f, 0);
+    // An unused CID (A = 19) must not map anywhere.
+    assert_eq!(gid_at(TEST_FONT_GID_A), 0);
+
+    // /W widths must follow the new numbering.
+    let Ok(Object::Array(widths)) = descendant.get(b"W") else {
+        panic!("W array must survive");
+    };
+    let mut width_for = std::collections::HashMap::new();
+    let mut index = 0;
+    while index + 1 < widths.len() {
+        if let (Object::Integer(gid), Object::Array(values)) = (&widths[index], &widths[index + 1])
+        {
+            if let Some(Object::Integer(width)) = values.first() {
+                width_for.insert(*gid, *width);
+            }
+        }
+        index += 2;
+    }
+    assert_eq!(width_for.get(&i64::from(new_gid_p)), Some(&650), "P keeps 650");
+    assert_eq!(width_for.get(&i64::from(new_gid_d)), Some(&700), "D keeps 700");
+    assert_eq!(width_for.get(&i64::from(new_gid_f)), Some(&600), "F keeps 600");
+
+    // The page content must be untouched — the original CID bytes still there.
+    let page_id = *reloaded.get_pages().values().next().expect("page");
+    let content = reloaded
+        .get_and_decode_page_content(page_id)
+        .expect("content decodes");
+    let text_operands: Vec<String> = content
+        .operations
+        .iter()
+        .flat_map(|operation| {
+            operation
+                .operands
+                .iter()
+                .filter_map(|operand| match operand {
+                    Object::String(bytes, _) => Some(bytes.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        })
+        .flat_map(|bytes| bytes.chunks_exact(2).map(|pair| format!("{:02x}{:02x}", pair[0], pair[1])).collect::<Vec<_>>())
+        .collect();
+    assert!(
+        text_operands.contains(&"0022".to_string())
+            && text_operands.contains(&"0016".to_string())
+            && text_operands.contains(&"0018".to_string()),
+        "content CIDs unchanged: {text_operands:?}"
+    );
+}
+
+#[cfg(feature = "subset-fonts")]
+#[test]
+fn subset_fonts_off_keeps_font_program_unchanged() {
+    use crate::testutil::{build_type0_pdf_bytes, TEST_FONT};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_fixture(dir.path(), "type0-off.pdf", &build_type0_pdf_bytes());
+
+    let settings = CompressionSettings::from_sources(
+        None,
+        CompressionSettingsOverrides {
+            preset: Some("maximum".to_string()),
+            ..Default::default()
+        },
+    );
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(),
+        settings,
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+    assert!(
+        !response
+            .notices
+            .iter()
+            .any(|n| n.code == "compress.note.fontsSubsetted")
+    );
+
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+    for object in reloaded.objects.values() {
+        if let Object::Stream(stream) = object {
+            if stream.dict.get(b"Length1").is_ok() {
+                let program = stream.get_plain_content().unwrap_or_default();
+                assert_eq!(program.as_slice(), TEST_FONT, "font program must be untouched");
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // JPEG encoder evaluation (image crate vs jpeg-encoder SIMD)
 // ---------------------------------------------------------------------------
 

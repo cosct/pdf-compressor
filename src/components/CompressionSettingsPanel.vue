@@ -513,6 +513,18 @@ function presetSnapshotLabel(preset: CompressionPreset): string {
             </span>
             <span class="toggle-chip__label">{{ t('settings.stripMetadata') }}</span>
           </label>
+
+          <label class="toggle-chip">
+            <span class="fd-toggle">
+              <input
+                type="checkbox"
+                :checked="props.settings.subsetFonts"
+                :disabled="props.disabled"
+                @change="updateSetting('subsetFonts', ($event.target as HTMLInputElement).checked)"
+              />
+            </span>
+            <span class="toggle-chip__label">{{ t('settings.subsetFonts') }}</span>
+          </label>
         </div>
       </div>
     </details>
@@ -829,7 +841,7 @@ input[type='range']:disabled {
 
 .toggle-list {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--fd-space-6);
 }
 

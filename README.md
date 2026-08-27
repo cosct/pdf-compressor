@@ -18,6 +18,7 @@ This project is designed for selective PDF optimization rather than blind whole-
 - Images carrying transparency (`/SMask`) are rewritten with their alpha plane preserved
 - Byte-identical duplicate streams — images *and* non-image streams (content streams, font programs, form XObjects) — are losslessly merged: incoming references are rewritten in place and no stub objects are left behind
 - Unused `/Font` and `/XObject` resource entries (dead weight from earlier edits) are removed when the whole content tree provably ignores them; pages with annotation appearance streams, tiling patterns, or Type3 fonts keep everything as a safety measure
+- Embedded `Type0`/`CIDFontType2` TrueType fonts can be subset to the glyphs actually drawn (UI toggle "Subset fonts", CLI `--subset-fonts`). Content streams are untouched: the subset's new glyph numbering is bridged with a generated `/CIDToGIDMap` stream and a remapped `/W` width array. Non-CID fonts (Type1, simple TrueType, Type3) are left as-is
 - A target-size mode searches quality/resolution parameters until the output fits a byte budget (UI, CLI `--target-size`, and IPC) — it bisects for the highest quality that fits, spends leftover budget on quality, and only shrinks the image edge once the whole quality range failed
 - Eligible non-image PDF streams can be compressed
 - Document metadata can be removed
@@ -517,9 +518,9 @@ The analyzer warns when page count is high. Large or image-heavy PDFs require in
 - Compression quality is heuristic-based; estimated savings are guidance, not guarantees
 - Analysis is pure-Rust and structure-based — no page rendering
 - Some embedded image formats and protected structures are intentionally skipped (JBIG2, JPX, and Group-3 CCITT images are preserved as-is; only pure Group-4 CCITT is transcoded)
+- Font subsetting covers `Type0`/`CIDFontType2` TrueType fonts only; simple (non-CID) embedded fonts are moved, never re-interpreted
 - Only safe object-level optimizations are attempted
 - Frontend depends on the desktop shell for native commands
-- No font subsetting yet (fonts are moved, never re-interpreted)
 
 ## Tech Stack
 
@@ -529,6 +530,7 @@ The analyzer warns when page count is high. Large or image-heavy PDFs require in
 - `image` (image decode and resize)
 - `jpeg-encoder` (SIMD JPEG re-encoding)
 - `fax` (CCITT Group 4 encode/decode, default `ccitt` feature)
+- `subsetter` (font subsetting, typst's pure-Rust subsetter, default `subset-fonts` feature)
 - `vue-i18n` (internationalization)
 
 ## Release History

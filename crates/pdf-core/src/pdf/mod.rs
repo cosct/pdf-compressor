@@ -4,6 +4,8 @@
 mod analyzer;
 mod compressor;
 mod encode;
+#[cfg(feature = "subset-fonts")]
+mod fonts;
 mod resources;
 mod search;
 mod settings;

@@ -69,6 +69,7 @@ function createSettingsForPreset(
     stripMetadata: overrides?.stripMetadata ?? true,
     grayscale: overrides?.grayscale ?? false,
     bilevelCodec: overrides?.bilevelCodec ?? 'jpeg',
+    subsetFonts: overrides?.subsetFonts ?? false,
     outputDir: overrides?.outputDir ?? null,
     targetFileSizeMb: overrides?.targetFileSizeMb ?? null,
   })
@@ -102,6 +103,7 @@ export function normalizeSettings(settings: CompressionSettings): CompressionSet
     // `undefined` back to the default instead of trusting the stored shape.
     grayscale: settings.grayscale ?? false,
     bilevelCodec: settings.bilevelCodec === 'ccitt-g4' ? 'ccitt-g4' : 'jpeg',
+    subsetFonts: settings.subsetFonts ?? false,
     outputDir: settings.outputDir?.trim() ? settings.outputDir.trim() : null,
     targetFileSizeMb: normalizeTargetFileSizeMb(settings.targetFileSizeMb),
   }
@@ -170,6 +172,7 @@ function comparableCompressionSettings(settings: CompressionSettings) {
     stripMetadata: normalized.stripMetadata,
     grayscale: normalized.grayscale,
     bilevelCodec: normalized.bilevelCodec,
+    subsetFonts: normalized.subsetFonts,
     targetFileSizeMb: normalized.targetFileSizeMb,
   }
 }

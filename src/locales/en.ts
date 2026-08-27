@@ -57,6 +57,7 @@ const en = {
     colorModeColor: 'Color',
     colorModeGray: 'Grayscale',
     colorModeBw: 'Black & white (G4)',
+    subsetFonts: 'Subset fonts',
     outputDir: 'Output directory',
     outputDirDefault: 'Same as source',
     outputDirBrowse: 'Browse',
@@ -178,6 +179,9 @@ const en = {
     },
     'compress.note.resourcesCleaned': {
       body: 'Removed {count} unused font/XObject resource entries left behind by earlier edits.',
+    },
+    'compress.note.fontsSubsetted': {
+      body: 'Subset {count} embedded font(s) to their used glyphs, shedding {savedKb} KB of font data.',
     },
     'analysis.note.encryptedUnlocked': {
       body: 'This PDF used owner-password encryption and was unlocked with the empty user password; the compressed export will be unencrypted.',

@@ -10,6 +10,134 @@
 use std::io::Cursor;
 
 use image::{codecs::jpeg::JpegEncoder, DynamicImage, GrayImage, Luma, Rgb, RgbImage};
+use lopdf::{dictionary, Object, Stream};
+
+/// gids inside `assets/test-font.ttf` (deterministic — the file is committed;
+/// regenerate only via pyftsubset with the documented charset).
+pub const TEST_FONT: &[u8] = include_bytes!("../assets/test-font.ttf");
+pub const TEST_FONT_GID_A: u16 = 19;
+pub const TEST_FONT_GID_D: u16 = 22;
+pub const TEST_FONT_GID_F: u16 = 24;
+pub const TEST_FONT_GID_P: u16 = 34;
+
+/// One page drawing "PDF" (gids 34/22/24) through a Type0/CIDFontType2 font
+/// with the full 77-glyph test font embedded as FontFile2 — the font
+/// subsetting fixture.
+pub fn build_type0_pdf_bytes() -> Vec<u8> {
+    let font = TEST_FONT;
+    let mut doc = lopdf::Document::with_version("1.5");
+    let pages_id = doc.new_object_id();
+
+    let font_file_id = doc.add_object(Stream::new(
+        dictionary! {
+            "Length" => (font.len() as i64),
+            "Length1" => (font.len() as i64),
+        },
+        font.to_vec(),
+    ));
+    let descriptor_id = doc.add_object(dictionary! {
+        "Type" => "FontDescriptor",
+        "FontName" => "TestFont",
+        "Flags" => 4,
+        "FontBBox" => vec![
+            Object::Integer(0),
+            Object::Integer(-200),
+            Object::Integer(1200),
+            Object::Integer(900),
+        ],
+        "ItalicAngle" => 0,
+        "Ascent" => 900,
+        "Descent" => Object::Integer(-200),
+        "CapHeight" => 700,
+        "StemV" => 80,
+        "FontFile2" => font_file_id,
+    });
+
+    // Distinct per-glyph widths so the /W remap is observable.
+    let widths: Vec<Object> = vec![
+        Object::Integer(i64::from(TEST_FONT_GID_D)),
+        Object::Array(vec![700.into()]),
+        Object::Integer(i64::from(TEST_FONT_GID_F)),
+        Object::Array(vec![600.into()]),
+        Object::Integer(i64::from(TEST_FONT_GID_P)),
+        Object::Array(vec![650.into()]),
+    ];
+    let descendant_id = doc.add_object(dictionary! {
+        "Type" => "Font",
+        "Subtype" => "CIDFontType2",
+        "BaseFont" => "TestFont",
+        "CIDSystemInfo" => dictionary! {
+            "Registry" => Object::string_literal("Adobe"),
+            "Ordering" => Object::string_literal("Identity"),
+            "Supplement" => 0,
+        },
+        "FontDescriptor" => descriptor_id,
+        "DW" => 1000,
+        "W" => widths,
+        "CIDToGIDMap" => "Identity",
+    });
+
+    // ToUnicode maps the drawn gids to P/D/F so text extraction works.
+    let to_unicode_id = doc.add_object(Stream::new(
+        dictionary! {},
+        b"/CIDInit /ProcSet findresource begin
+12 dict begin
+begincmap
+/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def
+/CMapName /Adobe-Identity-UCS def
+/CMapType 2 def
+1 begincodespacerange
+<0000> <ffff>
+endcodespacerange
+3 beginbfchar
+<0016> <0044>
+<0018> <0046>
+<0022> <0050>
+endbfchar
+endcmap
+CMapName currentdict /CMap defineresource pop
+end
+end"
+            .to_vec(),
+    ));
+
+    let type0_id = doc.add_object(dictionary! {
+        "Type" => "Font",
+        "Subtype" => "Type0",
+        "BaseFont" => "TestFont",
+        "Encoding" => "Identity-H",
+        "DescendantFonts" => vec![Object::Reference(descendant_id)],
+        "ToUnicode" => to_unicode_id,
+    });
+
+    let resources_id = doc.add_object(dictionary! {
+        "Font" => dictionary! { "F1" => type0_id },
+    });
+    // Hex string with CIDs 34 (P), 22 (D), 24 (F).
+    let content = b"BT /F1 24 Tf 72 720 Td <002200160018> Tj ET\n";
+    let content_id = doc.add_object(Stream::new(dictionary! {}, content.to_vec()));
+    let page_id = doc.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => pages_id,
+        "Contents" => content_id,
+        "Resources" => resources_id,
+        "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+    });
+    doc.objects.insert(
+        pages_id,
+        Object::Dictionary(dictionary! {
+            "Type" => "Pages",
+            "Kids" => vec![Object::Reference(page_id)],
+            "Count" => 1,
+        }),
+    );
+    let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+    doc.trailer.set("Root", catalog_id);
+
+    let mut bytes = Vec::new();
+    doc.save_modern(&mut bytes).expect("save fixture");
+    bytes
+}
 
 /// Gradient plus deterministic noise: behaves like a photograph under JPEG
 /// (poorly compressible at high quality) while staying reproducible for a
