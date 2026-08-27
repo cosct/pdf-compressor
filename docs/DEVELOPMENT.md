@@ -156,6 +156,12 @@ cargo run -p pdf-core --bin pdf-compressor-cli -- quick <file.pdf> --grayscale  
   视为歧义弃用。重建流时若通道数匹配则**保留原 ICC 数组**（profile 不丢），
   Indexed 输出声明基色空间；灰度/G4 转换导致通道数变化时回退 Device 名。
   CMYK（N=4）、CMYK 基 Indexed、JPX 保持跳过。
+- **JPX（JPEG2000）解码未接入**（刻意保持默认构建纯 Rust）：候选路线按优先级——
+  ① `jpeg2k` crate（支持链接系统 OpenJPEG，避免 vendored 源码构建）；② 自写
+  系统 libopenjp2 的最小 FFI（pkg-config + ~150 行 unsafe，需配 fuzz）；
+  ③ `openjpeg-sys`（vendored cmake 构建，最重）。无论哪条都需要 unsafe C 解码
+  路径配合 cargo-fuzz 强化后再开 feature `jpx`（默认关）。解码后走既有
+  JPEG/G4 重编码管线，DecodeParms/JPXColorSpace 处理可参考 CCITT 的形状门禁。
 - **线性化（Fast Web View）暂缓**：lopdf 0.44 的 `SaveOptions::linearize` 是**空壳**——
   `save_with_options` 完全忽略该标志（writer 无任何 hint 表/首页分区逻辑，仅
   `object_stream.rs` 里有个“已是线性化文档”的读取侧判断）。自研需按 PDF 32000
