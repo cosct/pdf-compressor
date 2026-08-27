@@ -27,7 +27,7 @@ use pdf_core::{
         AnalysisResponse, CompressPdfRequest, CompressScannedPdfRequest, CompressionResponse,
         PresetUserConfigPayload, ProgressUpdate,
     },
-    AppError, AppErrorPayload, CompressionSettings, CompressionSettingsOverrides,
+    AppError, AppErrorPayload, BilevelCodec, CompressionSettings, CompressionSettingsOverrides,
 };
 
 /// Fallback config directory when the install directory is not writable.
@@ -402,9 +402,10 @@ pub async fn compress_pdf(
             optimize_images: request.optimize_images,
             compress_streams: request.compress_streams,
             strip_metadata: request.strip_metadata.or(request.remove_metadata),
-            // No override-level flag here — grayscale can still arrive via
-            // the settings payload.
+            // No override-level flags here — grayscale / bilevel codec can
+            // still arrive via the settings payload.
             grayscale: None,
+            bilevel_codec: None,
             output_dir: request.output_dir,
         },
     );
@@ -451,6 +452,10 @@ pub async fn compress_scanned_pdf(
             optimize_images: Some(true),
             compress_streams: Some(true),
             grayscale: request.grayscale,
+            bilevel_codec: request
+                .bilevel_codec
+                .as_deref()
+                .map(|value| BilevelCodec::from_optional_str(Some(value))),
             strip_metadata: request.strip_metadata.or(request.remove_metadata),
             output_dir: request.output_dir,
         },

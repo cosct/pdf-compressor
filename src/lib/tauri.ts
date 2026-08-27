@@ -107,6 +107,8 @@ export async function compressPdf(
           optimizeImages: settings.optimizeImages,
           compressStreams: settings.compressStreams,
           stripMetadata: settings.stripMetadata,
+          grayscale: settings.grayscale,
+          bilevelCodec: settings.bilevelCodec,
           outputDir: settings.outputDir,
         },
         preset: null,
@@ -114,6 +116,59 @@ export async function compressPdf(
         maxImageSizePx: null,
         optimizeImages: null,
         compressStreams: null,
+        stripMetadata: null,
+        removeMetadata: null,
+        outputDir: null,
+        targetSizeBytes,
+      },
+      channel,
+    ),
+  )
+}
+
+/**
+ * Scanned-document pipeline — same engine, but the backend forces image and
+ * stream optimization on (they are where scan savings live) and accepts the
+ * grayscale switch as a first-class override.
+ */
+export async function compressScannedPdf(
+  path: string,
+  settings: CompressionSettings,
+  taskId: string,
+  onProgress?: (update: ProgressUpdate) => void,
+): Promise<CompressionResponseWire> {
+  const maxImageSizePx = calculateMaxImageSizePx(
+    settings.maxImageSizePercent,
+    settings.referenceMaxImageEdgePx,
+  )
+
+  const channel = createProgressChannel(onProgress)
+  const targetSizeBytes = settings.targetFileSizeMb
+    ? Math.max(1, Math.round(settings.targetFileSizeMb * 1024 * 1024))
+    : null
+
+  return unwrap(
+    commands.compressScannedPdf(
+      {
+        path,
+        inputPath: path,
+        taskId,
+        settings: {
+          preset: settings.preset,
+          imageQuality: settings.imageQuality,
+          maxImageSizePx,
+          optimizeImages: settings.optimizeImages,
+          compressStreams: settings.compressStreams,
+          stripMetadata: settings.stripMetadata,
+          grayscale: settings.grayscale,
+          bilevelCodec: settings.bilevelCodec,
+          outputDir: settings.outputDir,
+        },
+        preset: null,
+        imageQuality: null,
+        maxImageSizePx: null,
+        grayscale: settings.grayscale,
+        bilevelCodec: settings.bilevelCodec,
         stripMetadata: null,
         removeMetadata: null,
         outputDir: null,

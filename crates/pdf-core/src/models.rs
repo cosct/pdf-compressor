@@ -10,7 +10,7 @@ fn default_preset_config_version() -> u32 {
     1
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
 pub struct CompressionSettingsPayload {
@@ -23,6 +23,10 @@ pub struct CompressionSettingsPayload {
     /// Re-encode color images as grayscale (best for black-and-white scans).
     #[serde(default)]
     pub grayscale: Option<bool>,
+    /// Output codec for near-bilevel scanned images: `"jpeg"` (default) or
+    /// `"ccitt-g4"` (lossless ITU T.6, best for text scans).
+    #[serde(default)]
+    pub bilevel_codec: Option<String>,
     pub output_dir: Option<String>,
 }
 
@@ -63,6 +67,10 @@ pub struct CompressScannedPdfRequest {
     #[serde(default, alias = "downsampleDpi", alias = "targetDpi")]
     pub max_image_size_px: Option<u16>,
     pub grayscale: Option<bool>,
+    /// Output codec for near-bilevel scanned images: `"jpeg"` (default) or
+    /// `"ccitt-g4"`.
+    #[serde(default)]
+    pub bilevel_codec: Option<String>,
     pub strip_metadata: Option<bool>,
     pub remove_metadata: Option<bool>,
     pub output_dir: Option<String>,

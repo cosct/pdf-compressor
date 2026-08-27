@@ -15,10 +15,13 @@ use lopdf::{dictionary, Document, Object, Stream, StringFormat};
 
 use super::analyzer::analyze_pdf_with_progress;
 use super::compressor::compress_pdf_with_progress;
-use super::settings::{CompressionSettings, CompressionSettingsOverrides};
+use super::settings::{BilevelCodec, CompressionSettings, CompressionSettingsOverrides};
 use super::target_size::compress_pdf_to_target_size;
 use crate::error::AppError;
-use crate::testutil::{encode_jpeg, fixture_rgb_image};
+use crate::testutil::{
+    bilevel_scan_image, bilevel_scan_rgb_image, encode_ccitt_g4, encode_jpeg, fixture_rgb_image,
+    FIXTURE_SEED,
+};
 
 const FIXTURE_TEXT: &str = "Pipeline integration fixture";
 
@@ -122,6 +125,76 @@ fn build_pdf_bytes_ext(
 
 fn build_pdf_bytes(jpeg: Vec<u8>, width: u32, height: u32) -> Vec<u8> {
     build_pdf_bytes_ext(jpeg, width, height, None, 0)
+}
+
+/// Build a one-page PDF whose single embedded image is a CCITT fax stream
+/// with the given `K` parameter (G4 transcode fixtures).
+fn build_ccitt_pdf_bytes(g4: Vec<u8>, width: u32, height: u32, k: i64) -> Vec<u8> {
+    let mut doc = Document::with_version("1.5");
+    let info_id = doc.add_object(dictionary! {
+        "Producer" => Object::string_literal("pdf-compressor test fixture"),
+    });
+    let pages_id = doc.new_object_id();
+    let font_id = doc.add_object(dictionary! {
+        "Type" => "Font",
+        "Subtype" => "Type1",
+        "BaseFont" => "Helvetica",
+    });
+
+    let image_id = doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Image",
+            "Width" => width as i64,
+            "Height" => height as i64,
+            "ColorSpace" => "DeviceGray",
+            "BitsPerComponent" => 1,
+            "Filter" => "CCITTFaxDecode",
+            "DecodeParms" => dictionary! {
+                "K" => k,
+                "Columns" => width as i64,
+                "Rows" => height as i64,
+                "BlackIs1" => true,
+            },
+        },
+        g4,
+    ));
+    let resources_id = doc.add_object(dictionary! {
+        "Font" => dictionary! {
+            "F1" => font_id,
+        },
+        "XObject" => dictionary! {
+            "Im0" => image_id,
+        },
+    });
+    let content = format!("q 400 0 0 300 72 400 cm /Im0 Do Q\nBT /F1 24 Tf 72 720 Td ({FIXTURE_TEXT}) Tj ET\n");
+    let content_id = doc.add_object(Stream::new(dictionary! {}, content.into_bytes()));
+    let page_id = doc.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => pages_id,
+        "Contents" => content_id,
+        "Resources" => resources_id,
+        "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+    });
+    doc.objects.insert(
+        pages_id,
+        Object::Dictionary(dictionary! {
+            "Type" => "Pages",
+            "Kids" => vec![Object::Reference(page_id)],
+            "Count" => 1,
+        }),
+    );
+    let catalog_id = doc.add_object(dictionary! {
+        "Type" => "Catalog",
+        "Pages" => pages_id,
+    });
+    doc.trailer.set("Root", catalog_id);
+    doc.trailer.set("Info", info_id);
+
+    let mut bytes = Vec::new();
+    doc.save_modern(&mut bytes)
+        .expect("failed to save fixture PDF");
+    bytes
 }
 
 fn write_fixture(dir: &Path, name: &str, bytes: &[u8]) -> PathBuf {
@@ -570,6 +643,232 @@ fn grayscale_mode_rewrites_color_images_as_device_gray() {
         checked += 1;
     }
     assert!(checked >= 1, "at least one image must have been rewritten");
+}
+
+// ---------------------------------------------------------------------------
+// CCITT Group 4 (bi-level) re-encoding
+// ---------------------------------------------------------------------------
+
+fn g4_settings() -> CompressionSettings {
+    CompressionSettings::from_sources(
+        None,
+        CompressionSettingsOverrides {
+            preset: Some("maximum".to_string()),
+            bilevel_codec: Some(BilevelCodec::CcittG4),
+            ..Default::default()
+        },
+    )
+}
+
+/// All image XObject streams of a loaded document.
+fn image_streams(document: &Document) -> Vec<&Stream> {
+    document
+        .objects
+        .values()
+        .filter_map(|object| match object {
+            Object::Stream(stream)
+                if matches!(stream.dict.get(b"Subtype"), Ok(Object::Name(name)) if name.as_slice() == b"Image") =>
+            {
+                Some(stream)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn bilevel_mode_rewrites_near_bilevel_jpegs_as_ccitt_g4() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let jpeg = encode_jpeg(bilevel_scan_rgb_image(2000, 1500, FIXTURE_SEED), 88);
+    let path = write_fixture(
+        dir.path(),
+        "bilevel-jpeg.pdf",
+        &build_pdf_bytes(jpeg, 2000, 1500),
+    );
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(),
+        g4_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+    assert!(response.output_was_smaller, "G4 output must beat the JPEG");
+
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+    let streams = image_streams(&reloaded);
+    assert_eq!(streams.len(), 1, "fixture has exactly one image");
+    let stream = streams[0];
+    assert!(
+        matches!(stream.dict.get(b"Filter"), Ok(Object::Name(name)) if name.as_slice() == b"CCITTFaxDecode"),
+        "near-bilevel image must be re-encoded as CCITT G4, got {:?}",
+        stream.dict.get(b"Filter")
+    );
+    let parms = match stream.dict.get(b"DecodeParms") {
+        Ok(Object::Dictionary(parms)) => parms,
+        other => panic!("G4 stream must carry DecodeParms, got {other:?}"),
+    };
+    assert_eq!(parms.get(b"K").ok(), Some(&Object::Integer(-1)));
+    assert_eq!(parms.get(b"BlackIs1").ok(), Some(&Object::Boolean(true)));
+    assert_eq!(
+        stream.dict.get(b"BitsPerComponent").ok(),
+        Some(&Object::Integer(1))
+    );
+    assert!(
+        matches!(stream.dict.get(b"ColorSpace"), Ok(Object::Name(cs)) if cs.as_slice() == b"DeviceGray")
+    );
+    // Max-edge of the maximum preset is 1400 px — the 2000 px input must be
+    // resampled accordingly.
+    assert_eq!(stream.dict.get(b"Width").ok(), Some(&Object::Integer(1400)));
+    assert_eq!(stream.dict.get(b"Height").ok(), Some(&Object::Integer(1050)));
+
+    assert!(
+        extracted_text(Path::new(&response.output_path)).contains(FIXTURE_TEXT),
+        "text must survive the rewrite"
+    );
+}
+
+#[test]
+fn bilevel_mode_keeps_continuous_tone_images_on_jpeg() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = fresh_fixture(dir.path());
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(),
+        g4_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+    for stream in image_streams(&reloaded) {
+        assert!(
+            matches!(stream.dict.get(b"Filter"), Ok(Object::Name(name)) if name.as_slice() == b"DCTDecode"),
+            "photographic content must stay on JPEG, got {:?}",
+            stream.dict.get(b"Filter")
+        );
+    }
+}
+
+#[test]
+fn ccitt_g4_input_transcodes_when_resize_needed() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let image = bilevel_scan_image(2400, 1800, FIXTURE_SEED);
+    let g4 = encode_ccitt_g4(&image);
+    let path = write_fixture(
+        dir.path(),
+        "ccitt-in.pdf",
+        &build_ccitt_pdf_bytes(g4, 2400, 1800, -1),
+    );
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(),
+        g4_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+    assert!(response.output_was_smaller, "resampled G4 must be smaller");
+
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+    let streams = image_streams(&reloaded);
+    assert_eq!(streams.len(), 1);
+    let stream = streams[0];
+    assert!(
+        matches!(stream.dict.get(b"Filter"), Ok(Object::Name(name)) if name.as_slice() == b"CCITTFaxDecode")
+    );
+    assert_eq!(stream.dict.get(b"Width").ok(), Some(&Object::Integer(1400)));
+    assert_eq!(stream.dict.get(b"Height").ok(), Some(&Object::Integer(1050)));
+
+    // The rewritten payload must still be a decodable G4 stream with the
+    // declared dimensions.
+    let mut rows = 0u32;
+    let decoded = fax::decoder::decode_g4(
+        stream.content.iter().copied(),
+        1400,
+        Some(1050),
+        |_| rows += 1,
+    );
+    assert!(decoded.is_some(), "output G4 payload must decode");
+    assert_eq!(rows, 1050);
+
+    assert!(
+        extracted_text(Path::new(&response.output_path)).contains(FIXTURE_TEXT),
+        "text must survive the rewrite"
+    );
+}
+
+#[test]
+fn ccitt_g3_input_is_skipped_unchanged() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let image = bilevel_scan_image(1600, 1200, FIXTURE_SEED);
+    let g4_bytes = encode_ccitt_g4(&image);
+    let path = write_fixture(
+        dir.path(),
+        "ccitt-g3.pdf",
+        &build_ccitt_pdf_bytes(g4_bytes.clone(), 1600, 1200, 0),
+    );
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(),
+        g4_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+    assert_eq!(
+        response.images_recompressed, 0,
+        "Group 3 input is not decodable and must stay untouched"
+    );
+    assert!(response.images_skipped >= 1);
+
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+    let streams = image_streams(&reloaded);
+    assert_eq!(streams.len(), 1);
+    let stream = streams[0];
+    let Object::Dictionary(parms) = stream.dict.get(b"DecodeParms").unwrap() else {
+        panic!("DecodeParms must survive");
+    };
+    assert_eq!(parms.get(b"K").ok(), Some(&Object::Integer(0)));
+    assert_eq!(stream.content, g4_bytes, "payload must be byte-identical");
+}
+
+#[test]
+fn target_size_mode_with_bilevel_g4() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let jpeg = encode_jpeg(bilevel_scan_rgb_image(2000, 1500, FIXTURE_SEED), 88);
+    let path = write_fixture(
+        dir.path(),
+        "bilevel-target.pdf",
+        &build_pdf_bytes(jpeg, 2000, 1500),
+    );
+    let original = fs::metadata(&path).expect("fixture metadata").len();
+    let target = original * 40 / 100;
+
+    let response = compress_pdf_to_target_size(
+        path.to_str().unwrap(),
+        target,
+        g4_settings(),
+        noop_cancel_flag(),
+        &mut |_| {},
+    )
+    .expect("target-size compression must succeed");
+    assert!(
+        (response.compressed_size_bytes as u64) <= target,
+        "G4 output must fit the budget ({} > {})",
+        response.compressed_size_bytes,
+        target
+    );
+
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+    assert!(
+        image_streams(&reloaded).iter().any(|stream| matches!(
+            stream.dict.get(b"Filter"),
+            Ok(Object::Name(name)) if name.as_slice() == b"CCITTFaxDecode"
+        )),
+        "the winning round must have materialized a G4 stream"
+    );
 }
 
 // ---------------------------------------------------------------------------

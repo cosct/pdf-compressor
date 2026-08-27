@@ -13,19 +13,22 @@ Author: `cosct`
 This project is designed for selective PDF optimization rather than blind whole-file rewriting. The current pipeline tries to preserve text and vector instructions whenever possible, then reduces size by working on areas that are usually safer to optimize:
 
 - Embedded image streams can be recompressed as JPEG and resized when needed
+- Near-black-and-white scans can be re-encoded as lossless CCITT Group 4 (UI color mode "Black & white", CLI `--bilevel g4`) — dramatically smaller than JPEG for text scans; pure Group-4 CCITT inputs are transcoded through the same path
+- Color images can be re-encoded as grayscale (UI color mode, CLI `--grayscale`)
 - Images carrying transparency (`/SMask`) are rewritten with their alpha plane preserved
 - Byte-identical duplicate images (logos, stamps) are losslessly merged into shared references
 - A target-size mode searches quality/resolution parameters until the output fits a byte budget (UI, CLI `--target-size`, and IPC) — it bisects for the highest quality that fits, spends leftover budget on quality, and only shrinks the image edge once the whole quality range failed
 - Eligible non-image PDF streams can be compressed
 - Document metadata can be removed
-- The UI runs an analysis pass first so the user can review likely savings and a suggested preset before export; the estimate only counts images the compressor can actually act on (JBIG2/JPX/CCITT-coded images are reported as preserved instead of promised as savings)
+- The UI runs an analysis pass first so the user can review likely savings and a suggested preset before export; the estimate only counts images the compressor can actually act on (JBIG2/JPX/Group-3-CCITT/Crypt-coded images are reported as preserved instead of promised as savings)
 - Safety rails: encrypted documents that need a real password are rejected up front, owner-password-only files are unlocked and re-written unencrypted, and a result that would not beat the original is never written to disk
 
 The application is desktop-first and local-first. There is no upload flow and no cloud processing. The desktop release supports a local queue so multiple PDFs can be analyzed and compressed in batch.
 
 ### Engine behavior notes
 
-- **Image-heavy documents**: when a PDF carries many image objects (24+), the small-stream skip heuristics are lifted — hundreds of compact scans add up to real savings, while the per-image "only replace when smaller" rule still guarantees no bloat. An explicit grayscale request lifts the skips the same way.
+- **Image-heavy documents**: when a PDF carries many image objects (24+), the small-stream skip heuristics are lifted — hundreds of compact scans add up to real savings, while the per-image "only replace when smaller" rule still guarantees no bloat. An explicit grayscale or G4 bilevel request lifts the skips the same way.
+- **Near-bilevel detection**: the "Black & white (G4)" color mode measures the midtone fraction of each decoded plane; only scans that are effectively black-and-white (≤ 5% midtones) switch to CCITT Group 4, photographic content stays on JPEG.
 - **Right-click quick mode never leaves a worse file**: see [Background mode](#background-mode-right-click-quick-compress).
 - **CJK documents**: text, embedded font subsets, and ToUnicode maps are preserved verbatim (objects are moved, not re-interpreted); verified end-to-end on a 42-page Chinese document and a Japanese sample — character-extraction multisets are identical and renders are pixel-comparable.
 
@@ -76,7 +79,7 @@ The Rust compression engine received targeted performance improvements:
 - **CatmullRom resize filter** — Replaced `Triangle` with `CatmullRom` (bicubic interpolation) for the final resize pass. CatmullRom is approximately 2× faster than `Lanczos3` with nearly indistinguishable quality for JPEG-bound output, and sharper than `Triangle`.
 - **Earlier two-pass threshold** — The two-pass resize strategy (Nearest then CatmullRom) now triggers at 4 million pixels instead of 8 million. This means moderately large images (e.g. 2000×2000) benefit from the fast first pass, reducing total resize time.
 - **Wider edge tolerance** — The `RESIZE_EDGE_TOLERANCE` was increased from 1.05 to 1.08. Images that are only slightly over the target edge are no longer resized, avoiding a decode+resize+encode round-trip for negligible dimension reduction.
-- **Larger worker channel buffer** — The parallel image processing channel buffer is now 4× the worker count (up from 2×), reducing blocking on the producer thread and improving pipeline throughput.
+- **Bounded worker channel buffer** — The parallel image processing channel buffer is sized at 2× the worker count (`CHANNEL_BUFFER_MULTIPLIER`), decoupling producer/worker pacing without unbounded memory growth; target-size probe rounds feed workers directly (buffer equal to the worker count).
 - **Lower parallel threshold** — Parallel image processing now triggers with 3+ images (down from 4), allowing smaller PDFs to benefit from multi-core processing.
 - **Smaller stream compression minimum** — Non-image streams of 64+ bytes (down from 128) are now candidates for deflate compression, catching more short repetitive streams.
 - **Lower tiny-JPEG skip threshold** — JPEG streams under 6 KB (down from 8 KB) are skipped outright, applying fast-path exits more aggressively on truly tiny images.
@@ -112,7 +115,7 @@ User-customized preset profiles are persisted to disk via `src/config/presets.ts
 - Dark, light, and system theme — defaults to system preference on first launch
 - Three presets: `conservative`, `balanced`, `maximum`, plus `custom`
 - Adjustable image quality and maximum image edge (percentage-based with reference edge)
-- Toggles for image optimization, stream compression, and metadata removal
+- Toggles for image optimization, stream compression, and metadata removal, plus a color mode selector (color / grayscale / black-and-white G4)
 - Custom preset saving, per-preset user overrides, and reset to defaults
 - Apply settings to all queued files at once
 - Selectable output directory for compressed files
@@ -133,7 +136,7 @@ User-customized preset profiles are persisted to disk via `src/config/presets.ts
 - Suggested preset based on scanned-document confidence
 - Sampled page inspection for large PDFs so recommendations stay responsive
 - Safe-skip behavior for image streams that are not yet supported for rewriting
-- Parallel image recompression with optimized scheduling (largest-first, wider channel buffer)
+- Parallel image recompression with optimized scheduling (largest-first, bounded channel buffer)
 - Two-pass resize with CatmullRom for speed/quality balance
 - Output file naming that avoids replacing the original source file
 - User preset config persistence with install-dir-first, OS-config-dir fallback strategy
@@ -382,11 +385,12 @@ cargo run -p pdf-core --bin pdf-compressor-cli -- compress <file.pdf> --target-s
 ```bash
 pdf-compressor-cli quick file1.pdf file2.pdf          # balanced preset
 pdf-compressor-cli quick --preset maximum scans.pdf  # aggressive
-pdf-compressor-cli quick --grayscale book-scan.pdf   # best for B&W scans
+pdf-compressor-cli quick --grayscale book-scan.pdf   # grayscale re-encode
+pdf-compressor-cli quick --bilevel g4 book-scan.pdf  # lossless CCITT G4 for B&W scans
 pdf-compressor-cli quick --target-size 5MB report.pdf --no-notify
 ```
 
-On KDE Plasma, the Arch package installs a Dolphin service menu (`packaging/servicemenus/pdf-compressor.desktop` → `/usr/share/kio/servicemenus/`), so right-clicking PDFs offers a *PDF Compressor* submenu with balanced / maximum / grayscale / target-size actions — no GUI window is opened. Encrypted PDFs are rejected up front with `error.encryptedPdf`; quick mode never leaves a file that is larger than the original.
+On KDE Plasma, the Arch package installs a Dolphin service menu (`packaging/servicemenus/pdf-compressor.desktop` → `/usr/share/kio/servicemenus/`), so right-clicking PDFs offers a *PDF Compressor* submenu with balanced / maximum / grayscale / black-and-white G4 / target-size actions — no GUI window is opened. Encrypted PDFs are rejected up front with `error.encryptedPdf`; quick mode never leaves a file that is larger than the original.
 
 The PDF engine also has a cargo-fuzz target (`crates/pdf-core/fuzz`) — run it from `crates/pdf-core` with `cargo +nightly fuzz run pipeline`.
 
@@ -501,7 +505,7 @@ Possible causes: text-native PDFs, already-optimized files, few/no embedded imag
 
 ### Some images were skipped
 
-Expected for certain image objects. The backend skips streams it cannot safely rewrite (transparency, masks, JPX/JBIG2/CCITT/Crypt filters, unsupported color spaces).
+Expected for certain image objects. The backend skips streams it cannot safely rewrite (transparency, masks, JPX/JBIG2/Group-3-CCITT/Crypt filters, unsupported color spaces).
 
 ### Large PDFs feel slow
 
@@ -511,10 +515,10 @@ The analyzer warns when page count is high. Large or image-heavy PDFs require in
 
 - Compression quality is heuristic-based; estimated savings are guidance, not guarantees
 - Analysis is pure-Rust and structure-based — no page rendering
-- Some embedded image formats and protected structures are intentionally skipped
+- Some embedded image formats and protected structures are intentionally skipped (JBIG2, JPX, and Group-3 CCITT images are preserved as-is; only pure Group-4 CCITT is transcoded)
 - Only safe object-level optimizations are attempted
 - Frontend depends on the desktop shell for native commands
-- `compress_scanned_pdf` exists in the backend but is not used by the current Vue workflow
+- No font subsetting yet (fonts are moved, never re-interpreted)
 
 ## Tech Stack
 
@@ -523,6 +527,7 @@ The analyzer warns when page count is high. Large or image-heavy PDFs require in
 - `lopdf` (PDF parsing and writing)
 - `image` (image decode and resize)
 - `jpeg-encoder` (SIMD JPEG re-encoding)
+- `fax` (CCITT Group 4 encode/decode, default `ccitt` feature)
 - `vue-i18n` (internationalization)
 
 ## Release History
@@ -535,7 +540,7 @@ The analyzer warns when page count is high. Large or image-heavy PDFs require in
 - Acrylic header with backdrop-filter effects
 - Custom window chrome with integrated titlebar controls
 - Splash screen during initial app load
-- Compression speed optimization: CatmullRom resize, earlier two-pass threshold, wider channel buffer, lower parallel threshold
+- Compression speed optimization: CatmullRom resize, earlier two-pass threshold, bounded worker channel, lower parallel threshold
 - User preset persistence: per-preset overrides saved to disk with install-dir-first strategy
 - Compression cancellation with per-task cancel flag propagation
 - Output directory selection for compressed files

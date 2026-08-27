@@ -41,6 +41,8 @@ function makeSettings(overrides: Partial<CompressionSettings> = {}): Compression
     optimizeImages: true,
     compressStreams: true,
     stripMetadata: true,
+    grayscale: false,
+    bilevelCodec: 'jpeg',
     outputDir: null,
     targetFileSizeMb: null,
     ...overrides,
@@ -69,7 +71,7 @@ describe('CompressionSettingsPanel', () => {
   it('renders the four presets with only the active one checked', () => {
     const wrapper = mountPanel()
 
-    const radios = wrapper.findAll('[role="radio"]')
+    const radios = wrapper.findAll('.preset-ribbon [role="radio"]')
     expect(radios).toHaveLength(4)
 
     const checked = radios.filter((radio) => radio.attributes('aria-checked') === 'true')
@@ -92,6 +94,20 @@ describe('CompressionSettingsPanel', () => {
     expect(next.preset).toBe('maximum')
     expect(next.imageQuality).toBe(58)
     expect(next.maxImageSizePercent).toBe(60)
+  })
+
+  it('selecting black & white switches grayscale and the G4 codec together', async () => {
+    const wrapper = mountPanel()
+    const colorModeGroup = wrapper.findAll('.color-mode-seg__item')
+    expect(colorModeGroup).toHaveLength(3)
+
+    await colorModeGroup[2].trigger('click')
+
+    const emitted = wrapper.emitted('update:settings')
+    expect(emitted).toBeTruthy()
+    const next = emitted![0][0] as CompressionSettings
+    expect(next.grayscale).toBe(true)
+    expect(next.bilevelCodec).toBe('ccitt-g4')
   })
 
   it('apply-to-all is disabled without the flag and emits when enabled', async () => {

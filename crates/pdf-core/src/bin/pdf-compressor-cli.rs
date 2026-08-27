@@ -6,7 +6,7 @@
 //!   pdf-compressor-cli analyze <input.pdf>
 //!   pdf-compressor-cli compress <input.pdf> [--preset maximum|balanced|conservative]
 //!                              [--quality 10-100] [--max-edge 100-8000] [--grayscale]
-//!                              [--output-dir DIR] [--keep-metadata]
+//!                              [--bilevel g4] [--output-dir DIR] [--keep-metadata]
 //!                              [--target-size 5MB]
 //!   pdf-compressor-cli quick <input.pdf> [more.pdf ...] [OPTIONS]
 //!
@@ -26,7 +26,7 @@ use serde::Serialize;
 
 use pdf_core::{
     analyze_pdf_with_progress, compress_pdf_to_target_size, compress_pdf_with_progress,
-    AppError, AppErrorPayload, CompressionResponse, CompressionSettings,
+    AppError, AppErrorPayload, BilevelCodec, CompressionResponse, CompressionSettings,
     CompressionSettingsOverrides,
 };
 
@@ -43,6 +43,8 @@ QUICK OPTIONS (background mode, used by file-manager context menus):
     --quality <N>         JPEG quality 10-100
     --max-edge <PX>       Maximum image edge in pixels (100-8000)
     --grayscale           Re-encode color images as grayscale
+    --bilevel <CODEC>     Codec for near-black-and-white images: g4 | jpeg
+                          (g4 = lossless CCITT Group 4, best for text scans)
     --keep-metadata       Keep document metadata (removed by default)
     --target-size <SIZE>  Fit the output under this size (e.g. 5MB, 500K)
     --no-notify           Skip the desktop notification
@@ -103,10 +105,11 @@ fn parsed_flag<T: std::str::FromStr>(args: &[String], name: &str) -> Result<Opti
 /// arguments. Value-taking flags consume their following argument so paths
 /// are never mistaken for flag values.
 fn split_quick_inputs(args: &[String]) -> Result<(Vec<String>, Vec<String>), String> {
-    const VALUE_FLAGS: [&str; 5] = [
+    const VALUE_FLAGS: [&str; 6] = [
         "--preset",
         "--quality",
         "--max-edge",
+        "--bilevel",
         "--target-size",
         "--output-dir",
     ];
@@ -135,11 +138,24 @@ fn split_quick_inputs(args: &[String]) -> Result<(Vec<String>, Vec<String>), Str
 
 fn compression_overrides(rest: &[String]) -> Result<CompressionSettingsOverrides, AppError> {
     let config_error = |message: String| AppError::Config(message);
+    let bilevel_codec = match flag_value(rest, "--bilevel").map_err(config_error)? {
+        Some(raw) => {
+            let codec = BilevelCodec::from_optional_str(Some(&raw));
+            if codec.uses_ccitt() && !raw.to_ascii_lowercase().contains("g4") {
+                return Err(AppError::Config(format!(
+                    "--bilevel got an invalid value: {raw} (expected g4 or jpeg)"
+                )));
+            }
+            Some(codec)
+        }
+        None => None,
+    };
     Ok(CompressionSettingsOverrides {
         preset: flag_value(rest, "--preset").map_err(config_error)?,
         image_quality: parsed_flag::<u8>(rest, "--quality").map_err(config_error)?,
         max_image_size_px: parsed_flag::<u16>(rest, "--max-edge").map_err(config_error)?,
         output_dir: flag_value(rest, "--output-dir").map_err(config_error)?,
+        bilevel_codec,
         grayscale: if rest.iter().any(|arg| arg == "--grayscale") {
             Some(true)
         } else {

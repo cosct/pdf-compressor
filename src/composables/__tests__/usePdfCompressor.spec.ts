@@ -14,6 +14,7 @@ vi.mock('../../lib/tauri', () => ({
   hasNativeCommands: () => true,
   analyzePdf: vi.fn(),
   compressPdf: vi.fn(),
+  compressScannedPdf: vi.fn(),
   cancelCompression: vi.fn().mockResolvedValue(undefined),
   existingPaths: vi.fn().mockResolvedValue([]),
   openDirectoryDialog: vi.fn(),
@@ -25,6 +26,7 @@ vi.mock('../../lib/tauri', () => ({
 import {
   analyzePdf,
   compressPdf,
+  compressScannedPdf,
   cancelCompression,
 } from '../../lib/tauri'
 import {
@@ -74,6 +76,7 @@ function compressionResponse(overrides: Partial<CompressionResponse> = {}): Comp
 
 const mockedAnalyze = vi.mocked(analyzePdf)
 const mockedCompress = vi.mocked(compressPdf)
+const mockedCompressScanned = vi.mocked(compressScannedPdf)
 const mockedCancel = vi.mocked(cancelCompression)
 
 async function readyQueue(paths: string[]) {
@@ -113,6 +116,8 @@ describe('normalizeSettings', () => {
       optimizeImages: true,
       compressStreams: true,
       stripMetadata: true,
+      grayscale: false,
+      bilevelCodec: 'jpeg',
       outputDir: '  /tmp/out  ',
       targetFileSizeMb: 99999,
     })
@@ -128,9 +133,46 @@ describe('normalizeSettings', () => {
       optimizeImages: true,
       compressStreams: true,
       stripMetadata: true,
+      grayscale: false,
+      bilevelCodec: 'jpeg',
       outputDir: null,
       targetFileSizeMb: 0,
     }).targetFileSizeMb).toBeNull()
+  })
+
+  it('coerces a missing grayscale field (legacy persisted queue) to false', () => {
+    const normalized = normalizeSettings({
+      preset: 'balanced',
+      imageQuality: 72,
+      maxImageSizePercent: 80,
+      referenceMaxImageEdgePx: 1234,
+      optimizeImages: true,
+      compressStreams: true,
+      stripMetadata: true,
+      grayscale: undefined as unknown as boolean,
+      bilevelCodec: undefined as unknown as 'jpeg',
+      outputDir: null,
+      targetFileSizeMb: null,
+    })
+    expect(normalized.grayscale).toBe(false)
+    expect(normalized.bilevelCodec).toBe('jpeg')
+  })
+
+  it('keeps ccitt-g4 as the only non-default bilevel codec', () => {
+    const normalized = normalizeSettings({
+      preset: 'balanced',
+      imageQuality: 72,
+      maxImageSizePercent: 80,
+      referenceMaxImageEdgePx: 1234,
+      optimizeImages: true,
+      compressStreams: true,
+      stripMetadata: true,
+      grayscale: true,
+      bilevelCodec: 'ccitt-g4',
+      outputDir: null,
+      targetFileSizeMb: null,
+    })
+    expect(normalized.bilevelCodec).toBe('ccitt-g4')
   })
 })
 
@@ -184,6 +226,29 @@ describe('compressCurrentPdf', () => {
 
     expect(composable.jobs.value[0].status).toBe('success')
     expect(composable.jobs.value[0].result?.outputPath).toBe('/tmp/out.pdf')
+  })
+
+  it('routes scan-heavy documents through the scanned pipeline', async () => {
+    mockedAnalyze.mockResolvedValue(
+      analysisResponse({ documentKind: 'scan-heavy', isLikelyScanned: true }),
+    )
+    const composable = usePdfCompressor()
+    composable.addSourcePaths(['/tmp/scan.pdf'])
+    await vi.waitFor(() => {
+      expect(composable.jobs.value.every((job) => job.status === 'ready')).toBe(true)
+    })
+    mockedCompressScanned.mockResolvedValue(
+      compressionResponse({ outputPath: '/tmp/scan-out.pdf' }),
+    )
+
+    await composable.compressCurrentPdf()
+
+    expect(mockedCompressScanned).toHaveBeenCalledTimes(1)
+    expect(mockedCompress).not.toHaveBeenCalled()
+    expect(composable.jobs.value[0].status).toBe('success')
+    expect(
+      composable.errorToasts.value.some((toast) => toast.id.startsWith('scan:pipeline')),
+    ).toBe(true)
   })
 
   it('surfaces compression errors as job error and toast', async () => {

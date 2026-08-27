@@ -77,6 +77,8 @@ pub(crate) struct CompressionStats {
     pub(crate) images_recompressed: usize,
     pub(crate) images_skipped: usize,
     pub(crate) images_deduplicated: usize,
+    /// Recompressed images whose rebuilt stream carries CCITT Group 4.
+    pub(crate) images_bilevel_encoded: usize,
     pub(crate) streams_compressed: usize,
     pub(crate) metadata_removed: bool,
     /// The input carried `/Encrypt` but lopdf unlocked it with the empty user
@@ -290,6 +292,19 @@ pub(crate) fn save_and_build_response_with_renumber(
                 ),
             )
             .with_value("count", stats.images_deduplicated.to_string()),
+        );
+    }
+    if stats.images_bilevel_encoded > 0 {
+        stats.notices.push(
+            BackendNotice::new(
+                "compress.note.bilevelEncoded",
+                "neutral",
+                format!(
+                    "Re-encoded {} near-black-and-white image(s) as lossless CCITT Group 4.",
+                    stats.images_bilevel_encoded
+                ),
+            )
+            .with_value("count", stats.images_bilevel_encoded.to_string()),
         );
     }
     if !stats.metadata_removed {
@@ -673,7 +688,10 @@ where
         .max()
         .unwrap_or(0);
     let worker_count = image_worker_count(task_count, max_bitmap_estimate);
-    let skip_policy = SkipPolicy::for_document(task_count, settings.grayscale);
+    let skip_policy = SkipPolicy::for_document(
+        task_count,
+        settings.grayscale || settings.bilevel_codec.uses_ccitt(),
+    );
 
     // --- Serial path (1 worker) ---
     if worker_count <= 1 {
@@ -854,6 +872,11 @@ fn apply_image_optimization(
             stream: mut rebuilt,
             smask: rebuilt_smask,
         } => {
+            if rebuilt.dict.get(b"Filter").is_ok_and(|filter| {
+                matches!(filter, Object::Name(name) if name.as_slice() == b"CCITTFaxDecode")
+            }) {
+                stats.images_bilevel_encoded += 1;
+            }
             if let Some(smask_stream) = rebuilt_smask {
                 let smask_id = document.add_object(smask_stream);
                 rebuilt.dict.set("SMask", Object::Reference(smask_id));

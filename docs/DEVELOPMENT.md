@@ -109,8 +109,19 @@ cargo run -p pdf-core --bin pdf-compressor-cli -- quick <file.pdf> --grayscale  
   xref `/Index` 枚举上界之外（`create_xref_steam` 以构造时的 `size` 为界），poppler 渲染
   时报 `Invalid XRef entry N`。升级前所有多 ObjStm 输出都带此警告；勿降级。
 - **SkipPolicy**（`encode.rs`）：小流跳过阈值是文档级策略——图片对象数 ≥ 24 或显式
-  灰度请求时解除（降到 6KB tiny 下限）。分析器的预估经 `image_is_actionable` 镜像同一
+  灰度/G4 双级请求时解除（降到 6KB tiny 下限）。分析器的预估经 `image_is_actionable` 镜像同一
   套启发式，两边必须同步改，否则预估重新失真。
+- **CCITT Group 4**（`encode.rs`，feature `ccitt` 默认开启）：输出侧按“近双级”判定
+  （midtone 占比 ≤ 5%，`NEAR_BILEVEL_MIDTONE_FRACTION`）决定 JPEG 还是 G4，连续调图永远走
+  JPEG；输入侧只解码纯 G4 形状（单一 `CCITTFaxDecode` 过滤器 + `/DecodeParms` K<0 + 无
+  `EncodedByteAlign`），G3（K≥0）与 flate 混合链保持 skip——判定收口在 `stream_filter_info`
+  的 `ccitt_decodable`，分析器自动跟随。目标大小搜索中 G4 无质量旋钮，产物按尺寸 memo 于
+  `ImageSearchCache::bilevel_product`。**JBIG2 后续立项前先核许可证**：C 版 jbig2enc 为
+  AGPL-3.0，与本项目 MIT 不兼容；Rust 移植若同为 AGPL 则放弃，仅保留 G4 出口。
+- **灰度/G4 设置链路**：`grayscale: bool` + `bilevel_codec: BilevelCodec`（"jpeg"/"ccitt-g4"
+  字符串上 IPC 线格式）；GUI 的“色彩模式”三态选择在 `CompressionSettingsPanel` 里映射成这对
+  字段（黑白 = grayscale+G4）。CLI 为 `--grayscale` / `--bilevel g4`（后者已入
+  `split_quick_inputs` 的 `VALUE_FLAGS`）。
 - **目标大小搜索**（`target_size.rs`）：经典二分求“适配预算的最高质量”；整个质量范围
   失败才收缩边长，且新边长下 `hi` 重置为触发塌缩的质量（不是用户质量）。best-effort
   兜底取“estimate 最小的探测参数”。**中间探测轮的 materialize 禁止 renumber**——
@@ -168,6 +179,6 @@ npm run tauri:build  # 安装包 + 便携版可执行文件（scripts/postbuild-
 - **改了命令签名后前端类型报错**：运行 `cargo test --workspace` 再生成 bindings 并提交。
 - **压缩后文件没变小**：先看分析结果 `documentKind`（text-native 压缩空间有限）、
   是否无内嵌图片、或图片过滤器不受支持（JPX/JBIG2/CCITT/Crypt 会跳过）。
-- **目标大小模式未达标**：引擎最多尝试 6 轮，产出“当前可达的最小结果”并返回
+- **目标大小模式未达标**：引擎最多尝试 12 轮（`MAX_ATTEMPTS`），产出“当前可达的最小结果”并返回
   `compress.warning.targetSizeMissed` 提示；前端以警告 toast + 状态卡 notes 呈现。
 - **`cargo bench` 名字冲突**：基准每轮使用独立临时目录，避免 100 次重名上限。

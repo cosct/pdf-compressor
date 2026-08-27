@@ -52,6 +52,39 @@ impl CompressionPreset {
     }
 }
 
+/// Output codec for images whose decoded plane is (near-)bilevel, i.e. scans
+/// of text documents. Continuous-tone images always stay on JPEG.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BilevelCodec {
+    /// Standard JPEG re-encode — today's behavior.
+    #[default]
+    Jpeg,
+    /// CCITT Group 4 (ITU T.6): lossless bi-level coding, dramatically smaller
+    /// than JPEG for black-and-white scans.
+    CcittG4,
+}
+
+impl BilevelCodec {
+    pub fn from_optional_str(value: Option<&str>) -> Self {
+        match value.map(|item| item.to_ascii_lowercase()) {
+            // "ccitt-g4" / "g4" / "bilevel" style labels all select G4.
+            Some(value) if value.contains("g4") || value.contains("ccitt") => Self::CcittG4,
+            _ => Self::Jpeg,
+        }
+    }
+
+    pub fn as_label(self) -> &'static str {
+        match self {
+            Self::Jpeg => "jpeg",
+            Self::CcittG4 => "ccitt-g4",
+        }
+    }
+
+    pub fn uses_ccitt(self) -> bool {
+        matches!(self, Self::CcittG4)
+    }
+}
+
 /// Normalized backend settings used by the compression service.
 #[derive(Debug, Clone)]
 pub struct CompressionSettings {
@@ -64,6 +97,8 @@ pub struct CompressionSettings {
     /// Re-encode color images as 8-bit grayscale (roughly halves image bytes
     /// for black-and-white scans). No effect on images that are already gray.
     pub grayscale: bool,
+    /// Output codec for near-bilevel planes (see `BilevelCodec`).
+    pub bilevel_codec: BilevelCodec,
     pub output_dir: Option<String>,
 }
 
@@ -76,6 +111,7 @@ pub struct CompressionSettingsOverrides {
     pub compress_streams: Option<bool>,
     pub strip_metadata: Option<bool>,
     pub grayscale: Option<bool>,
+    pub bilevel_codec: Option<BilevelCodec>,
     pub output_dir: Option<String>,
 }
 
@@ -94,6 +130,10 @@ impl CompressionSettings {
         let payload_compress_streams = payload.as_ref().and_then(|value| value.compress_streams);
         let payload_strip_metadata = payload.as_ref().and_then(|value| value.strip_metadata);
         let payload_grayscale = payload.as_ref().and_then(|value| value.grayscale);
+        let payload_bilevel_codec = payload
+            .as_ref()
+            .and_then(|value| value.bilevel_codec.as_deref())
+            .map(|value| BilevelCodec::from_optional_str(Some(value)));
         let payload_output_dir = payload.and_then(|value| value.output_dir);
 
         Self {
@@ -121,6 +161,10 @@ impl CompressionSettings {
                 .or(payload_strip_metadata)
                 .unwrap_or(true),
             grayscale: overrides.grayscale.or(payload_grayscale).unwrap_or(false),
+            bilevel_codec: overrides
+                .bilevel_codec
+                .or(payload_bilevel_codec)
+                .unwrap_or_default(),
             output_dir: overrides.output_dir.or(payload_output_dir),
         }
     }
@@ -143,6 +187,7 @@ mod tests {
             compress_streams: None,
             strip_metadata: None,
             grayscale: None,
+            bilevel_codec: None,
             output_dir: None,
         })
     }
@@ -235,5 +280,39 @@ mod tests {
         let default =
             CompressionSettings::from_sources(None, CompressionSettingsOverrides::default());
         assert!(!default.grayscale);
+    }
+
+    #[test]
+    fn from_sources_applies_bilevel_codec() {
+        let g4 = CompressionSettings::from_sources(
+            None,
+            CompressionSettingsOverrides {
+                bilevel_codec: Some(BilevelCodec::CcittG4),
+                ..Default::default()
+            },
+        );
+        assert!(g4.bilevel_codec.uses_ccitt());
+
+        let via_payload = CompressionSettings::from_sources(
+            Some(CompressionSettingsPayload {
+                bilevel_codec: Some("ccitt-g4".into()),
+                ..Default::default()
+            }),
+            CompressionSettingsOverrides::default(),
+        );
+        assert!(via_payload.bilevel_codec.uses_ccitt());
+
+        let default =
+            CompressionSettings::from_sources(None, CompressionSettingsOverrides::default());
+        assert_eq!(default.bilevel_codec.as_label(), "jpeg");
+    }
+
+    #[test]
+    fn bilevel_codec_parsing_matches_known_labels() {
+        assert!(BilevelCodec::from_optional_str(Some("ccitt-g4")).uses_ccitt());
+        assert!(BilevelCodec::from_optional_str(Some("G4")).uses_ccitt());
+        assert!(BilevelCodec::from_optional_str(Some("CCITT")).uses_ccitt());
+        assert!(!BilevelCodec::from_optional_str(Some("jpeg")).uses_ccitt());
+        assert!(!BilevelCodec::from_optional_str(None).uses_ccitt());
     }
 }

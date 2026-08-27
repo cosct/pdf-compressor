@@ -87,6 +87,11 @@ export type CompressScannedPdfRequest_Deserialize = {
 	preset: string | null,
 	imageQuality: number | null,
 	grayscale: boolean | null,
+	/**
+	 *  Output codec for near-bilevel scanned images: `"jpeg"` (default) or
+	 *  `"ccitt-g4"`.
+	 */
+	bilevelCodec?: string | null,
 	stripMetadata: boolean | null,
 	removeMetadata: boolean | null,
 	outputDir: string | null,
@@ -132,6 +137,11 @@ export type CompressScannedPdfRequest_Serialize = {
 	 */
 	maxImageSizePx: number | null,
 	grayscale: boolean | null,
+	/**
+	 *  Output codec for near-bilevel scanned images: `"jpeg"` (default) or
+	 *  `"ccitt-g4"`.
+	 */
+	bilevelCodec: string | null,
 	stripMetadata: boolean | null,
 	removeMetadata: boolean | null,
 	outputDir: string | null,
@@ -167,6 +177,11 @@ export type CompressionSettingsPayload = {
 	stripMetadata: boolean | null,
 	/**  Re-encode color images as grayscale (best for black-and-white scans). */
 	grayscale?: boolean | null,
+	/**
+	 *  Output codec for near-bilevel scanned images: `"jpeg"` (default) or
+	 *  `"ccitt-g4"` (lossless ITU T.6, best for text scans).
+	 */
+	bilevelCodec?: string | null,
 	outputDir: string | null,
 };
 

@@ -9,7 +9,7 @@
 
 use std::io::Cursor;
 
-use image::{codecs::jpeg::JpegEncoder, DynamicImage, Rgb, RgbImage};
+use image::{codecs::jpeg::JpegEncoder, DynamicImage, GrayImage, Luma, Rgb, RgbImage};
 
 /// Gradient plus deterministic noise: behaves like a photograph under JPEG
 /// (poorly compressible at high quality) while staying reproducible for a
@@ -81,4 +81,58 @@ pub fn encode_jpeg(image: RgbImage, quality: u8) -> Vec<u8> {
         .encode_image(&dynamic)
         .expect("failed to encode fixture JPEG");
     cursor.into_inner()
+}
+
+/// A bilevel "scanned text page": white background with thick black text
+/// lines. Zero midtone pixels, few edges — the shape CCITT Group 4 compresses
+/// extremely well. Deterministic for a given `seed`.
+pub fn bilevel_scan_image(width: u32, height: u32, seed: u32) -> GrayImage {
+    let mut image = GrayImage::from_pixel(width, height, Luma([255u8]));
+    let mut state: u32 = seed;
+    let band = (height / 24).max(4);
+    let mut y = band;
+
+    while y + band <= height.saturating_sub(band) {
+        state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        let text_height = (band * 2 / 5).max(2);
+        let left = (state % (width / 8).max(1)) + width / 16;
+        let right = width - ((state >> 8) % (width / 8).max(1)) - width / 16;
+        for dy in 0..text_height {
+            if y + dy >= height {
+                break;
+            }
+            for x in left..right.max(left + 1) {
+                image.put_pixel(x, y + dy, Luma([0u8]));
+            }
+        }
+        y += band;
+    }
+
+    image
+}
+
+/// `bilevel_scan_image` converted to RGB (for the JPEG fixture encoder).
+pub fn bilevel_scan_rgb_image(width: u32, height: u32, seed: u32) -> RgbImage {
+    DynamicImage::ImageLuma8(bilevel_scan_image(width, height, seed)).to_rgb8()
+}
+
+/// Encode a grayscale image as CCITT Group 4 (luma >= 128 → white). Used to
+/// build CCITT *input* fixtures; mirrors the engine's T.6 conventions
+/// (`BlackIs1: true`).
+#[cfg(feature = "ccitt")]
+pub fn encode_ccitt_g4(image: &GrayImage) -> Vec<u8> {
+    let (width, _) = image.dimensions();
+    let mut encoder = fax::encoder::Encoder::new(fax::VecWriter::new());
+    for row in image.as_raw().chunks(width as usize) {
+        let _ = encoder.encode_line(
+            row.iter()
+                .map(|&luma| if luma >= 128 { fax::Color::White } else { fax::Color::Black }),
+            width,
+        );
+    }
+    let writer = match encoder.finish() {
+        Ok(writer) => writer,
+        Err(infallible) => match infallible {},
+    };
+    writer.finish()
 }

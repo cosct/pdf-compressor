@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Service
 MimeType=application/pdf;
-Actions=pdfCompressBalanced;pdfCompressMaximum;pdfCompressScanned;pdfCompressTarget;
+Actions=pdfCompressBalanced;pdfCompressMaximum;pdfCompressScanned;pdfCompressBilevel;pdfCompressTarget;
 X-KDE-Priority=TopLevel
 X-KDE-Submenu=PDF Compressor
 X-KDE-Submenu[zh_CN]=PDF 压缩
@@ -28,6 +28,14 @@ Name[zh_CN]=压缩扫描件（灰度）
 Comment=Best for black-and-white scans
 Comment[zh_CN]=适合黑白扫描文档
 Exec=pdf-compressor-cli quick --grayscale %F
+Icon=pdf-compressor
+
+[Desktop Action pdfCompressBilevel]
+Name=Compress scanned PDF (black & white G4)
+Name[zh_CN]=压缩扫描件（黑白 G4）
+Comment=Lossless CCITT Group 4 for text scans
+Comment[zh_CN]=无损 CCITT G4，适合文字扫描件
+Exec=pdf-compressor-cli quick --bilevel g4 %F
 Icon=pdf-compressor
 
 [Desktop Action pdfCompressTarget]

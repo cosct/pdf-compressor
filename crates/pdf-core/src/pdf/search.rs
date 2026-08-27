@@ -143,6 +143,11 @@ pub(crate) fn materialize_image_entry(
     match optimization {
         ImageOptimization::Recompressed { stream, smask } => {
             let mut rebuilt = stream.clone();
+            if rebuilt.dict.get(b"Filter").is_ok_and(|filter| {
+                matches!(filter, Object::Name(name) if name.as_slice() == b"CCITTFaxDecode")
+            }) {
+                stats.images_bilevel_encoded += 1;
+            }
             if let Some(smask_stream) = smask {
                 let smask_id = document.add_object(smask_stream.clone());
                 rebuilt.dict.set("SMask", Object::Reference(smask_id));

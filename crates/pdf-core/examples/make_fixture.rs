@@ -1,14 +1,16 @@
-//! Build a synthetic multi-image photographic PDF for manual benchmarking.
-//! 生成多页照片型 PDF，用于手动基准测试。
+//! Build a synthetic multi-image PDF for manual benchmarking.
+//! 生成多页 PDF，用于手动基准测试。
 //!
-//! Usage: make_fixture <output.pdf> [images] [width] [height] [quality]
+//! Usage: make_fixture <output.pdf> [images] [width] [height] [quality] [kind]
+//!   kind: photo (default) — photographic JPEG pages
+//!         scan            — near-bilevel "scanned text" JPEG pages (CCITT G4 fodder)
 
 use std::io::Cursor;
 
 use image::{codecs::jpeg::JpegEncoder, DynamicImage, GenericImageView};
 use lopdf::{dictionary, Document, Object, Stream};
 
-use pdf_core::testutil::{deterministic_rgb_image, FIXTURE_SEED};
+use pdf_core::testutil::{bilevel_scan_rgb_image, deterministic_rgb_image, FIXTURE_SEED};
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -17,6 +19,7 @@ fn main() {
     let width: u32 = args.next().map_or(1600, |v| v.parse().expect("width"));
     let height: u32 = args.next().map_or(1200, |v| v.parse().expect("height"));
     let quality: u8 = args.next().map_or(95, |v| v.parse().expect("quality"));
+    let scan_mode = args.next().map(|kind| kind == "scan").unwrap_or(false);
 
     let mut doc = Document::with_version("1.5");
     let pages_id = doc.new_object_id();
@@ -28,8 +31,11 @@ fn main() {
 
     let mut kids = Vec::new();
     for index in 0..image_count {
-        let rgb =
-            deterministic_rgb_image(width, height, FIXTURE_SEED.wrapping_add(index as u32));
+        let rgb = if scan_mode {
+            bilevel_scan_rgb_image(width, height, FIXTURE_SEED.wrapping_add(index as u32))
+        } else {
+            deterministic_rgb_image(width, height, FIXTURE_SEED.wrapping_add(index as u32))
+        };
         let dynamic = DynamicImage::ImageRgb8(rgb);
         let (w, h) = dynamic.dimensions();
         let mut cursor = Cursor::new(Vec::new());
@@ -83,5 +89,8 @@ fn main() {
     doc.save(&output).expect("save fixture");
 
     let bytes = std::fs::metadata(&output).expect("metadata").len();
-    println!("wrote {output}: {bytes} bytes, {image_count} images ({width}x{height} q{quality})");
+    println!(
+        "wrote {output}: {bytes} bytes, {image_count} images ({width}x{height} q{quality}, {})",
+        if scan_mode { "scan" } else { "photo" }
+    );
 }

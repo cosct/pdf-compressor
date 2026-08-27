@@ -22,5 +22,5 @@ pub use error::{AppError, AppErrorPayload};
 pub use models::CompressionResponse;
 pub use pdf::{
     analyze_pdf_with_progress, compress_pdf_to_target_size, compress_pdf_with_progress,
-    CompressionSettings, CompressionSettingsOverrides,
+    BilevelCodec, CompressionSettings, CompressionSettingsOverrides,
 };

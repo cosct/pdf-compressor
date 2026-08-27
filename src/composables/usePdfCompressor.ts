@@ -16,6 +16,7 @@ import {
   analyzePdf,
   cancelCompression,
   compressPdf,
+  compressScannedPdf,
   existingPaths,
   hasNativeCommands,
   openDirectoryDialog,
@@ -66,6 +67,8 @@ function createSettingsForPreset(
     optimizeImages: overrides?.optimizeImages ?? true,
     compressStreams: overrides?.compressStreams ?? true,
     stripMetadata: overrides?.stripMetadata ?? true,
+    grayscale: overrides?.grayscale ?? false,
+    bilevelCodec: overrides?.bilevelCodec ?? 'jpeg',
     outputDir: overrides?.outputDir ?? null,
     targetFileSizeMb: overrides?.targetFileSizeMb ?? null,
   })
@@ -95,6 +98,10 @@ export function normalizeSettings(settings: CompressionSettings): CompressionSet
         : getPresetDefaults(preset).maxImageSizePercent,
     ),
     referenceMaxImageEdgePx: normalizeReferenceMaxImageEdgePx(settings.referenceMaxImageEdgePx),
+    // Restored legacy queues may predate the grayscale field, so coerce
+    // `undefined` back to the default instead of trusting the stored shape.
+    grayscale: settings.grayscale ?? false,
+    bilevelCodec: settings.bilevelCodec === 'ccitt-g4' ? 'ccitt-g4' : 'jpeg',
     outputDir: settings.outputDir?.trim() ? settings.outputDir.trim() : null,
     targetFileSizeMb: normalizeTargetFileSizeMb(settings.targetFileSizeMb),
   }
@@ -161,6 +168,8 @@ function comparableCompressionSettings(settings: CompressionSettings) {
     optimizeImages: normalized.optimizeImages,
     compressStreams: normalized.compressStreams,
     stripMetadata: normalized.stripMetadata,
+    grayscale: normalized.grayscale,
+    bilevelCodec: normalized.bilevelCodec,
     targetFileSizeMb: normalized.targetFileSizeMb,
   }
 }
@@ -534,7 +543,21 @@ export function usePdfCompressor() {
     applyProgress(job, { phase: 'compressing', percent: 0 })
 
     try {
-      const response = await compressPdf(requestedPath, job.settings, taskId, (update) => {
+      // Scan-heavy documents go through the dedicated scanned pipeline, which
+      // forces image + stream optimization on the backend side.
+      const runCompression =
+        job.analysis?.documentKind === 'scan-heavy' ? compressScannedPdf : compressPdf
+      if (runCompression === compressScannedPdf) {
+        pushErrorToast(
+          createNotice(
+            'scan:pipeline',
+            'neutral',
+            translate('composable.notices.scanPipelineTitle'),
+            translate('composable.notices.scanPipelineBody'),
+          ),
+        )
+      }
+      const response = await runCompression(requestedPath, job.settings, taskId, (update) => {
         if (job.sourcePath === requestedPath && isActiveCompressionTask(job.id, taskId)) {
           applyProgress(job, update)
         }

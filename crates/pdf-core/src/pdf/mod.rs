@@ -14,7 +14,7 @@ mod tests;
 
 pub use analyzer::analyze_pdf_with_progress;
 pub use compressor::compress_pdf_with_progress;
-pub use settings::{CompressionSettings, CompressionSettingsOverrides};
+pub use settings::{BilevelCodec, CompressionSettings, CompressionSettingsOverrides};
 pub use target_size::compress_pdf_to_target_size;
 
 use std::sync::{

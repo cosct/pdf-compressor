@@ -93,6 +93,33 @@ const presetOptions = computed<Array<{ value: CompressionPreset; title: string }
   { value: 'custom', title: t('app.preset.custom') },
 ])
 
+type ColorMode = 'color' | 'gray' | 'bw'
+
+/** The grayscale/bilevel pair expressed as one UI choice. */
+const colorMode = computed<ColorMode>(() => {
+  if (props.settings.bilevelCodec === 'ccitt-g4') {
+    return 'bw'
+  }
+  return props.settings.grayscale ? 'gray' : 'color'
+})
+
+const colorModeOptions = computed<Array<{ value: ColorMode; title: string }>>(() => [
+  { value: 'color', title: t('settings.colorModeColor') },
+  { value: 'gray', title: t('settings.colorModeGray') },
+  { value: 'bw', title: t('settings.colorModeBw') },
+])
+
+function selectColorMode(mode: ColorMode) {
+  emit(
+    'update:settings',
+    normalizeWithAnalysis({
+      ...props.settings,
+      grayscale: mode !== 'color',
+      bilevelCodec: mode === 'bw' ? 'ccitt-g4' : 'jpeg',
+    }),
+  )
+}
+
 async function refreshPresetProfiles() {
   presetConfigBusy.value = true
 
@@ -428,6 +455,26 @@ function presetSnapshotLabel(preset: CompressionPreset): string {
           <p v-if="targetSizeInvalid" class="target-size-warning" role="alert">
             {{ t('settings.targetSizeInvalid') }}
           </p>
+        </div>
+
+        <div class="color-mode-row" role="radiogroup" :aria-label="t('settings.colorMode')">
+          <span class="color-mode-row__label">{{ t('settings.colorMode') }}</span>
+          <div class="color-mode-seg">
+            <button
+              v-for="option in colorModeOptions"
+              :key="option.value"
+              class="color-mode-seg__item"
+              :class="{ 'color-mode-seg__item--active': colorMode === option.value }"
+              type="button"
+              role="radio"
+              :aria-checked="colorMode === option.value ? 'true' : 'false'"
+              :tabindex="colorMode === option.value ? 0 : -1"
+              :disabled="props.disabled"
+              @click="selectColorMode(option.value)"
+            >
+              {{ option.title }}
+            </button>
+          </div>
         </div>
 
         <div class="toggle-list">
@@ -784,6 +831,59 @@ input[type='range']:disabled {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: var(--fd-space-6);
+}
+
+.color-mode-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--fd-space-8);
+}
+
+.color-mode-row__label {
+  font: var(--fd-text-body);
+  font-weight: 500;
+  color: var(--fd-text-primary);
+}
+
+.color-mode-seg {
+  display: inline-flex;
+  border: 1px solid var(--fd-control-stroke);
+  border-radius: 14px;
+  background: var(--fd-layer-2);
+  overflow: hidden;
+}
+
+.color-mode-seg__item {
+  min-height: 30px;
+  padding: 4px 14px;
+  border: none;
+  background: transparent;
+  color: var(--fd-text-secondary);
+  font: var(--fd-text-caption);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color var(--fd-duration-fast) var(--fd-easing-standard);
+}
+
+.color-mode-seg__item:hover:not(:disabled):not(.color-mode-seg__item--active) {
+  background: var(--fd-control-bg-hover);
+}
+
+.color-mode-seg__item--active {
+  background: var(--fd-accent-subtle);
+  color: var(--fd-text-primary);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fd-accent) 18%, transparent);
+}
+
+.color-mode-seg__item:focus-visible {
+  outline: none;
+  box-shadow: var(--fd-shadow-focus);
+}
+
+.color-mode-seg__item:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .toggle-chip {

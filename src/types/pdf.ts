@@ -6,6 +6,8 @@
 export type CompressionPreset = 'conservative' | 'balanced' | 'maximum' | 'custom'
 export type DocumentKind = 'text-native' | 'mixed' | 'scan-heavy'
 export type NoticeTone = 'neutral' | 'success' | 'warning' | 'danger'
+/** Output codec for near-black-and-white scanned images. */
+export type BilevelCodec = 'jpeg' | 'ccitt-g4'
 export type WorkflowState =
   | 'idle'
   | 'selected'
@@ -28,6 +30,11 @@ export interface CompressionSettings {
   optimizeImages: boolean
   compressStreams: boolean
   stripMetadata: boolean
+  /** Re-encode color images as grayscale (best for black-and-white scans). */
+  grayscale: boolean
+  /** Codec used when the decoded plane is near-bilevel: `'ccitt-g4'` switches
+   * those images to lossless CCITT Group 4 (text scans). */
+  bilevelCodec: BilevelCodec
   outputDir: string | null
   /** Optional target output size in MB — the backend searches quality/edge
    * parameters until the output fits (best effort). `null` disables. */

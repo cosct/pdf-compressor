@@ -140,7 +140,10 @@ where
     // a fitting probe raises the floor so leftover budget is spent on quality,
     // an over-budget probe lowers the ceiling. The edge only shrinks after the
     // whole quality range failed, and never while a fitting round is known.
-    let skip_policy = SkipPolicy::for_document(entries.len(), settings.grayscale);
+    let skip_policy = SkipPolicy::for_document(
+        entries.len(),
+        settings.grayscale || settings.bilevel_codec.uses_ccitt(),
+    );
     let search_context = SearchContext {
         settings: &settings,
         skip_policy,
@@ -347,6 +350,7 @@ fn materialize_and_save(
 ) -> Result<CompressionResponse, AppError> {
     stats.images_recompressed = 0;
     stats.images_skipped = 0;
+    stats.images_bilevel_encoded = 0;
     stats.image_skip_notices = 0;
     stats.suppressed_skip_notices = 0;
     stats.notices.clear();

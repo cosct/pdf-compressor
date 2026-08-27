@@ -5,6 +5,8 @@
 use std::sync::{atomic::AtomicBool, Arc};
 
 use image::{imageops::FilterType, DynamicImage, GenericImageView};
+#[cfg(feature = "ccitt")]
+use lopdf::Dictionary;
 use lopdf::{dictionary, Object, Stream};
 
 use super::ensure_not_cancelled;
@@ -40,10 +42,15 @@ pub(crate) struct SkipPolicy {
 }
 
 impl SkipPolicy {
-    /// Policy for a document with `image_object_count` image objects under
-    /// the given grayscale request.
-    pub fn for_document(image_object_count: usize, grayscale_requested: bool) -> Self {
-        let lifted = grayscale_requested || image_object_count >= SMALL_SKIP_LIFT_IMAGE_OBJECTS;
+    /// Policy for a document with `image_object_count` image objects. The
+    /// small-stream skip is lifted when a conversion was requested (grayscale
+    /// or CCITT G4 — the user asked for a conversion, not just shrinkage) or
+    /// the document is image-heavy (many small scans add up).
+    pub fn for_document(
+        image_object_count: usize,
+        conversion_requested: bool,
+    ) -> Self {
+        let lifted = conversion_requested || image_object_count >= SMALL_SKIP_LIFT_IMAGE_OBJECTS;
         Self {
             small_stream_bytes: if lifted {
                 TINY_JPEG_STREAM_BYTES
@@ -76,6 +83,19 @@ const TWO_PASS_RESIZE_PIXEL_THRESHOLD: u64 = 4_000_000;
 /// worth keeping across probe rounds (it would dominate the cache budget).
 /// After a resize the shrunk plane is a few MB, so this rarely triggers.
 const BITMAP_CACHE_SINGLE_MAX_BYTES: u64 = 96 * 1024 * 1024;
+
+/// Luma values strictly inside this band count as "midtone" when deciding
+/// whether a plane is effectively black-and-white; anything darker or lighter
+/// counts as an extreme. JPEG noise around bilevel content sits at the
+/// extremes, so only true midtones disqualify G4.
+#[cfg(feature = "ccitt")]
+const BILEVEL_EXTREME_BAND: u8 = 24;
+
+/// A plane is treated as near-bilevel (a scan of text/line art) when at most
+/// this fraction of pixels are midtone. Text antialiasing edges stay in the
+/// low single digits of percent; photographs land far above.
+#[cfg(feature = "ccitt")]
+const NEAR_BILEVEL_MIDTONE_FRACTION: f64 = 0.05;
 
 #[derive(Debug)]
 // The two `Stream`s dominate the recompressed variant; boxing them would add
@@ -111,6 +131,10 @@ pub(super) struct ImageSearchCache {
     /// Memoized (resize + flate) alpha stream keyed by target dimensions —
     /// quality-only rounds reproduce identical alpha bytes.
     smask_product: Option<((u32, u32), Stream)>,
+    /// Memoized CCITT G4 bytes keyed by target dimensions — G4 has no quality
+    /// knob, so quality-only probe rounds reproduce identical bytes.
+    #[cfg(feature = "ccitt")]
+    bilevel_product: Option<((u32, u32), Vec<u8>)>,
 }
 
 impl ImageSearchCache {
@@ -319,6 +343,17 @@ pub(super) fn optimize_image_stream(
             let decoded = if filter_info.has_jpeg {
                 image::load_from_memory(&stream.content)
                     .map_err(|e| format!("failed to decode JPEG image stream: {e}"))
+            } else if filter_info.has_ccitt {
+                #[cfg(feature = "ccitt")]
+                {
+                    decode_ccitt_g4_stream(stream)
+                        .map_err(|e| format!("failed to decode CCITT image stream: {e}"))
+                }
+                #[cfg(not(feature = "ccitt"))]
+                {
+                    // Unreachable: non-decodable CCITT was skipped above.
+                    Err("CCITT support is not compiled in".to_string())
+                }
             } else {
                 decode_raw_image_stream(stream)
                     .map_err(|e| format!("failed to decode raw image stream: {e}"))
@@ -328,8 +363,10 @@ pub(super) fn optimize_image_stream(
                     // Grayscale conversion happens before resizing: it is
                     // constant across probe rounds (so the cached plane stays
                     // gray) and resizing a single-channel plane is a third of
-                    // the work of RGB.
-                    if settings.grayscale && image.color().has_color() {
+                    // the work of RGB. G4 output implies luma as well.
+                    let wants_luma =
+                        settings.grayscale || settings.bilevel_codec.uses_ccitt();
+                    if wants_luma && image.color().has_color() {
                         DynamicImage::ImageLuma8(image.to_luma8())
                     } else {
                         image
@@ -370,11 +407,28 @@ pub(super) fn optimize_image_stream(
         None
     };
 
-    // --- Encode as JPEG ---
+    // --- Encode as JPEG (or CCITT G4 for near-bilevel planes) ---
     // Pre-allocate based on conservative compression ratio estimate.
     ensure_not_cancelled(cancel_flag, task_id)?;
-    let estimated_output_size = (original_len as f32 * 0.65) as usize;
-    let encoded =
+    let plane_dimensions = (plane.width(), plane.height());
+
+    #[cfg(feature = "ccitt")]
+    let bilevel_g4 =
+        settings.bilevel_codec.uses_ccitt() && plane_is_near_bilevel(&plane);
+    #[cfg(not(feature = "ccitt"))]
+    let bilevel_g4 = false;
+
+    let encoded: Vec<u8> = if bilevel_g4 {
+        #[cfg(feature = "ccitt")]
+        {
+            g4_bytes_for_round(&plane, &mut search_cache)
+        }
+        #[cfg(not(feature = "ccitt"))]
+        {
+            unreachable!("bilevel_g4 is constant false without the ccitt feature")
+        }
+    } else {
+        let estimated_output_size = (original_len as f32 * 0.65) as usize;
         match encode_dynamic_image_as_jpeg(&plane, settings.image_quality, estimated_output_size) {
             Ok(encoded) => encoded,
             Err(e) => {
@@ -382,9 +436,8 @@ pub(super) fn optimize_image_stream(
                     reason: format!("failed to re-encode image as JPEG: {e}"),
                 })
             }
-        };
-
-    let plane_dimensions = (plane.width(), plane.height());
+        }
+    };
 
     // Hand the (possibly pre-shrunk) plane to the cache for later rounds.
     // This is the final use of `search_cache`, so it is consumed here.
@@ -401,21 +454,40 @@ pub(super) fn optimize_image_stream(
 
     // --- Build the rebuilt stream from the original dictionary ---
     let mut rebuilt = Stream::new(stream.dict.clone(), encoded);
-    rebuilt
-        .dict
-        .set("Filter", Object::Name(b"DCTDecode".to_vec()));
-    rebuilt.dict.remove(b"DecodeParms");
+    if bilevel_g4 {
+        rebuilt
+            .dict
+            .set("Filter", Object::Name(b"CCITTFaxDecode".to_vec()));
+        rebuilt.dict.set(
+            "DecodeParms",
+            Object::Dictionary(dictionary! {
+                "K" => -1,
+                "Columns" => i64::from(plane_dimensions.0),
+                "Rows" => i64::from(plane_dimensions.1),
+                "BlackIs1" => true,
+            }),
+        );
+        rebuilt.dict.set("BitsPerComponent", Object::Integer(1));
+        rebuilt
+            .dict
+            .set("ColorSpace", Object::Name(b"DeviceGray".to_vec()));
+    } else {
+        rebuilt
+            .dict
+            .set("Filter", Object::Name(b"DCTDecode".to_vec()));
+        rebuilt.dict.remove(b"DecodeParms");
+        rebuilt.dict.set("BitsPerComponent", Object::Integer(8));
+        rebuilt.dict.set(
+            "ColorSpace",
+            Object::Name(color_space_name.as_bytes().to_vec()),
+        );
+    }
     rebuilt
         .dict
         .set("Width", Object::Integer(i64::from(plane_dimensions.0)));
     rebuilt
         .dict
         .set("Height", Object::Integer(i64::from(plane_dimensions.1)));
-    rebuilt.dict.set("BitsPerComponent", Object::Integer(8));
-    rebuilt.dict.set(
-        "ColorSpace",
-        Object::Name(color_space_name.as_bytes().to_vec()),
-    );
 
     Ok(ImageOptimization::Recompressed {
         stream: rebuilt,
@@ -554,6 +626,11 @@ fn skip_recompression_reason(
 
 fn raw_recompression_skip_reason(stream: &Stream, filter_info: StreamFilterInfo) -> Option<String> {
     if filter_info.has_jpeg {
+        return None;
+    }
+    // CCITT streams go through their own decoder; the raw-plane checks below
+    // (bit depth, name color space) do not apply to them.
+    if filter_info.has_ccitt {
         return None;
     }
 
@@ -749,6 +826,176 @@ fn encode_dynamic_image_as_jpeg(
     Ok(output)
 }
 
+// ---------------------------------------------------------------------------
+// CCITT Group 4 (bi-level) codec helpers
+// ---------------------------------------------------------------------------
+
+/// Validate that a CCITT stream uses the pure Group-4 shape this engine can
+/// decode: direct `/DecodeParms` dictionary with `K < 0`, no byte alignment.
+/// Returns `(width, height, black_is_1)` on success. Group 3 (`K >= 0`) and
+/// `EncodedByteAlign` streams stay unsupported.
+#[cfg(feature = "ccitt")]
+fn ccitt_g4_parms(stream: &Stream) -> Option<(u32, u32, bool)> {
+    let width = optional_integer(stream, b"Width")? as u32;
+    let height = optional_integer(stream, b"Height")? as u32;
+    if width == 0 || height == 0 {
+        return None;
+    }
+
+    // An absent /DecodeParms defaults to K = 0 (Group 3 one-dimensional),
+    // which is not decodable here. Indirect parameter references are rare
+    // and are not resolved in this stream-local context.
+    let parms = match stream.dict.get(b"DecodeParms") {
+        Ok(Object::Dictionary(dict)) => dict,
+        _ => return None,
+    };
+
+    let k = optional_dict_integer(parms, b"K").unwrap_or(0);
+    if k >= 0 {
+        return None;
+    }
+    if matches!(parms.get(b"EncodedByteAlign"), Ok(Object::Boolean(true))) {
+        return None;
+    }
+
+    let black_is_1 = matches!(parms.get(b"BlackIs1"), Ok(Object::Boolean(true)));
+    Some((width, height, black_is_1))
+}
+
+/// Decode a pure Group-4 CCITT image stream into an 8-bit grayscale plane
+/// (black = 0, white = 255). The fax crate emits per-line color transitions;
+/// `pels` expands them back into full rows.
+#[cfg(feature = "ccitt")]
+fn decode_ccitt_g4_stream(stream: &Stream) -> Result<DynamicImage, AppError> {
+    let (width, height, black_is_1) = ccitt_g4_parms(stream).ok_or_else(|| {
+        AppError::PdfBuild("CCITT stream does not use the supported Group 4 shape".into())
+    })?;
+
+    let mut pixels = vec![0u8; width as usize * height as usize];
+    let mut written_rows = 0usize;
+
+    let decoded = fax::decoder::decode_g4(
+        stream.content.iter().copied(),
+        width,
+        Some(height),
+        |transitions| {
+            if written_rows >= height as usize {
+                return;
+            }
+            let row_start = written_rows * width as usize;
+            let row = &mut pixels[row_start..row_start + width as usize];
+            for (x, color) in fax::decoder::pels(transitions, width).enumerate() {
+                if x >= row.len() {
+                    break;
+                }
+                // fax uses the T.6 bit convention (1 = black). PDF's
+                // BlackIs1=false inverts it: 0 bits render as black.
+                let is_black = (color == fax::Color::Black) == black_is_1;
+                row[x] = if is_black { 0 } else { 255 };
+            }
+            written_rows += 1;
+        },
+    );
+
+    if decoded.is_none() {
+        return Err(AppError::PdfBuild(
+            "failed to decode CCITT Group 4 image stream".into(),
+        ));
+    }
+
+    image::GrayImage::from_vec(width, height, pixels)
+        .map(DynamicImage::ImageLuma8)
+        .ok_or_else(|| AppError::PdfBuild("CCITT decode produced mismatched buffer".into()))
+}
+
+/// Encode an 8-bit grayscale plane as CCITT Group 4 (ITU T.6). Pixels at or
+/// above the 128 luma threshold become white, everything else black. The
+/// output bitstream follows the T.6 convention (1 = black), which the rebuilt
+/// stream advertises as `BlackIs1: true`.
+#[cfg(feature = "ccitt")]
+fn encode_gray_as_ccitt_g4(plane: &image::GrayImage) -> Vec<u8> {
+    let (width, height) = plane.dimensions();
+    let mut encoder = fax::encoder::Encoder::new(fax::VecWriter::with_capacity(
+        (width as usize * height as usize) / 16,
+    ));
+
+    for row in plane.as_raw().chunks(width as usize) {
+        // VecWriter's error type is `Infallible` — there is nothing to handle.
+        let _ = encoder.encode_line(
+            row.iter()
+                .map(|&luma| if luma >= 128 { fax::Color::White } else { fax::Color::Black }),
+            width,
+        );
+    }
+
+    // `finish` appends the end-of-facsimile-block marker.
+    let writer = match encoder.finish() {
+        Ok(writer) => writer,
+        Err(infallible) => match infallible {},
+    };
+    writer.finish()
+}
+
+/// Is this plane effectively black-and-white (a text/line-art scan)? Counts
+/// midtone pixels on the luma channel against a small fraction of the total.
+#[cfg(feature = "ccitt")]
+fn plane_is_near_bilevel(plane: &DynamicImage) -> bool {
+    let midtones;
+    let total;
+    match plane {
+        DynamicImage::ImageLuma8(gray) => {
+            total = gray.len();
+            midtones = gray
+                .pixels()
+                .filter(|p| p[0] > BILEVEL_EXTREME_BAND && p[0] < 255 - BILEVEL_EXTREME_BAND)
+                .count();
+        }
+        other => {
+            // Only reachable when the caller skipped the pre-resize luma
+            // conversion; compute luma on the fly for the check.
+            let luma = other.to_luma8();
+            total = luma.len();
+            midtones = luma
+                .pixels()
+                .filter(|p| p[0] > BILEVEL_EXTREME_BAND && p[0] < 255 - BILEVEL_EXTREME_BAND)
+                .count();
+        }
+    }
+    (midtones as f64) <= (total as f64) * NEAR_BILEVEL_MIDTONE_FRACTION
+}
+
+/// G4 bytes for one probe round, memoized by target dimensions in the search
+/// cache (G4 has no quality knob, so quality-only rounds are identical).
+#[cfg(feature = "ccitt")]
+fn g4_bytes_for_round(plane: &DynamicImage, cache: &mut Option<&mut ImageSearchCache>) -> Vec<u8> {
+    let dims = (plane.width(), plane.height());
+    if let Some((cached_dims, bytes)) = cache.as_ref().and_then(|c| c.bilevel_product.as_ref()) {
+        if *cached_dims == dims {
+            return bytes.clone();
+        }
+    }
+
+    let bytes = match plane {
+        DynamicImage::ImageLuma8(gray) => encode_gray_as_ccitt_g4(gray),
+        other => {
+            let luma = other.to_luma8();
+            encode_gray_as_ccitt_g4(&luma)
+        }
+    };
+    if let Some(cache) = cache.as_deref_mut() {
+        cache.bilevel_product = Some((dims, bytes.clone()));
+    }
+    bytes
+}
+
+#[cfg(feature = "ccitt")]
+fn optional_dict_integer(dict: &Dictionary, key: &[u8]) -> Option<i64> {
+    match dict.get(key) {
+        Ok(Object::Integer(value)) => Some(*value),
+        _ => None,
+    }
+}
+
 /// Read JPEG dimensions from the SOF marker without decoding the full image.
 /// Scans only the first 64 KB of the stream. Returns `(width, height)`.
 fn jpeg_dimensions_from_header(data: &[u8]) -> Option<(u32, u32)> {
@@ -800,35 +1047,47 @@ fn jpeg_dimensions_from_header(data: &[u8]) -> Option<(u32, u32)> {
 #[derive(Debug, Clone, Copy, Default)]
 struct StreamFilterInfo {
     has_jpeg: bool,
+    has_ccitt: bool,
     has_unsupported_filter: bool,
 }
 
 fn stream_filter_info(stream: &Stream) -> StreamFilterInfo {
-    let mut info = StreamFilterInfo::default();
-
+    let mut names: Vec<Vec<u8>> = Vec::new();
     match stream.dict.get(b"Filter") {
-        Ok(Object::Name(name)) => update_filter_info(name, &mut info),
+        Ok(Object::Name(name)) => names.push(name.clone()),
         Ok(Object::Array(items)) => {
             for item in items {
                 if let Object::Name(name) = item {
-                    update_filter_info(name.as_slice(), &mut info);
+                    names.push(name.clone());
                 }
             }
         }
         _ => {}
     }
 
-    info
-}
-
-fn update_filter_info(name: &[u8], info: &mut StreamFilterInfo) {
-    match name {
-        b"DCTDecode" => info.has_jpeg = true,
-        b"JPXDecode" | b"JBIG2Decode" | b"CCITTFaxDecode" | b"Crypt" => {
-            info.has_unsupported_filter = true;
+    let mut info = StreamFilterInfo::default();
+    for name in &names {
+        match name.as_slice() {
+            b"DCTDecode" => info.has_jpeg = true,
+            b"CCITTFaxDecode" => info.has_ccitt = true,
+            b"JPXDecode" | b"JBIG2Decode" | b"Crypt" => info.has_unsupported_filter = true,
+            _ => {}
         }
-        _ => {}
     }
+
+    // CCITT input is only decodable in the pure Group-4 shape: the filter
+    // chain must be exactly one CCITTFaxDecode (no flate pre-compression) and
+    // the decode parameters must be K < 0 without byte alignment. Everything
+    // else (G3 one/two-dimensional, aligned rows) stays unsupported.
+    #[cfg(feature = "ccitt")]
+    let ccitt_decodable = info.has_ccitt && names.len() == 1 && ccitt_g4_parms(stream).is_some();
+    #[cfg(not(feature = "ccitt"))]
+    let ccitt_decodable = false;
+    if info.has_ccitt && !ccitt_decodable {
+        info.has_unsupported_filter = true;
+    }
+
+    info
 }
 
 fn longest_edge(stream: &Stream) -> Option<u32> {
@@ -923,5 +1182,45 @@ mod tests {
         let resized = resize_if_needed_fast(image, 8000);
         // Already within tolerance of the (huge) target — unchanged.
         assert_eq!(resized.dimensions(), (3, 2));
+    }
+
+    #[test]
+    fn near_bilevel_detection_separates_scans_from_photographs() {
+        use crate::testutil::{bilevel_scan_image, fixture_rgb_image};
+
+        let scan = DynamicImage::ImageLuma8(bilevel_scan_image(400, 300, 7));
+        assert!(plane_is_near_bilevel(&scan), "text scans are near-bilevel");
+
+        let photo = DynamicImage::ImageRgb8(fixture_rgb_image(400, 300));
+        assert!(
+            !plane_is_near_bilevel(&photo),
+            "photographs are continuous tone"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "ccitt")]
+    fn g4_roundtrip_preserves_bilevel_pixels() {
+        use crate::testutil::{bilevel_scan_image, encode_ccitt_g4};
+
+        let image = bilevel_scan_image(331, 197, 11); // odd sizes on purpose
+        let encoded = encode_ccitt_g4(&image);
+        let (width, height) = image.dimensions();
+
+        // Rebuild rows through the same expansion the engine's decoder uses.
+        let mut decoded = image::GrayImage::new(width, height);
+        let mut y = 0u32;
+        let outcome = fax::decoder::decode_g4(encoded.iter().copied(), width, Some(height), |tr| {
+            for (x, color) in fax::decoder::pels(tr, width).enumerate() {
+                if x < width as usize {
+                    let is_black = color == fax::Color::Black; // BlackIs1: true
+                    decoded.put_pixel(x as u32, y, image::Luma([if is_black { 0 } else { 255 }]));
+                }
+            }
+            y += 1;
+        });
+        assert!(outcome.is_some(), "encoded fixture must decode cleanly");
+        assert_eq!(y, height);
+        assert_eq!(decoded.as_raw(), image.as_raw());
     }
 }
