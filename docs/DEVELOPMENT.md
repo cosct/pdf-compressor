@@ -116,8 +116,13 @@ cargo run -p pdf-core --bin pdf-compressor-cli -- quick <file.pdf> --grayscale  
   JPEG；输入侧只解码纯 G4 形状（单一 `CCITTFaxDecode` 过滤器 + `/DecodeParms` K<0 + 无
   `EncodedByteAlign`），G3（K≥0）与 flate 混合链保持 skip——判定收口在 `stream_filter_info`
   的 `ccitt_decodable`，分析器自动跟随。目标大小搜索中 G4 无质量旋钮，产物按尺寸 memo 于
-  `ImageSearchCache::bilevel_product`。**JBIG2 后续立项前先核许可证**：C 版 jbig2enc 为
-  AGPL-3.0，与本项目 MIT 不兼容；Rust 移植若同为 AGPL 则放弃，仅保留 G4 出口。
+  `ImageSearchCache::bilevel_product`。**JBIG2 门禁结论（2026-08，暂不引入）**：
+  Rust 生态两个候选均非直接可用——`jbig2enc-rust` 声称 MIT OR Apache-2.0，但默认开启的
+  `symboldict` 特性含改编自 djvulibre 的代码（GPL 传染风险）、仓库无独立 LICENSE 文件、
+  且是对 AGPL-3.0 的 C 版 jbig2enc 的移植；`jbig2enc`（tagawa0525/jbig2enc-rs，Apache-2.0）
+  自称 reimplementation，但算法源自同一 AGPL 原版，衍生关系未经验证。本项目以 MIT 分发
+  二进制，在出现可验证清洁来源的实现前保持 G4 唯一双级出口；如需 JBIG2 再按
+  T.88 规范自研 generic-region 编码器（无符号字典，收益约 10-25%，约 2-3 周）另立决策。
 - **灰度/G4 设置链路**：`grayscale: bool` + `bilevel_codec: BilevelCodec`（"jpeg"/"ccitt-g4"
   字符串上 IPC 线格式）；GUI 的“色彩模式”三态选择在 `CompressionSettingsPanel` 里映射成这对
   字段（黑白 = grayscale+G4）。CLI 为 `--grayscale` / `--bilevel g4`（后者已入
@@ -134,6 +139,11 @@ cargo run -p pdf-core --bin pdf-compressor-cli -- quick <file.pdf> --grayscale  
 - **不写更大输出**（`compressor.rs::save_and_build_response_with_renumber`）：先在内存
   序列化再比较原件，未胜出时不落盘、`output_path` 置空（前端据此禁用打开/显示），
   并附 `compress.warning.outputNotSmaller` 通知。
+- **通用流去重**（`compressor.rs::dedupe_identical_streams`）：全字典等价 + 内容逐字节
+  相等才合并（lopdf `Dictionary` 是 IndexMap 保插入序，指纹/校验都做了序无关处理；
+  字典内引用按目标 id 比较——同目标可合并、不同目标不合并，天然覆盖 SMask/ICC 数组）。
+  合并走**入边引用改写**后删除重复对象（`dedupe_apply_replacements`），不再留
+  “间接对象体内是裸引用”的 stub；该形态虽被多数阅读器容忍，但不符合规范。
 
 CI（`.github/workflows/ci.yml`）在每次 push/PR 执行：前端测试+类型检查+构建、
 Rust clippy `-D warnings` + 测试、两个 MSRV 检查、60s 模糊测试、依赖审计

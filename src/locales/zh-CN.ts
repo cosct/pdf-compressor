@@ -173,6 +173,9 @@ const zhCN = {
     'analysis.warning.unsupportedImageCodecs': {
       body: '{count} 张图片使用了当前版本无法重编码的编码器（JBIG2、JPX、CCITT）；这些图片将原样保留，且不计入预估。',
     },
+    'compress.note.streamDedupe': {
+      body: '已合并 {count} 个重复的非图像流对象（内容流、字体、表单）为共享引用。',
+    },
     'analysis.note.encryptedUnlocked': {
       body: '该 PDF 使用了 owner 密码加密，已用空用户密码解锁；压缩导出件将是未加密的。',
     },

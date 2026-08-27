@@ -18,13 +18,13 @@ use std::{
     time::Instant,
 };
 
-use lopdf::{Document, Object, ObjectId, Stream};
+use lopdf::{Dictionary, Document, Object, ObjectId, Stream};
 
 use super::encode::{optimize_image_stream, pixel_count, ImageOptimization, SkipPolicy};
 use super::ensure_not_cancelled;
 use super::settings::CompressionSettings;
 use super::workers::{run_worker_pool, CHANNEL_BUFFER_MULTIPLIER};
-use super::{optional_integer, validate_input_path};
+use super::validate_input_path;
 use crate::{
     error::AppError,
     models::{BackendNotice, CompressionResponse, ProgressUpdate},
@@ -77,6 +77,9 @@ pub(crate) struct CompressionStats {
     pub(crate) images_recompressed: usize,
     pub(crate) images_skipped: usize,
     pub(crate) images_deduplicated: usize,
+    /// Non-image streams merged into a canonical object (content streams,
+    /// font programs, form XObjects).
+    pub(crate) streams_deduplicated: usize,
     /// Recompressed images whose rebuilt stream carries CCITT Group 4.
     pub(crate) images_bilevel_encoded: usize,
     pub(crate) streams_compressed: usize,
@@ -307,6 +310,19 @@ pub(crate) fn save_and_build_response_with_renumber(
             .with_value("count", stats.images_bilevel_encoded.to_string()),
         );
     }
+    if stats.streams_deduplicated > 0 {
+        stats.notices.push(
+            BackendNotice::new(
+                "compress.note.streamDedupe",
+                "neutral",
+                format!(
+                    "Merged {} duplicate non-image stream object(s) (content, fonts, forms) into shared references.",
+                    stats.streams_deduplicated
+                ),
+            )
+            .with_value("count", stats.streams_deduplicated.to_string()),
+        );
+    }
     if !stats.metadata_removed {
         stats.notices.push(BackendNotice::new(
             "compress.note.metadataKept",
@@ -450,8 +466,11 @@ pub(crate) fn prepare_document<F>(
 where
     F: FnMut(ProgressUpdate),
 {
-    // --- Lossless pass: merge byte-identical image objects (logos, stamps) ---
-    stats.images_deduplicated = dedupe_identical_images(document) as usize;
+    // --- Lossless pass: merge fully identical stream objects (images, content
+    // streams, font programs, form XObjects) and rewrite incoming references ---
+    let (images_merged, streams_merged) = dedupe_identical_streams(document);
+    stats.images_deduplicated = images_merged as usize;
+    stats.streams_deduplicated = streams_merged as usize;
 
     // Soft-mask streams carry Subtype /Image too — collect the ids referenced
     // as /SMask so the scan treats them as alpha auxiliaries of their parent
@@ -558,80 +577,200 @@ where
 // Lossless image deduplication
 // ---------------------------------------------------------------------------
 
-/// Streaming fingerprint of an image stream: dictionary fields that define
-/// pixel interpretation, then the content bytes scanned in place — no
-/// concatenated temporary buffer. FxHash processes word-sized chunks
+/// Feed an object into a fingerprint hash stream. Dictionaries are walked in
+/// sorted key order so two semantically identical dictionaries with different
+/// insertion orders hash identically (lopdf stores entries in an IndexMap).
+/// References hash by target id: streams referencing the same object stay
+/// merge candidates, streams referencing different objects do not.
+fn hash_object_into<H: std::hash::Hasher>(hasher: &mut H, object: &Object) {
+    match object {
+        Object::Null => hasher.write_u8(0),
+        Object::Boolean(value) => {
+            hasher.write_u8(1);
+            hasher.write_u8(u8::from(*value));
+        }
+        Object::Integer(value) => {
+            hasher.write_u8(2);
+            hasher.write_i64(*value);
+        }
+        Object::Real(value) => {
+            hasher.write_u8(3);
+            hasher.write_u32(value.to_bits());
+        }
+        Object::Name(value) => {
+            hasher.write_u8(4);
+            hasher.write(value);
+        }
+        Object::String(value, _) => {
+            hasher.write_u8(5);
+            hasher.write(value);
+        }
+        Object::Array(items) => {
+            hasher.write_u8(6);
+            hasher.write_usize(items.len());
+            for item in items {
+                hash_object_into(hasher, item);
+            }
+        }
+        Object::Dictionary(dict) => {
+            hasher.write_u8(7);
+            hash_dictionary_into(hasher, dict);
+        }
+        Object::Stream(stream) => {
+            // Streams only appear as top-level objects; hash the dict so a
+            // full-object fingerprint stays collision-consistent.
+            hasher.write_u8(8);
+            hash_dictionary_into(hasher, &stream.dict);
+            hasher.write(&stream.content);
+        }
+        Object::Reference((id, _generation)) => {
+            hasher.write_u8(9);
+            hasher.write_u32(*id);
+        }
+    }
+}
+
+fn hash_dictionary_into<H: std::hash::Hasher>(hasher: &mut H, dict: &Dictionary) {
+    let mut entries: Vec<(&Vec<u8>, &Object)> = dict.iter().collect();
+    entries.sort_unstable_by_key(|(key, _)| key.as_slice());
+    hasher.write_usize(entries.len());
+    for (key, value) in entries {
+        hasher.write(key);
+        hash_object_into(hasher, value);
+    }
+}
+
+/// Streaming fingerprint of an arbitrary stream: the full dictionary walked
+/// canonically, then the content bytes. FxHash processes word-sized chunks
 /// (~10 GB/s vs ~1 GB/s for byte-wise FNV). Hash collisions are never merged:
-/// the caller verifies full equality before replacing an object.
-fn image_stream_fingerprint(stream: &Stream) -> u64 {
+/// the caller verifies full equality before rewriting references.
+fn stream_fingerprint(stream: &Stream) -> u64 {
     use rustc_hash::FxHasher;
-    use std::hash::Hasher;
+    use std::hash::Hasher as _;
 
     let mut hasher = FxHasher::default();
-    if let Ok(Object::Name(filter)) = stream.dict.get(b"Filter") {
-        hasher.write(filter);
-    }
-    for key in [
-        b"Width".as_slice(),
-        b"Height".as_slice(),
-        b"BitsPerComponent".as_slice(),
-    ] {
-        hasher.write(
-            &optional_integer(stream, key)
-                .unwrap_or_default()
-                .to_le_bytes(),
-        );
-    }
-    if let Ok(Object::Name(color_space)) = stream.dict.get(b"ColorSpace") {
-        hasher.write(color_space);
-    }
+    hasher.write_u8(8);
+    hash_dictionary_into(&mut hasher, &stream.dict);
     hasher.write(&stream.content);
     hasher.finish()
 }
 
-/// Merge byte-identical image streams into a single canonical object,
-/// replacing duplicates with indirect references. Fully lossless: headers,
-/// filters, and pixel data must match exactly. Images carrying masks or
-/// `DecodeParms` are excluded to keep the equivalence check airtight.
-fn dedupe_identical_images(document: &mut Document) -> u32 {
-    let candidate_ids: Vec<ObjectId> = document
+/// Order-insensitive deep equality. Mirrors `hash_object_into`: dictionaries
+/// compare by key→value regardless of insertion order, references by target
+/// id. Used as the full verification after a fingerprint hit.
+fn objects_equivalent(left: &Object, right: &Object) -> bool {
+    match (left, right) {
+        (Object::Null, Object::Null) => true,
+        (Object::Boolean(a), Object::Boolean(b)) => a == b,
+        (Object::Integer(a), Object::Integer(b)) => a == b,
+        (Object::Real(a), Object::Real(b)) => a == b,
+        (Object::Name(a), Object::Name(b)) => a == b,
+        (Object::String(a, _), Object::String(b, _)) => a == b,
+        (Object::Array(a), Object::Array(b)) => {
+            a.len() == b.len() && a.iter().zip(b).all(|(x, y)| objects_equivalent(x, y))
+        }
+        (Object::Dictionary(a), Object::Dictionary(b)) => dictionaries_equivalent(a, b),
+        (Object::Stream(a), Object::Stream(b)) => {
+            a.content == b.content && dictionaries_equivalent(&a.dict, &b.dict)
+        }
+        (Object::Reference(a), Object::Reference(b)) => a == b,
+        _ => false,
+    }
+}
+
+fn dictionaries_equivalent(left: &Dictionary, right: &Dictionary) -> bool {
+    left.len() == right.len()
+        && left.iter().all(|(key, value)| {
+            matches!(right.get(key), Ok(other) if objects_equivalent(value, other))
+        })
+}
+
+/// Rewrite `Reference(duplicate)` to `Reference(canonical)` inside every
+/// object (and the trailer), then delete the duplicate objects outright —
+/// unlike the earlier stub approach (an indirect object whose body is a
+/// reference), in-edge rewriting leaves only spec-clean objects behind.
+fn dedupe_apply_replacements(
+    document: &mut Document,
+    replacements: &HashMap<ObjectId, ObjectId>,
+) {
+    fn rewrite_object(object: &mut Object, mapping: &HashMap<ObjectId, ObjectId>) {
+        match object {
+            Object::Array(items) => {
+                for item in items {
+                    rewrite_object(item, mapping);
+                }
+            }
+            Object::Dictionary(dict) => {
+                for (_key, value) in &mut *dict {
+                    rewrite_object(value, mapping);
+                }
+            }
+            Object::Stream(stream) => {
+                for (_key, value) in &mut stream.dict {
+                    rewrite_object(value, mapping);
+                }
+            }
+            Object::Reference(reference) => {
+                if let Some(&canonical) = mapping.get(reference) {
+                    *reference = canonical;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    for object in document.objects.values_mut() {
+        rewrite_object(object, replacements);
+    }
+    for (_key, value) in &mut document.trailer {
+        rewrite_object(value, replacements);
+    }
+    for duplicate_id in replacements.keys() {
+        document.objects.remove(duplicate_id);
+    }
+}
+
+/// Merge fully identical stream objects — images, content streams, font
+/// programs, form XObjects — into one canonical object each, rewriting every
+/// incoming reference. Fully lossless: dictionaries must match key-for-key
+/// (references only merge when they already point at the same object) and the
+/// content bytes must be identical. Returns `(images_merged, other_merged)`.
+fn dedupe_identical_streams(document: &mut Document) -> (u32, u32) {
+    let stream_ids: Vec<ObjectId> = document
         .objects
         .iter()
-        .filter_map(|(&id, object)| match object {
-            Object::Stream(stream)
-                if is_image_stream(stream)
-                    && !has_mask(stream)
-                    && stream.dict.get(b"DecodeParms").is_err() =>
-            {
-                Some(id)
-            }
-            _ => None,
-        })
+        .filter_map(|(&id, object)| matches!(object, Object::Stream(_)).then_some(id))
         .collect();
 
     let mut first_by_hash: HashMap<u64, ObjectId> = HashMap::new();
-    let mut replacements: Vec<(ObjectId, ObjectId)> = Vec::new();
+    let mut replacements: HashMap<ObjectId, ObjectId> = HashMap::new();
+    let mut images_merged = 0u32;
+    let mut other_merged = 0u32;
 
-    for id in candidate_ids {
+    for id in stream_ids {
+        // Already rewritten away as a duplicate of an earlier object.
+        if replacements.contains_key(&id) {
+            continue;
+        }
         let Some(Object::Stream(stream)) = document.objects.get(&id) else {
             continue;
         };
 
-        let hash = image_stream_fingerprint(stream);
+        let hash = stream_fingerprint(stream);
         match first_by_hash.get(&hash) {
             Some(&first_id) => {
-                // Verify exact equality — a hash alone must never merge images.
+                // Verify exact equality — a hash alone must never merge streams.
                 let identical = matches!(
                     (document.objects.get(&first_id), document.objects.get(&id)),
-                    (Some(Object::Stream(first)), Some(Object::Stream(dup)))
-                        if first.content == dup.content
-                            && optional_integer(first, b"Width")
-                                == optional_integer(dup, b"Width")
-                            && optional_integer(first, b"Height")
-                                == optional_integer(dup, b"Height")
+                    (Some(first), Some(dup)) if objects_equivalent(first, dup)
                 );
                 if identical {
-                    replacements.push((id, first_id));
+                    replacements.insert(id, first_id);
+                    if is_image_stream(stream) {
+                        images_merged += 1;
+                    } else {
+                        other_merged += 1;
+                    }
                 }
             }
             None => {
@@ -640,14 +779,11 @@ fn dedupe_identical_images(document: &mut Document) -> u32 {
         }
     }
 
-    let count = replacements.len() as u32;
-    for (duplicate_id, first_id) in replacements {
-        document
-            .objects
-            .insert(duplicate_id, Object::Reference(first_id));
+    if !replacements.is_empty() {
+        dedupe_apply_replacements(document, &replacements);
     }
 
-    count
+    (images_merged, other_merged)
 }
 
 // ---------------------------------------------------------------------------
@@ -1026,10 +1162,6 @@ fn is_image_stream(stream: &Stream) -> bool {
     // Byte-wise comparison — allocation-free, unlike optional_name, because
     // this runs against every stream in the document.
     matches!(stream.dict.get(b"Subtype"), Ok(Object::Name(name)) if name.as_slice() == b"Image")
-}
-
-fn has_mask(stream: &Stream) -> bool {
-    stream.dict.get(b"SMask").is_ok() || stream.dict.get(b"Mask").is_ok()
 }
 
 // ---------------------------------------------------------------------------

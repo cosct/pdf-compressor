@@ -488,6 +488,144 @@ fn compress_dedupes_identical_images() {
     assert_eq!(original_text.trim(), extracted_text(&output).trim());
 }
 
+/// Two pages whose content streams are separate objects with identical bytes —
+/// the generic stream dedup must merge them and rewrite the /Contents edges.
+#[test]
+fn compress_dedupes_identical_content_streams() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut doc = Document::with_version("1.5");
+    let pages_id = doc.new_object_id();
+    let font_id = doc.add_object(dictionary! {
+        "Type" => "Font",
+        "Subtype" => "Type1",
+        "BaseFont" => "Helvetica",
+    });
+    let resources_id = doc.add_object(dictionary! {
+        "Font" => dictionary! { "F1" => font_id },
+    });
+    let content_bytes =
+        format!("BT /F1 24 Tf 72 720 Td ({FIXTURE_TEXT}) Tj ET\n").into_bytes();
+    let mut kids = Vec::new();
+    for _ in 0..2 {
+        // A separate content stream object per page, byte-identical.
+        let content_id = doc.add_object(Stream::new(dictionary! {}, content_bytes.clone()));
+        let page_id = doc.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "Contents" => content_id,
+            "Resources" => resources_id,
+            "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+        });
+        kids.push(Object::Reference(page_id));
+    }
+    doc.objects.insert(
+        pages_id,
+        Object::Dictionary(dictionary! {
+            "Type" => "Pages",
+            "Kids" => kids,
+            "Count" => 2,
+        }),
+    );
+    let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+    doc.trailer.set("Root", catalog_id);
+    let mut bytes = Vec::new();
+    doc.save_modern(&mut bytes).expect("save fixture");
+    let path = write_fixture(dir.path(), "content-dedupe.pdf", &bytes);
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(),
+        maximum_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+
+    assert!(
+        response.notices.iter().any(|n| n.code == "compress.note.streamDedupe"),
+        "expected a stream dedupe notice, got {:?}",
+        response.notices
+    );
+
+    let output = PathBuf::from(&response.output_path);
+    let reloaded = Document::load(&output).expect("output must be a valid PDF");
+    assert_eq!(reloaded.get_pages().len(), 2, "both pages must survive");
+    let both_pages = reloaded
+        .extract_text(&[1, 2])
+        .expect("both pages must stay extractable");
+    assert_eq!(
+        both_pages.trim(),
+        format!("{FIXTURE_TEXT}\n{FIXTURE_TEXT}").trim(),
+        "both pages must keep their text"
+    );
+}
+
+/// In-edge rewriting must leave no stub objects behind (an indirect object
+/// whose body is a bare reference), and duplicates of an image must collapse
+/// into exactly one stream object.
+#[test]
+fn dedupe_rewrites_references_without_leaving_stubs() {
+    let jpeg = encode_jpeg(fixture_rgb_image(1600, 1200), 95);
+    let bytes = build_pdf_bytes_ext(jpeg, 1600, 1200, None, 3);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_fixture(dir.path(), "stub-check.pdf", &bytes);
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(),
+        maximum_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+    assert_eq!(response.images_deduplicated, 3);
+
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+    let bare_references = reloaded
+        .objects
+        .values()
+        .filter(|object| matches!(object, Object::Reference(_)))
+        .count();
+    assert_eq!(bare_references, 0, "no stub objects may remain");
+
+    let image_objects = reloaded
+        .objects
+        .values()
+        .filter(|object| {
+            matches!(
+                object,
+                Object::Stream(stream)
+                    if matches!(stream.dict.get(b"Subtype"), Ok(Object::Name(name)) if name.as_slice() == b"Image")
+            )
+        })
+        .count();
+    assert_eq!(image_objects, 1, "all duplicates must collapse into one image");
+}
+
+/// Identical images sharing one /SMask reference merge now that equivalence
+/// covers full dictionaries (references to the same target stay mergeable).
+#[test]
+fn identical_images_with_shared_smask_merge() {
+    let jpeg = encode_jpeg(fixture_rgb_image(1600, 1200), 95);
+    let smask_gray = vec![128u8; 1600 * 1200];
+    let bytes = build_pdf_bytes_ext(jpeg, 1600, 1200, Some(smask_gray), 1);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_fixture(dir.path(), "smask-dedupe.pdf", &bytes);
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(),
+        maximum_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+
+    assert_eq!(
+        response.images_deduplicated, 1,
+        "identical images with a shared soft mask must merge"
+    );
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+    assert_eq!(reloaded.get_pages().len(), 1);
+}
+
 // ---------------------------------------------------------------------------
 // JPEG encoder evaluation (image crate vs jpeg-encoder SIMD)
 // ---------------------------------------------------------------------------

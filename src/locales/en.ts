@@ -173,6 +173,9 @@ const en = {
     'analysis.warning.unsupportedImageCodecs': {
       body: '{count} images use codecs (JBIG2, JPX, CCITT) that this version cannot re-encode; they are preserved as-is and excluded from the estimate.',
     },
+    'compress.note.streamDedupe': {
+      body: 'Merged {count} duplicate non-image stream(s) (content, fonts, forms) into shared references.',
+    },
     'analysis.note.encryptedUnlocked': {
       body: 'This PDF used owner-password encryption and was unlocked with the empty user password; the compressed export will be unencrypted.',
     },
