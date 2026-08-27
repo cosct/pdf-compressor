@@ -2,7 +2,8 @@
 //! materialization of winning parameters.
 //! 目标大小搜索状态 — 逐图缓存、探测轮次与获胜参数的最终物化。
 
-use std::{collections::HashSet, sync::{atomic::AtomicBool, Arc}};
+use std::collections::{HashMap, HashSet};
+use std::sync::{atomic::AtomicBool, Arc};
 
 use lopdf::{Document, Object, ObjectId, Stream};
 
@@ -23,6 +24,9 @@ pub(crate) struct ImageSearchEntry {
     /// `(original object id, stream)` of the `/SMask`, cloned when the mask
     /// is shared by several images.
     pub smask: Option<(ObjectId, Stream)>,
+    /// Resolved color-space context (ICC/Indexed/aliases) carried over from
+    /// the preparation pass.
+    pub color_space: Option<super::colorspace::ImageColorSpaceInfo>,
     pub cache: ImageSearchCache,
     last: Option<LastEncoding>,
 }
@@ -54,17 +58,24 @@ pub(crate) fn take_image_search_entries(
     document: &mut Document,
     image_object_ids: &[ObjectId],
     shared_smask_ids: &HashSet<ObjectId>,
+    color_spaces: &HashMap<ObjectId, super::colorspace::ImageColorSpaceInfo>,
 ) -> Vec<ImageSearchEntry> {
-    take_image_tasks(document, image_object_ids, shared_smask_ids)
-        .into_iter()
-        .map(|task: ImageTask| ImageSearchEntry {
-            object_id: task.object_id,
-            stream: task.stream,
-            smask: task.smask,
-            cache: ImageSearchCache::default(),
-            last: None,
-        })
-        .collect()
+    take_image_tasks(
+        document,
+        image_object_ids,
+        shared_smask_ids,
+        color_spaces,
+    )
+    .into_iter()
+    .map(|task: ImageTask| ImageSearchEntry {
+        object_id: task.object_id,
+        stream: task.stream,
+        smask: task.smask,
+        color_space: task.color_space,
+        cache: ImageSearchCache::default(),
+        last: None,
+    })
+    .collect()
 }
 
 /// Run one probe round for a single image at `params`; fills the caches and
@@ -89,6 +100,7 @@ pub(crate) fn probe_image_at(
         context.task_id,
         context.skip_policy,
         Some(&mut entry.cache),
+        entry.color_space.as_ref(),
     )?;
     let contribution = image_contribution(entry, &optimization);
     entry.last = Some(LastEncoding {

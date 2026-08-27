@@ -21,6 +21,7 @@ This project is designed for selective PDF optimization rather than blind whole-
 - Embedded `Type0`/`CIDFontType2` TrueType fonts can be subset to the glyphs actually drawn (UI toggle "Subset fonts", CLI `--subset-fonts`). Content streams are untouched: the subset's new glyph numbering is bridged with a generated `/CIDToGIDMap` stream and a remapped `/W` width array. Non-CID fonts (Type1, simple TrueType, Type3) are left as-is
 - A target-size mode searches quality/resolution parameters until the output fits a byte budget (UI, CLI `--target-size`, and IPC) — it bisects for the highest quality that fits, spends leftover budget on quality, and only shrinks the image edge once the whole quality range failed
 - Eligible non-image PDF streams can be compressed
+- Raw (non-JPEG) image streams re-encode through the same pipeline, including ICC-based color spaces (gray/RGB, profile reference preserved on the rebuilt image) and indexed palette images (4/8-bit indices expanded to their base space); CMYK and JPX-coded images are preserved as-is
 - Document metadata can be removed
 - The UI runs an analysis pass first so the user can review likely savings and a suggested preset before export; the estimate only counts images the compressor can actually act on (JBIG2/JPX/Group-3-CCITT/Crypt-coded images are reported as preserved instead of promised as savings)
 - Safety rails: encrypted documents that need a real password are rejected up front, owner-password-only files are unlocked and re-written unencrypted, and a result that would not beat the original is never written to disk
@@ -517,7 +518,7 @@ The analyzer warns when page count is high. Large or image-heavy PDFs require in
 
 - Compression quality is heuristic-based; estimated savings are guidance, not guarantees
 - Analysis is pure-Rust and structure-based — no page rendering
-- Some embedded image formats and protected structures are intentionally skipped (JBIG2, JPX, and Group-3 CCITT images are preserved as-is; only pure Group-4 CCITT is transcoded)
+- Some embedded image formats and protected structures are intentionally skipped (JBIG2 and JPX images, Group-3 CCITT, and CMYK ICC planes are preserved as-is; only pure Group-4 CCITT is transcoded)
 - Font subsetting covers `Type0`/`CIDFontType2` TrueType fonts only; simple (non-CID) embedded fonts are moved, never re-interpreted
 - Only safe object-level optimizations are attempted
 - Frontend depends on the desktop shell for native commands

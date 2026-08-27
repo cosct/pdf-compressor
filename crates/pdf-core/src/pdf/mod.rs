@@ -2,6 +2,7 @@
 //! PDF 处理模块 — 分析引擎和压缩引擎。
 
 mod analyzer;
+mod colorspace;
 mod compressor;
 mod encode;
 #[cfg(feature = "subset-fonts")]

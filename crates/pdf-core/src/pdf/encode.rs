@@ -9,6 +9,7 @@ use image::{imageops::FilterType, DynamicImage, GenericImageView};
 use lopdf::Dictionary;
 use lopdf::{dictionary, Object, Stream};
 
+use super::colorspace::{DecodeColorSpace, ImageColorSpaceInfo};
 use super::ensure_not_cancelled;
 use super::settings::CompressionSettings;
 use super::optional_integer;
@@ -216,6 +217,7 @@ pub(crate) fn image_is_actionable(
 /// across target-size probe rounds — JPEG decode results do not depend on the
 /// quality knob, so re-encoding a cached bitmap skips the expensive half of
 /// the pipeline.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn optimize_image_stream(
     stream: &Stream,
     smask: Option<&Stream>,
@@ -224,6 +226,7 @@ pub(super) fn optimize_image_stream(
     task_id: &str,
     skip_policy: SkipPolicy,
     mut search_cache: Option<&mut ImageSearchCache>,
+    color_space: Option<&ImageColorSpaceInfo>,
 ) -> Result<ImageOptimization, AppError> {
     ensure_not_cancelled(cancel_flag, task_id)?;
     // --- Skip: stencil image masks and color-key masks stay untouched ---
@@ -316,7 +319,7 @@ pub(super) fn optimize_image_stream(
         return Ok(ImageOptimization::Skipped { reason });
     }
 
-    if let Some(reason) = raw_recompression_skip_reason(stream, filter_info) {
+    if let Some(reason) = raw_recompression_skip_reason(stream, filter_info, color_space) {
         return Ok(ImageOptimization::Skipped { reason });
     }
 
@@ -355,7 +358,7 @@ pub(super) fn optimize_image_stream(
                     Err("CCITT support is not compiled in".to_string())
                 }
             } else {
-                decode_raw_image_stream(stream)
+                decode_raw_image_stream(stream, color_space)
                     .map_err(|e| format!("failed to decode raw image stream: {e}"))
             };
             match decoded {
@@ -441,6 +444,7 @@ pub(super) fn optimize_image_stream(
 
     // Hand the (possibly pre-shrunk) plane to the cache for later rounds.
     // This is the final use of `search_cache`, so it is consumed here.
+    let plane_channels: u8 = if plane.color().has_color() { 3 } else { 1 };
     if let Some(cache) = search_cache {
         cache.store_bitmap(plane);
     }
@@ -453,6 +457,13 @@ pub(super) fn optimize_image_stream(
     }
 
     // --- Build the rebuilt stream from the original dictionary ---
+    // ICC-based originals keep their profile reference when the encoded
+    // plane still matches the declared channel count, instead of silently
+    // degrading to a generic Device name.
+    let restored_color_space = color_space
+        .and_then(|info| info.rebuild_color_space.as_ref())
+        .filter(|(_, channels)| *channels == plane_channels);
+
     let mut rebuilt = Stream::new(stream.dict.clone(), encoded);
     if bilevel_g4 {
         rebuilt
@@ -468,19 +479,25 @@ pub(super) fn optimize_image_stream(
             }),
         );
         rebuilt.dict.set("BitsPerComponent", Object::Integer(1));
-        rebuilt
-            .dict
-            .set("ColorSpace", Object::Name(b"DeviceGray".to_vec()));
+        match restored_color_space {
+            Some((object, _)) => rebuilt.dict.set("ColorSpace", object.clone()),
+            None => rebuilt
+                .dict
+                .set("ColorSpace", Object::Name(b"DeviceGray".to_vec())),
+        }
     } else {
         rebuilt
             .dict
             .set("Filter", Object::Name(b"DCTDecode".to_vec()));
         rebuilt.dict.remove(b"DecodeParms");
         rebuilt.dict.set("BitsPerComponent", Object::Integer(8));
-        rebuilt.dict.set(
-            "ColorSpace",
-            Object::Name(color_space_name.as_bytes().to_vec()),
-        );
+        match restored_color_space {
+            Some((object, _)) => rebuilt.dict.set("ColorSpace", object.clone()),
+            None => rebuilt.dict.set(
+                "ColorSpace",
+                Object::Name(color_space_name.as_bytes().to_vec()),
+            ),
+        }
     }
     rebuilt
         .dict
@@ -624,7 +641,11 @@ fn skip_recompression_reason(
     None
 }
 
-fn raw_recompression_skip_reason(stream: &Stream, filter_info: StreamFilterInfo) -> Option<String> {
+fn raw_recompression_skip_reason(
+    stream: &Stream,
+    filter_info: StreamFilterInfo,
+    color_space: Option<&ImageColorSpaceInfo>,
+) -> Option<String> {
     if filter_info.has_jpeg {
         return None;
     }
@@ -635,6 +656,19 @@ fn raw_recompression_skip_reason(stream: &Stream, filter_info: StreamFilterInfo)
     }
 
     let bits_per_component = optional_integer(stream, b"BitsPerComponent").unwrap_or(8);
+
+    // Resolved shapes (ICC-based, indexed, aliases) carry their own rules:
+    // indexed pixels are 4/8-bit palette indices, ICC planes stay 8-bit.
+    if let Some(info) = color_space {
+        let supported_depth = match info.decode {
+            DecodeColorSpace::Indexed { .. } => bits_per_component == 4 || bits_per_component == 8,
+            DecodeColorSpace::Gray | DecodeColorSpace::Rgb => bits_per_component == 8,
+        };
+        return (!supported_depth).then(|| {
+            format!("resolved color space needs unsupported bit depth: {bits_per_component}")
+        });
+    }
+
     if bits_per_component != 8 {
         return Some(format!(
             "raw image uses unsupported bit depth for safe recompression: {bits_per_component}"
@@ -746,22 +780,76 @@ fn try_simd_resize(image: &DynamicImage, target_w: u32, target_h: u32) -> Option
 // ---------------------------------------------------------------------------
 
 /// Decode a raw (non-JPEG) image stream using PDF dictionary metadata.
-fn decode_raw_image_stream(stream: &Stream) -> Result<DynamicImage, AppError> {
+/// `color_space` carries document-level context resolved up front (ICC
+/// channel counts, indexed palettes); without it only plain device-name
+/// color spaces are decodable.
+fn decode_raw_image_stream(
+    stream: &Stream,
+    color_space: Option<&ImageColorSpaceInfo>,
+) -> Result<DynamicImage, AppError> {
     let width = required_integer(stream, b"Width")? as u32;
     let height = required_integer(stream, b"Height")? as u32;
-    let bits_per_component = optional_integer(stream, b"BitsPerComponent").unwrap_or(8);
-    let color_space =
-        optional_name(stream, b"ColorSpace").unwrap_or_else(|| "DeviceRGB".to_string());
-
-    if bits_per_component != 8 {
-        return Err(AppError::PdfBuild(
-            "Only 8-bit raw images are currently supported for recompression.".into(),
-        ));
-    }
 
     let decoded = stream
         .decompressed_content()
         .map_err(|e| AppError::PdfBuild(format!("Failed to decompress raw image stream: {e}")))?;
+
+    if let Some(info) = color_space {
+        return match &info.decode {
+            DecodeColorSpace::Gray => image::GrayImage::from_raw(width, height, decoded)
+                .map(DynamicImage::ImageLuma8)
+                .ok_or_else(|| {
+                    AppError::PdfBuild(
+                        "Grayscale image bytes did not match the declared dimensions.".into(),
+                    )
+                }),
+            DecodeColorSpace::Rgb => image::RgbImage::from_raw(width, height, decoded)
+                .map(DynamicImage::ImageRgb8)
+                .ok_or_else(|| {
+                    AppError::PdfBuild("RGB image bytes did not match the declared dimensions.".into())
+                }),
+            DecodeColorSpace::Indexed {
+                base_channels,
+                palette,
+            } => {
+                let channels = usize::from(*base_channels);
+                if channels != 1 && channels != 3 {
+                    return Err(AppError::PdfBuild(
+                        "Indexed image uses an unsupported base color space.".into(),
+                    ));
+                }
+                let bits = optional_integer(stream, b"BitsPerComponent").unwrap_or(8);
+                let indices = super::colorspace::unpack_indices(&decoded, bits).ok_or_else(|| {
+                    AppError::PdfBuild(
+                        "Indexed image uses an unsupported index bit depth.".into(),
+                    )
+                })?;
+                let mut pixels = Vec::with_capacity(indices.len() * channels);
+                for index in indices {
+                    let offset = index as usize * channels;
+                    let entry = palette
+                        .get(offset..offset + channels)
+                        .ok_or_else(|| AppError::PdfBuild("Indexed palette lookup out of range.".into()))?;
+                    pixels.extend_from_slice(entry);
+                }
+                if channels == 1 {
+                    image::GrayImage::from_raw(width, height, pixels)
+                        .map(DynamicImage::ImageLuma8)
+                } else {
+                    image::RgbImage::from_raw(width, height, pixels)
+                        .map(DynamicImage::ImageRgb8)
+                }
+                .ok_or_else(|| {
+                    AppError::PdfBuild(
+                        "Indexed image bytes did not match the declared dimensions.".into(),
+                    )
+                })
+            }
+        };
+    }
+
+    let color_space =
+        optional_name(stream, b"ColorSpace").unwrap_or_else(|| "DeviceRGB".to_string());
 
     match color_space.as_str() {
         "DeviceGray" => image::GrayImage::from_raw(width, height, decoded)

@@ -128,6 +128,7 @@ where
         &mut document,
         &preparation.image_object_ids,
         &preparation.shared_smask_ids,
+        &preparation.color_space_by_image,
     );
     let original_image_bytes: u64 = entries
         .iter()

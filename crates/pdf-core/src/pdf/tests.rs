@@ -1015,6 +1015,358 @@ fn subset_fonts_off_keeps_font_program_unchanged() {
 }
 
 // ---------------------------------------------------------------------------
+// Color-space support (ICC / Indexed / aliases)
+// ---------------------------------------------------------------------------
+
+/// How the fixture's single raw image declares its color space.
+enum ColorSpaceFixture {
+    /// Image dict carries `[/ICCBased <icc stream>]`; the profile stream is
+    /// created with the given `/N`.
+    DirectIcc { n: i64 },
+    /// Image dict carries `[/Indexed <base> <hival> <lookup string>]`.
+    DirectIndexed { base: Object, hival: i64 },
+    /// Image dict carries the plain name `/CS0`; the page resources map
+    /// `/CS0` to an `[/ICCBased …]` array with the given `/N`.
+    AliasIcc { n: i64 },
+}
+
+/// One page with a single flate-compressed raw image using the given color
+/// space shape. Pixels are a smooth gradient so the source stays compact.
+fn build_color_space_pdf(
+    fixture: ColorSpaceFixture,
+    width: u32,
+    height: u32,
+    bits_per_component: i64,
+    pixels: Vec<u8>,
+) -> Vec<u8> {
+    let mut doc = Document::with_version("1.5");
+    let info_id = doc.add_object(dictionary! {
+        "Producer" => Object::string_literal("pdf-compressor test fixture"),
+    });
+    let pages_id = doc.new_object_id();
+    let font_id = doc.add_object(dictionary! {
+        "Type" => "Font",
+        "Subtype" => "Type1",
+        "BaseFont" => "Helvetica",
+    });
+
+    // Palette for indexed fixtures: a smooth RGB ramp.
+    let palette: Vec<u8> = match &fixture {
+        ColorSpaceFixture::DirectIndexed { hival, .. } => (0..=*hival as u8)
+            .flat_map(|index| {
+                let ramp = (index as u32 * 255 / 255) as u8;
+                vec![ramp, 255 - ramp, (ramp / 2) + 64]
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+
+    let mut alias_entry: Option<Object> = None;
+    let color_space_value: Object = match fixture {
+        ColorSpaceFixture::DirectIcc { n } | ColorSpaceFixture::AliasIcc { n } => {
+            let icc_id = doc.add_object(Stream::new(
+                dictionary! { "N" => n, "Length" => 4 },
+                vec![0x01, 0x02, 0x03, 0x04],
+            ));
+            let array = Object::Array(vec![
+                Object::Name(b"ICCBased".to_vec()),
+                Object::Reference(icc_id),
+            ]);
+            if matches!(fixture, ColorSpaceFixture::AliasIcc { .. }) {
+                alias_entry = Some(array);
+                Object::Name(b"CS0".to_vec())
+            } else {
+                array
+            }
+        }
+        ColorSpaceFixture::DirectIndexed { base, hival } => Object::Array(vec![
+            Object::Name(b"Indexed".to_vec()),
+            base,
+            Object::Integer(hival),
+            Object::String(palette, StringFormat::Literal),
+        ]),
+    };
+
+    let mut image_stream = Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Image",
+            "Width" => width as i64,
+            "Height" => height as i64,
+            "ColorSpace" => color_space_value,
+            "BitsPerComponent" => bits_per_component,
+        },
+        pixels,
+    );
+    let _ = image_stream.compress();
+    let image_id = doc.add_object(image_stream);
+
+    let mut resources = dictionary! {
+        "Font" => dictionary! { "F1" => font_id },
+        "XObject" => dictionary! { "Im0" => image_id },
+    };
+    if let Some(alias) = alias_entry {
+        resources.set("ColorSpace", dictionary! { "CS0" => alias });
+    }
+    let resources_id = doc.add_object(resources);
+    let content = format!(
+        "q 400 0 0 300 72 400 cm /Im0 Do Q\nBT /F1 24 Tf 72 720 Td ({FIXTURE_TEXT}) Tj ET\n"
+    );
+    let content_id = doc.add_object(Stream::new(dictionary! {}, content.into_bytes()));
+    let page_id = doc.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => pages_id,
+        "Contents" => content_id,
+        "Resources" => resources_id,
+        "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+    });
+    doc.objects.insert(
+        pages_id,
+        Object::Dictionary(dictionary! {
+            "Type" => "Pages",
+            "Kids" => vec![Object::Reference(page_id)],
+            "Count" => 1,
+        }),
+    );
+    let catalog_id = doc.add_object(dictionary! {
+        "Type" => "Catalog",
+        "Pages" => pages_id,
+    });
+    doc.trailer.set("Root", catalog_id);
+    doc.trailer.set("Info", info_id);
+
+    let mut bytes = Vec::new();
+    doc.save_modern(&mut bytes).expect("save fixture");
+    bytes
+}
+
+/// The single image stream of a reloaded document.
+fn sole_image_stream(document: &Document) -> &Stream {
+    document
+        .objects
+        .values()
+        .find_map(|object| match object {
+            Object::Stream(stream)
+                if matches!(stream.dict.get(b"Subtype"), Ok(Object::Name(name)) if name.as_slice() == b"Image") =>
+            {
+                Some(stream)
+            }
+            _ => None,
+        })
+        .expect("exactly one image stream")
+}
+
+#[test]
+fn icc_rgb_raw_image_recompresses_and_keeps_profile() {
+    let rgb = crate::testutil::gradient_rgb_image(2000, 1500, FIXTURE_SEED).into_raw();
+    let bytes = build_color_space_pdf(
+        ColorSpaceFixture::DirectIcc { n: 3 },
+        2000,
+        1500,
+        8,
+        rgb,
+    );
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_fixture(dir.path(), "icc-rgb.pdf", &bytes);
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(),
+        maximum_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+    assert!(response.output_was_smaller, "ICC RGB raw image must shrink");
+
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+    let image = sole_image_stream(&reloaded);
+    assert!(
+        matches!(image.dict.get(b"Filter"), Ok(Object::Name(name)) if name.as_slice() == b"DCTDecode"),
+        "image must be re-encoded as JPEG"
+    );
+    // The ICC profile reference must survive the rewrite.
+    let Object::Array(color_space) = image.dict.get(b"ColorSpace").expect("ColorSpace") else {
+        panic!("ICC array must be preserved, got {:?}", image.dict.get(b"ColorSpace"));
+    };
+    assert!(matches!(&color_space[0], Object::Name(name) if name.as_slice() == b"ICCBased"));
+    let Object::Reference(icc_id) = &color_space[1] else {
+        panic!("second element must be the profile reference");
+    };
+    let Object::Stream(icc) = reloaded.objects.get(icc_id).expect("ICC stream must survive") else {
+        panic!("profile must stay a stream");
+    };
+    assert_eq!(icc.dict.get(b"N").ok(), Some(&Object::Integer(3)));
+
+    assert!(
+        extracted_text(Path::new(&response.output_path)).contains(FIXTURE_TEXT),
+        "text must survive the rewrite"
+    );
+}
+
+#[test]
+fn icc_cmyk_raw_image_is_skipped() {
+    // CMYK plane: 4 channels of gradient.
+    let mut pixels = Vec::with_capacity(2000 * 1500 * 4);
+    for y in 0..1500u32 {
+        for x in 0..2000u32 {
+            pixels.push((x % 256) as u8);
+            pixels.push((y % 256) as u8);
+            pixels.push(((x + y) % 256) as u8);
+            pixels.push(64);
+        }
+    }
+    let bytes = build_color_space_pdf(
+        ColorSpaceFixture::DirectIcc { n: 4 },
+        2000,
+        1500,
+        8,
+        pixels,
+    );
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_fixture(dir.path(), "icc-cmyk.pdf", &bytes);
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(),
+        maximum_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+    assert_eq!(response.images_recompressed, 0, "CMYK ICC must stay untouched");
+
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+    let image = sole_image_stream(&reloaded);
+    assert_eq!(
+        image.dict.get(b"BitsPerComponent").ok(),
+        Some(&Object::Integer(8)),
+        "raw plane must be untouched"
+    );
+}
+
+#[test]
+fn indexed_8bit_image_expands_palette() {
+    // 8-bit palette indices from a luma ramp.
+    let mut indices = Vec::with_capacity(2000 * 1500);
+    for y in 0..1500u32 {
+        for x in 0..2000u32 {
+            indices.push(((x * 255 / 1999) ^ (y * 255 / 1499)) as u8);
+        }
+    }
+    let bytes = build_color_space_pdf(
+        ColorSpaceFixture::DirectIndexed {
+            base: Object::Name(b"DeviceRGB".to_vec()),
+            hival: 255,
+        },
+        2000,
+        1500,
+        8,
+        indices,
+    );
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_fixture(dir.path(), "indexed-8.pdf", &bytes);
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(),
+        maximum_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+    assert!(response.output_was_smaller, "indexed image must shrink");
+
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+    let image = sole_image_stream(&reloaded);
+    assert!(
+        matches!(image.dict.get(b"Filter"), Ok(Object::Name(name)) if name.as_slice() == b"DCTDecode"),
+        "palette image must be re-encoded as flat JPEG"
+    );
+    assert!(
+        matches!(image.dict.get(b"ColorSpace"), Ok(Object::Name(cs)) if cs.as_slice() == b"DeviceRGB"),
+        "output must declare the base space, got {:?}",
+        image.dict.get(b"ColorSpace")
+    );
+    assert_eq!(
+        image.dict.get(b"BitsPerComponent").ok(),
+        Some(&Object::Integer(8))
+    );
+}
+
+#[test]
+fn indexed_4bit_image_expands_palette() {
+    // 4-bit nibble indices from deterministic noise — a poorly compressible
+    // source so the JPEG rewrite actually has room to win.
+    let mut state: u32 = FIXTURE_SEED;
+    let mut indices = Vec::with_capacity(2000 * 1500);
+    for _ in 0..2000 * 1500 {
+        state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        indices.push(((state >> 24) & 0x0F) as u8);
+    }
+    let bytes = build_color_space_pdf(
+        ColorSpaceFixture::DirectIndexed {
+            base: Object::Name(b"DeviceGray".to_vec()),
+            hival: 15,
+        },
+        2000,
+        1500,
+        4,
+        indices,
+    );
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_fixture(dir.path(), "indexed-4.pdf", &bytes);
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(),
+        maximum_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+    assert!(response.output_was_smaller, "4-bit indexed image must shrink");
+
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+    let image = sole_image_stream(&reloaded);
+    assert!(
+        matches!(image.dict.get(b"ColorSpace"), Ok(Object::Name(cs)) if cs.as_slice() == b"DeviceGray"),
+        "gray base space must be declared"
+    );
+}
+
+#[test]
+fn color_space_alias_resolves_through_resources() {
+    let rgb = crate::testutil::gradient_rgb_image(2000, 1500, FIXTURE_SEED).into_raw();
+    let bytes = build_color_space_pdf(
+        ColorSpaceFixture::AliasIcc { n: 3 },
+        2000,
+        1500,
+        8,
+        rgb,
+    );
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_fixture(dir.path(), "alias-icc.pdf", &bytes);
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(),
+        maximum_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+    assert!(
+        response.output_was_smaller,
+        "the aliased ICC image must become compressible"
+    );
+
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+    let image = sole_image_stream(&reloaded);
+    // The rebuilt stream re-declares the ICC array inline (the alias name is
+    // meaningless outside the original resource context).
+    let Object::Array(color_space) = image.dict.get(b"ColorSpace").expect("ColorSpace") else {
+        panic!("rebuilt image must carry the resolved ICC array");
+    };
+    assert!(matches!(&color_space[0], Object::Name(name) if name.as_slice() == b"ICCBased"));
+}
+
+// ---------------------------------------------------------------------------
 // JPEG encoder evaluation (image crate vs jpeg-encoder SIMD)
 // ---------------------------------------------------------------------------
 

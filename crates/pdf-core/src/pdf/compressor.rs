@@ -107,6 +107,9 @@ pub(super) struct ImageTask {
     /// the main thread (workers have no document access) as
     /// `(original object id, stream)`. `None` when absent.
     pub(super) smask: Option<(ObjectId, Stream)>,
+    /// Resolved color-space context (ICC/Indexed/aliases); `None` means the
+    /// stream dictionary alone describes the pixels.
+    pub(super) color_space: Option<super::colorspace::ImageColorSpaceInfo>,
     /// Cached stream byte length — avoids re-reading during scheduling.
     stream_size: usize,
 }
@@ -484,6 +487,9 @@ where
 pub(crate) struct DocumentPreparation {
     pub image_object_ids: Vec<ObjectId>,
     pub shared_smask_ids: HashSet<ObjectId>,
+    /// Document-level color-space context per image (ICC channel counts,
+    /// indexed palettes, resolved name aliases).
+    pub color_space_by_image: HashMap<ObjectId, super::colorspace::ImageColorSpaceInfo>,
 }
 
 /// Shared preparation pass used by both compression entry points: lossless
@@ -622,9 +628,25 @@ where
         stats.metadata_removed = remove_metadata(document);
     }
 
+    // --- Color-space context: needs the intact document (ICC streams,
+    // indexed lookup tables, resource-dictionary name aliases) ---
+    let aliases = super::colorspace::collect_color_space_aliases(document);
+    let mut color_space_by_image = HashMap::new();
+    for &image_id in &image_object_ids {
+        let Some(Object::Stream(stream)) = document.objects.get(&image_id) else {
+            continue;
+        };
+        if let Some(info) =
+            super::colorspace::resolve_image_color_space(document, stream, &aliases)
+        {
+            color_space_by_image.insert(image_id, info);
+        }
+    }
+
     Ok(DocumentPreparation {
         image_object_ids,
         shared_smask_ids,
+        color_space_by_image,
     })
 }
 
@@ -863,6 +885,7 @@ where
         document,
         &preparation.image_object_ids,
         &preparation.shared_smask_ids,
+        &preparation.color_space_by_image,
     );
     if image_tasks.is_empty() {
         report_progress(ProgressUpdate::new(
@@ -892,6 +915,7 @@ where
                 object_id,
                 stream,
                 smask,
+                color_space,
                 ..
             } = task;
             let optimization = optimize_image_stream(
@@ -902,6 +926,7 @@ where
                 runtime.task_id,
                 skip_policy,
                 None,
+                color_space.as_ref(),
             )?;
             apply_image_optimization(document, object_id, stream, smask, optimization, stats);
             report_progress_if_needed(
@@ -929,6 +954,7 @@ where
                 object_id,
                 stream,
                 smask,
+                color_space,
                 ..
             } = task;
             let result = optimize_image_stream(
@@ -939,6 +965,7 @@ where
                 runtime.task_id,
                 skip_policy,
                 None,
+                color_space.as_ref(),
             );
             // The borrowed originals travel back with the outcome so
             // the main thread can restore them on skip.
@@ -988,6 +1015,7 @@ pub(super) fn take_image_tasks(
     document: &mut Document,
     image_object_ids: &[ObjectId],
     shared_smask_ids: &HashSet<ObjectId>,
+    color_spaces: &HashMap<ObjectId, super::colorspace::ImageColorSpaceInfo>,
 ) -> Vec<ImageTask> {
     let mut tasks = Vec::with_capacity(image_object_ids.len());
 
@@ -1033,6 +1061,7 @@ pub(super) fn take_image_tasks(
                     object_id,
                     stream,
                     smask,
+                    color_space: color_spaces.get(&object_id).cloned(),
                     stream_size,
                 });
             }

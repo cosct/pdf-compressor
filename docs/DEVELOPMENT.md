@@ -149,6 +149,13 @@ cargo run -p pdf-core --bin pdf-compressor-cli -- quick <file.pdf> --grayscale  
   **保守失败**：带 /AP 的注解、/Pattern 非空、Type3 字体、Form 缺自身 /Resources、
   名字在当前字典解析不到（可能依赖继承回退）、内容解码失败——任一命中即整页保留。
   逐页独立 /Resources 与共享 /Resources 对象（按 id 分组取名字并集）都支持。
+- **色彩空间解析**（`colorspace.rs`）：`optimize_image_stream` 处理已移出文档的流，
+  ICC 的 `/N`、Indexed 查找表、资源字典 `/ColorSpace` 名字别名都必须在
+  `prepare_document` 阶段（文档完整时）解析成 `ImageColorSpaceInfo` 并随
+  `ImageTask`/`ImageSearchEntry` 携带。别名表取全部资源字典的并集，同名不同值
+  视为歧义弃用。重建流时若通道数匹配则**保留原 ICC 数组**（profile 不丢），
+  Indexed 输出声明基色空间；灰度/G4 转换导致通道数变化时回退 Device 名。
+  CMYK（N=4）、CMYK 基 Indexed、JPX 保持跳过。
 - **线性化（Fast Web View）暂缓**：lopdf 0.44 的 `SaveOptions::linearize` 是**空壳**——
   `save_with_options` 完全忽略该标志（writer 无任何 hint 表/首页分区逻辑，仅
   `object_stream.rs` 里有个“已是线性化文档”的读取侧判断）。自研需按 PDF 32000
