@@ -144,6 +144,11 @@ cargo run -p pdf-core --bin pdf-compressor-cli -- quick <file.pdf> --grayscale  
   字典内引用按目标 id 比较——同目标可合并、不同目标不合并，天然覆盖 SMask/ICC 数组）。
   合并走**入边引用改写**后删除重复对象（`dedupe_apply_replacements`），不再留
   “间接对象体内是裸引用”的 stub；该形态虽被多数阅读器容忍，但不符合规范。
+- **未引用资源清理**（`resources.rs`）：解析页与 Form 的内容流（`Tf`/`Do` 操作数），
+  删除从未被引用的 `/Font`、`/XObject` 条目，孤儿对象由保存时 `prune_objects` 兜底。
+  **保守失败**：带 /AP 的注解、/Pattern 非空、Type3 字体、Form 缺自身 /Resources、
+  名字在当前字典解析不到（可能依赖继承回退）、内容解码失败——任一命中即整页保留。
+  逐页独立 /Resources 与共享 /Resources 对象（按 id 分组取名字并集）都支持。
 
 CI（`.github/workflows/ci.yml`）在每次 push/PR 执行：前端测试+类型检查+构建、
 Rust clippy `-D warnings` + 测试、两个 MSRV 检查、60s 模糊测试、依赖审计

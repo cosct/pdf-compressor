@@ -176,6 +176,9 @@ const en = {
     'compress.note.streamDedupe': {
       body: 'Merged {count} duplicate non-image stream(s) (content, fonts, forms) into shared references.',
     },
+    'compress.note.resourcesCleaned': {
+      body: 'Removed {count} unused font/XObject resource entries left behind by earlier edits.',
+    },
     'analysis.note.encryptedUnlocked': {
       body: 'This PDF used owner-password encryption and was unlocked with the empty user password; the compressed export will be unencrypted.',
     },

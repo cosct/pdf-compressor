@@ -17,6 +17,7 @@ This project is designed for selective PDF optimization rather than blind whole-
 - Color images can be re-encoded as grayscale (UI color mode, CLI `--grayscale`)
 - Images carrying transparency (`/SMask`) are rewritten with their alpha plane preserved
 - Byte-identical duplicate streams — images *and* non-image streams (content streams, font programs, form XObjects) — are losslessly merged: incoming references are rewritten in place and no stub objects are left behind
+- Unused `/Font` and `/XObject` resource entries (dead weight from earlier edits) are removed when the whole content tree provably ignores them; pages with annotation appearance streams, tiling patterns, or Type3 fonts keep everything as a safety measure
 - A target-size mode searches quality/resolution parameters until the output fits a byte budget (UI, CLI `--target-size`, and IPC) — it bisects for the highest quality that fits, spends leftover budget on quality, and only shrinks the image edge once the whole quality range failed
 - Eligible non-image PDF streams can be compressed
 - Document metadata can be removed

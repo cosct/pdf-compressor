@@ -4,6 +4,7 @@
 mod analyzer;
 mod compressor;
 mod encode;
+mod resources;
 mod search;
 mod settings;
 mod target_size;

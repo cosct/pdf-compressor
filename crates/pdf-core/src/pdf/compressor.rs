@@ -80,6 +80,9 @@ pub(crate) struct CompressionStats {
     /// Non-image streams merged into a canonical object (content streams,
     /// font programs, form XObjects).
     pub(crate) streams_deduplicated: usize,
+    /// `/Font` and `/XObject` resource entries removed because no content
+    /// stream in the owning tree referenced them.
+    pub(crate) resources_removed: usize,
     /// Recompressed images whose rebuilt stream carries CCITT Group 4.
     pub(crate) images_bilevel_encoded: usize,
     pub(crate) streams_compressed: usize,
@@ -323,6 +326,20 @@ pub(crate) fn save_and_build_response_with_renumber(
             .with_value("count", stats.streams_deduplicated.to_string()),
         );
     }
+    if stats.resources_removed > 0 {
+        stats.notices.push(
+            BackendNotice::new(
+                "compress.note.resourcesCleaned",
+                "neutral",
+                format!(
+                    "Removed {} unused font/XObject resource entr{} left behind by earlier edits.",
+                    stats.resources_removed,
+                    if stats.resources_removed == 1 { "y" } else { "ies" }
+                ),
+            )
+            .with_value("count", stats.resources_removed.to_string()),
+        );
+    }
     if !stats.metadata_removed {
         stats.notices.push(BackendNotice::new(
             "compress.note.metadataKept",
@@ -471,6 +488,10 @@ where
     let (images_merged, streams_merged) = dedupe_identical_streams(document);
     stats.images_deduplicated = images_merged as usize;
     stats.streams_deduplicated = streams_merged as usize;
+
+    // --- Lossless pass: drop /Font and /XObject resource entries no content
+    // stream references (conservative — unsafe-looking pages keep everything) ---
+    stats.resources_removed = super::resources::remove_unused_resources(document);
 
     // Soft-mask streams carry Subtype /Image too — collect the ids referenced
     // as /SMask so the scan treats them as alpha auxiliaries of their parent

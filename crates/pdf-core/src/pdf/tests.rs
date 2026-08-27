@@ -627,6 +627,212 @@ fn identical_images_with_shared_smask_merge() {
 }
 
 // ---------------------------------------------------------------------------
+// Unused resource cleanup
+// ---------------------------------------------------------------------------
+
+/// One page with two fonts (F1 used, F2 unused) and two images (Im0 unused,
+/// Im1 used). Returns the built bytes plus the option to attach annotations.
+#[allow(dead_code)]
+fn build_unused_resources_pdf(annotations: bool) -> Vec<u8> {
+    let mut doc = Document::with_version("1.5");
+    let pages_id = doc.new_object_id();
+
+    let font_used = doc.add_object(dictionary! {
+        "Type" => "Font",
+        "Subtype" => "Type1",
+        "BaseFont" => "Helvetica",
+    });
+    let font_unused = doc.add_object(dictionary! {
+        "Type" => "Font",
+        "Subtype" => "Type1",
+        "BaseFont" => "Courier",
+    });
+
+    let image_unused = {
+        let jpeg = encode_jpeg(fixture_rgb_image(400, 300), 90);
+        doc.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject",
+                "Subtype" => "Image",
+                "Width" => 400,
+                "Height" => 300,
+                "ColorSpace" => "DeviceRGB",
+                "BitsPerComponent" => 8,
+                "Filter" => "DCTDecode",
+            },
+            jpeg,
+        ))
+    };
+    let image_used = {
+        let jpeg = encode_jpeg(fixture_rgb_image(400, 300), 90);
+        doc.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject",
+                "Subtype" => "Image",
+                "Width" => 400,
+                "Height" => 300,
+                "ColorSpace" => "DeviceRGB",
+                "BitsPerComponent" => 8,
+                "Filter" => "DCTDecode",
+            },
+            jpeg,
+        ))
+    };
+
+    let mut page_dict = dictionary! {
+        "Type" => "Page",
+        "Parent" => pages_id,
+        "Resources" => dictionary! {
+            "Font" => dictionary! {
+                "F1" => font_used,
+                "F2" => font_unused,
+            },
+            "XObject" => dictionary! {
+                "Im0" => image_unused,
+                "Im1" => image_used,
+            },
+        },
+        "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+    };
+
+    if annotations {
+        let appearance = doc.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject",
+                "Subtype" => "Form",
+                "BBox" => vec![0.into(), 0.into(), 10.into(), 10.into()],
+            },
+            "0 0 10 10 re f".as_bytes().to_vec(),
+        ));
+        let annotation = doc.add_object(dictionary! {
+            "Type" => "Annot",
+            "Subtype" => "Square",
+            "Rect" => vec![10.into(), 10.into(), 100.into(), 100.into()],
+            "AP" => dictionary! { "N" => appearance },
+        });
+        page_dict.set("Annots", vec![Object::Reference(annotation)]);
+    }
+
+    let content = format!(
+        "q 300 0 0 225 72 400 cm /Im1 Do Q\nBT /F1 24 Tf 72 720 Td ({FIXTURE_TEXT}) Tj ET\n"
+    );
+    let content_id = doc.add_object(Stream::new(dictionary! {}, content.into_bytes()));
+    page_dict.set("Contents", content_id);
+    let page_id = doc.add_object(page_dict);
+    doc.objects.insert(
+        pages_id,
+        Object::Dictionary(dictionary! {
+            "Type" => "Pages",
+            "Kids" => vec![Object::Reference(page_id)],
+            "Count" => 1,
+        }),
+    );
+    let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+    doc.trailer.set("Root", catalog_id);
+
+    let mut bytes = Vec::new();
+    doc.save_modern(&mut bytes).expect("save fixture");
+    bytes
+}
+
+fn page_resource_names(document: &Document, category: &[u8]) -> Vec<String> {
+    let page_id = *document
+        .get_pages()
+        .values()
+        .next()
+        .expect("at least one page");
+    let Object::Dictionary(page_dict) = document
+        .objects
+        .get(&page_id)
+        .expect("page object")
+    else {
+        panic!("page must be a dictionary");
+    };
+    let Ok(Object::Dictionary(category_dict)) = page_dict.get(b"Resources") else {
+        panic!("page must carry resources");
+    };
+    let Ok(Object::Dictionary(entries)) = category_dict.get(category) else {
+        panic!("category must exist: {}", String::from_utf8_lossy(category));
+    };
+    entries
+        .iter()
+        .map(|(key, _)| String::from_utf8_lossy(key).into_owned())
+        .collect()
+}
+
+#[test]
+fn removes_unused_font_and_xobject_entries() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_fixture(dir.path(), "unused-resources.pdf", &build_unused_resources_pdf(false));
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(),
+        maximum_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+
+    assert!(
+        response
+            .notices
+            .iter()
+            .any(|n| n.code == "compress.note.resourcesCleaned"),
+        "expected a resource cleanup notice, got {:?}",
+        response.notices
+    );
+
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+    assert_eq!(page_resource_names(&reloaded, b"Font"), vec!["F1"]);
+    assert_eq!(page_resource_names(&reloaded, b"XObject"), vec!["Im1"]);
+
+    // The orphaned unused image must not survive in the output.
+    let image_objects = reloaded
+        .objects
+        .values()
+        .filter(|object| {
+            matches!(
+                object,
+                Object::Stream(stream)
+                    if matches!(stream.dict.get(b"Subtype"), Ok(Object::Name(name)) if name.as_slice() == b"Image")
+            )
+        })
+        .count();
+    assert_eq!(image_objects, 1, "only the used image may remain");
+
+    assert!(
+        extracted_text(Path::new(&response.output_path)).contains(FIXTURE_TEXT),
+        "text must survive the cleanup"
+    );
+}
+
+#[test]
+fn keeps_resources_when_annotation_appearance_present() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_fixture(dir.path(), "annotated.pdf", &build_unused_resources_pdf(true));
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(),
+        maximum_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+    // Annotation appearance streams may fall back to the page's resources —
+    // the page keeps everything, including the unused entries.
+    let fonts = page_resource_names(&reloaded, b"Font");
+    assert!(fonts.contains(&"F2".to_string()), "fonts stay untouched: {fonts:?}");
+    let xobjects = page_resource_names(&reloaded, b"XObject");
+    assert!(
+        xobjects.contains(&"Im0".to_string()),
+        "xobjects stay untouched: {xobjects:?}"
+    );
+    let _ = response;
+}
+
+// ---------------------------------------------------------------------------
 // JPEG encoder evaluation (image crate vs jpeg-encoder SIMD)
 // ---------------------------------------------------------------------------
 

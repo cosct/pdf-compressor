@@ -176,6 +176,9 @@ const zhCN = {
     'compress.note.streamDedupe': {
       body: '已合并 {count} 个重复的非图像流对象（内容流、字体、表单）为共享引用。',
     },
+    'compress.note.resourcesCleaned': {
+      body: '已移除 {count} 个从未被内容流引用的字体/XObject 资源条目。',
+    },
     'analysis.note.encryptedUnlocked': {
       body: '该 PDF 使用了 owner 密码加密，已用空用户密码解锁；压缩导出件将是未加密的。',
     },
