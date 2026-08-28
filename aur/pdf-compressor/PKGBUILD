@@ -1,8 +1,8 @@
 # Maintainer: cosct
 
 pkgname=pdf-compressor
-pkgver=0.2.0
-pkgrel=2
+pkgver=0.3.0
+pkgrel=1
 pkgdesc='Local-first desktop PDF compressor built with Vue, Tauri, and Rust (GUI + headless CLI)'
 arch=('x86_64')
 url='https://github.com/cosct/pdf-compressor'

@@ -58,6 +58,36 @@ scripts/build-arch-local.sh --install  # additionally install via pkexec
 
 No prebuilt installers are published yet. Build from source as described in [Build and Release](#build-and-release). On Windows this produces an NSIS installer and a portable executable.
 
+## What's New in v0.3.0
+
+The compression engine substantially widened its safe-rewrite surface — scanned documents, embedded fonts, and print-oriented color spaces — while keeping every optimization opt-in-safe and fully lossless where it claims to be.
+
+### CCITT Group 4 for black-and-white scans
+
+- Near-black-and-white images (≤ 5% midtones) switch to lossless ITU T.6 coding instead of JPEG — measured **99.5% size reduction** on text-scan fixtures versus 55% under the previous grayscale path
+- Pure Group-4 CCITT inputs are transcoded through resize; Group-3 and flate-mixed chains stay untouched
+- Exposed as a color-mode selector in the UI (color / grayscale / black & white G4), CLI `--bilevel g4`, and a new Dolphin service-menu action
+- `scan-heavy` documents now route through the dedicated scanned pipeline (forced image + stream optimization)
+
+### Structural lossless optimization
+
+- Duplicate stream objects of any kind — content streams, font programs, form XObjects, images — merge into one canonical object with incoming references rewritten in place (no more non-spec stub objects)
+- Unused `/Font` and `/XObject` resource entries are removed when the whole content tree provably ignores them; pages with annotation appearance streams, tiling patterns, or Type3 fonts keep everything
+
+### Font subsetting (opt-in)
+
+- Embedded `Type0`/`CIDFontType2` TrueType fonts shrink to the glyphs actually drawn (typst's pure-Rust `subsetter`)
+- Content streams are untouched: the subset's new glyph numbering is bridged with a generated `/CIDToGIDMap` stream and a remapped `/W` width array — poppler text extraction is byte-identical on test fixtures
+- UI toggle "Subset fonts", CLI `--subset-fonts`; defaults off until it earns default-on
+
+### Color-space support
+
+- ICC-based raw images (gray/RGB) decode and re-encode with the profile reference preserved on the rebuilt stream — fixing a silent profile-drop hazard
+- Indexed palette images (4/8-bit) expand to their base space and re-encode; CMYK stays skipped
+- `/ColorSpace` resource-dictionary name aliases resolve through the new preflight layer
+
+Also new: per-feature result notices (`bilevelEncoded`, `streamDedupe`, `resourcesCleaned`, `fontsSubsetted`), corrected engine documentation (worker channel buffer, target-size search rounds), and documented deferrals for JBIG2 (license provenance) and linearization (lopdf upstream gap).
+
 ## What's New in v0.2.0
 
 ### Fluent Design UI
@@ -535,6 +565,18 @@ The analyzer warns when page count is high. Large or image-heavy PDFs require in
 - `vue-i18n` (internationalization)
 
 ## Release History
+
+### v0.3.0 (2026-08-28)
+
+- CCITT Group 4 bilevel encoding exit for near-black-and-white scans (UI color mode, CLI `--bilevel g4`, Dolphin action); pure G4 inputs transcode through resize
+- Scanned-document pipeline activated in the GUI (scan-heavy routing + grayscale color mode)
+- Generic stream deduplication with in-edge reference rewriting (no stub objects)
+- Unused font/XObject resource cleanup with conservative fail-closed safety probes
+- Font subsetting for Type0/CIDFontType2 TrueType fonts, opt-in (`--subset-fonts` / UI toggle), content streams untouched
+- ICC-based and Indexed color-space support for raw images; ICC profile references preserved on rewrite
+- New result notices: `bilevelEncoded`, `streamDedupe`, `resourcesCleaned`, `fontsSubsetted`
+- Engine documentation corrections (channel buffer sizing, target-size search rounds)
+- Deferred with rationale: JBIG2 (license provenance), linearization (lopdf upstream), JPX (pure-Rust default build)
 
 ### v0.2.0 (2026-04-16)
 
