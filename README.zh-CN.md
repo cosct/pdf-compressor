@@ -4,7 +4,7 @@
 
 PDF Compressor 是一个本地优先的桌面 PDF 压缩应用，后端使用 Rust，前端使用 Vue 3 + Tauri。它支持多文件队列工作流：添加一个或多个 PDF，由应用自动分析每个文件，按文件或全局调整设置，然后导出更轻的副本，不会覆盖原文件。
 
-当前版本：`0.2.0`
+当前版本：`0.3.0`
 
 作者：`cosct`
 
@@ -386,7 +386,7 @@ npm run tauri:build
 发布元数据：
 
 - 产品名：`PDF Compressor`
-- 版本：`0.2.0`
+- 版本：`0.3.0`
 - 作者：`cosct`
 - 标识符：`com.cosct.pdfcompressor`
 

@@ -4,7 +4,7 @@ Language versions: `README.md` (English) | `README.zh-CN.md` (简体中文)
 
 PDF Compressor is a local-first desktop app for reducing PDF size with a Rust backend and a Vue 3 + Tauri frontend. It supports a multi-file queue workflow: add one or more PDFs, let the app analyze each file, adjust settings per file or globally, and export lighter copies without overwriting the originals.
 
-Current release: `0.2.0`
+Current release: `0.3.0`
 
 Author: `cosct`
 
@@ -18,7 +18,7 @@ This project is designed for selective PDF optimization rather than blind whole-
 - Images carrying transparency (`/SMask`) are rewritten with their alpha plane preserved
 - Byte-identical duplicate streams — images *and* non-image streams (content streams, font programs, form XObjects) — are losslessly merged: incoming references are rewritten in place and no stub objects are left behind
 - Unused `/Font` and `/XObject` resource entries (dead weight from earlier edits) are removed when the whole content tree provably ignores them; pages with annotation appearance streams, tiling patterns, or Type3 fonts keep everything as a safety measure
-- Embedded `Type0`/`CIDFontType2` TrueType fonts can be subset to the glyphs actually drawn (UI toggle "Subset fonts", CLI `--subset-fonts`). Content streams are untouched: the subset's new glyph numbering is bridged with a generated `/CIDToGIDMap` stream and a remapped `/W` width array. Non-CID fonts (Type1, simple TrueType, Type3) are left as-is
+- Embedded `Type0`/`CIDFontType2` TrueType fonts can be subset to the glyphs actually drawn (UI toggle "Subset fonts", CLI `--subset-fonts`). Content streams are untouched: the subset's new glyph numbering is bridged with a generated `/CIDToGIDMap` stream, while `/W` keeps its original CID keys (widths are CID-level data and the CIDs never change). Non-CID fonts (Type1, simple TrueType, Type3) are left as-is
 - A target-size mode searches quality/resolution parameters until the output fits a byte budget (UI, CLI `--target-size`, and IPC) — it bisects for the highest quality that fits, spends leftover budget on quality, and only shrinks the image edge once the whole quality range failed
 - Eligible non-image PDF streams can be compressed
 - Raw (non-JPEG) image streams re-encode through the same pipeline, including ICC-based color spaces (gray/RGB, profile reference preserved on the rebuilt image) and indexed palette images (4/8-bit indices expanded to their base space); CMYK and JPX-coded images are preserved as-is
@@ -470,7 +470,7 @@ The portable executable requires Windows 10 21H2+ or Windows 11 (WebView2 is pre
 Release metadata:
 
 - Product name: `PDF Compressor`
-- Version: `0.2.0`
+- Version: `0.3.0`
 - Author: `cosct`
 - Identifier: `com.cosct.pdfcompressor`
 

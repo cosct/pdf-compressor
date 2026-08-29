@@ -170,10 +170,13 @@ cargo run -p pdf-core --bin pdf-compressor-cli -- quick <file.pdf> --grayscale  
   默认关）：仅覆盖 Type0→CIDFontType2→FontFile2（TrueType 轮廓）且编码为
   Identity-H/V 的字体。typst subsetter 按字形 id 保留并剥离 cmap，故子集只能作
   CID 字体——**内容流零改写**，新字形编号用生成的 `/CIDToGIDMap` 流桥接（BE u16
-  per CID），`/W` 宽度数组同步重映射（宽度对象原样保留避免浮点漂移）。字形收集
-  解析 Tf/Tj/TJ/'/" 操作数（当前字体状态跟踪 + Form 递归）；任一 `Tf` 名字在当前
-  资源字典解析不到（可能是继承回退）→ **整轮放弃**。共享同一 FontFile2 的多个
-  Type0 字体取字形并集、子集化一次。测试字体 `assets/test-font.ttf` 由 pyftsubset
+  per CID）；**`/W` 数组保持不动**（宽度以 CID 为键，ISO 32000 表 115，CID 未变
+  则原数组仍然正确——曾按新 GID 重映射，PDFium/Acrobat 系会查表失败，已修正）。
+  字形收集解析 Tf/Tj/TJ/'/" 操作数（当前字体状态跟踪 + Form 递归）；任一 `Tf`
+  名字在当前资源字典解析不到（可能是继承回退）、选中 Type3 字体（其字形程序是
+  本模块不遍历的内容流）、页面带 /AP 注解外观流、或字体程序被非候选字体（如
+  简单 TrueType）共享 → **整轮放弃**。共享同一 FontFile2 的多个候选 Type0 字体
+  取字形并集、子集化一次。测试字体 `assets/test-font.ttf` 由 pyftsubset
   生成（77 字形），gid 常量见 `testutil.rs`；勿手改。
 
 CI（`.github/workflows/ci.yml`）在每次 push/PR 执行：前端测试+类型检查+构建、
