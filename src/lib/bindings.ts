@@ -196,6 +196,13 @@ export type CompressionSettingsPayload = {
 export type PresetProfilePayload = {
 	imageQuality: number,
 	maxImageSizePercent: number,
+	optimizeImages?: boolean | null,
+	compressStreams?: boolean | null,
+	stripMetadata?: boolean | null,
+	grayscale?: boolean | null,
+	/**  `"jpeg"` (default) or `"ccitt-g4"` for near-bilevel scans. */
+	bilevelCodec?: string | null,
+	subsetFonts?: boolean | null,
 };
 
 export type PresetUserConfigPayload = {

@@ -42,10 +42,7 @@ function chooseLocale(value: AppLocale) {
           <path d="M9 1.8v1.6M9 14.6v1.6M1.8 9h1.6M14.6 9h1.6M3.9 3.9l1.1 1.1M13 13l1.1 1.1M14.1 3.9 13 5M5 13l-1.1 1.1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
         </svg>
       </span>
-      <div class="panel-header__text">
-        <h2>{{ t('appearance.title') }}</h2>
-        <p class="panel-header__subtitle">{{ t('appearance.subtitle') }}</p>
-      </div>
+      <h2>{{ t('appearance.title') }}</h2>
     </header>
 
     <div class="appearance-panel__body">
@@ -92,19 +89,7 @@ function chooseLocale(value: AppLocale) {
 .appearance-panel {
   display: flex;
   flex-direction: column;
-  gap: var(--fd-space-20);
-}
-
-.panel-header__text {
-  display: flex;
-  flex-direction: column;
-  gap: var(--fd-space-2);
-  min-width: 0;
-}
-
-.panel-header__subtitle {
-  color: var(--fd-text-secondary);
-  font: var(--fd-text-caption);
+  gap: var(--fd-space-16);
 }
 
 .appearance-panel__body {

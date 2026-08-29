@@ -8,11 +8,19 @@ import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 
 vi.mock('../../config/presets', () => {
+  const flags = {
+    optimizeImages: true,
+    compressStreams: true,
+    stripMetadata: true,
+    grayscale: false,
+    bilevelCodec: 'jpeg',
+    subsetFonts: false,
+  }
   const profiles = {
-    conservative: { imageQuality: 88, maxImageSizePercent: 100 },
-    balanced: { imageQuality: 72, maxImageSizePercent: 80 },
-    maximum: { imageQuality: 58, maxImageSizePercent: 60 },
-    custom: { imageQuality: 72, maxImageSizePercent: 80 },
+    conservative: { imageQuality: 88, maxImageSizePercent: 100, ...flags },
+    balanced: { imageQuality: 72, maxImageSizePercent: 80, ...flags },
+    maximum: { imageQuality: 58, maxImageSizePercent: 60, ...flags },
+    custom: { imageQuality: 72, maxImageSizePercent: 80, ...flags },
   }
   return {
     getDefaultPresetProfiles: vi.fn(() => profiles),
@@ -166,6 +174,12 @@ describe('CompressionSettingsPanel', () => {
     expect(saveUserPresetProfile).toHaveBeenCalledWith('balanced', {
       imageQuality: 72,
       maxImageSizePercent: 80,
+      optimizeImages: true,
+      compressStreams: true,
+      stripMetadata: true,
+      grayscale: false,
+      bilevelCodec: 'jpeg',
+      subsetFonts: false,
     })
 
     const resetButton = wrapper

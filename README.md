@@ -146,7 +146,7 @@ User-customized preset profiles are persisted to disk via `src/config/presets.ts
 - Multi-file PDF queue with drag-and-drop and native desktop browse
 - Automatic preflight analysis before compression
 - Dark, light, and system theme — defaults to system preference on first launch
-- Three presets: `conservative`, `balanced`, `maximum`, plus `custom`
+- Four presets (`conservative`, `balanced`, `maximum`, `custom`), each carrying a full parameter set (quality, max edge, color mode, toggles) editable in the settings view; preset and target size are selectable right on the main view
 - Adjustable image quality and maximum image edge (percentage-based with reference edge)
 - Toggles for image optimization, stream compression, and metadata removal, plus a color mode selector (color / grayscale / black-and-white G4)
 - Custom preset saving, per-preset user overrides, and reset to defaults
@@ -429,7 +429,7 @@ pdf-compressor-cli quick --target-size 5MB report.pdf --no-notify
 
 Quick mode's defaults are configurable without flags: the desktop app's settings view (header gear icon) has a *Right-click quick compress* section (preset, color mode, quality, max edge, target size, toggles) persisted to `<os-config-dir>/pdf-compressor/quick-profile.json`. Every explicit CLI flag still wins over the saved profile; a missing or unreadable profile falls back to the built-in defaults.
 
-On KDE Plasma, the Arch package installs a Dolphin service menu (`packaging/servicemenus/pdf-compressor.desktop` → `/usr/share/kio/servicemenus/`), so right-clicking PDFs offers a *PDF Compressor* submenu with balanced / maximum / grayscale / black-and-white G4 / target-size actions — no GUI window is opened. Encrypted PDFs are rejected up front with `error.encryptedPdf`; quick mode never leaves a file that is larger than the original.
+On KDE Plasma, the Arch package installs a Dolphin service menu (`packaging/servicemenus/pdf-compressor.desktop` → `/usr/share/kio/servicemenus/`), so right-clicking PDFs offers a *PDF Compressor* submenu with app-settings / maximum / grayscale / black-and-white G4 / target-size actions — no GUI window is opened. Encrypted PDFs are rejected up front with `error.encryptedPdf`; quick mode never leaves a file that is larger than the original.
 
 The PDF engine also has a cargo-fuzz target (`crates/pdf-core/fuzz`) — run it from `crates/pdf-core` with `cargo +nightly fuzz run pipeline`.
 

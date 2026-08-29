@@ -7,10 +7,10 @@ X-KDE-Submenu=PDF Compressor
 X-KDE-Submenu[zh_CN]=PDF 压缩
 
 [Desktop Action pdfCompressBalanced]
-Name=Compress PDF (balanced)
-Name[zh_CN]=压缩 PDF（均衡）
-Comment=Shrink this PDF next to the original, no window opened
-Comment[zh_CN]=在原文件旁生成压缩副本，不打开窗口
+Name=Compress PDF (app settings)
+Name[zh_CN]=压缩 PDF（应用内配置）
+Comment=Uses the quick-compress profile from the app's settings page
+Comment[zh_CN]=使用应用设置页中的快速压缩配置，不打开窗口
 Exec=pdf-compressor-cli quick %F
 Icon=pdf-compressor
 

@@ -31,25 +31,20 @@ const en = {
   },
   settingsView: {
     title: 'Settings',
-    subtitle:
-      'Theme and language, queue compression defaults, and the independent profile used by right-click quick compress in your file manager.',
   },
   appearance: {
     title: 'Appearance',
-    subtitle: 'Theme and interface language — applied instantly.',
   },
   quick: {
     title: 'Right-click quick compress',
-    subtitle:
-      'Used by the file-manager “PDF Compressor” actions — compression runs in the background and writes next to the original file.',
-    preset: 'Starting preset',
+    preset: 'Preset',
     maxEdgeUnit: 'px',
     targetSize: 'Target size (MB)',
     save: 'Save quick settings',
     saving: 'Saving…',
     savedTitle: 'Quick settings saved',
     savedBody: 'Right-click compression now uses these settings.',
-    note: 'Stored in the OS config directory and applies to right-click actions on this machine.',
+    note: 'Applies to right-click actions on this machine.',
   },
   intake: {
     browse: 'Browse',

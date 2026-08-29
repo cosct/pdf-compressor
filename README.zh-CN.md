@@ -110,7 +110,7 @@ Rust 压缩引擎进行了针对性的性能改进：
 - 多文件 PDF 队列，支持拖放和原生桌面文件选择
 - 压缩前自动预检分析
 - 深色、浅色和跟随系统主题 — 首次启动默认跟随系统偏好
-- 三个预设：`conservative`、`balanced`、`maximum`，另有 `custom` 自定义
+- 四个预设（`conservative`、`balanced`、`maximum`、`custom`），每个预设携带完整参数组（质量、最大边长、色彩模式、开关），可在设置视图中编辑；主视图即可直接选择预设与目标大小
 - 可调图片质量和最大图片边长（百分比方式，基于分析返回的参考边长）
 - 开关切换：图片优化、流压缩、元数据移除
 - 自定义预设保存、逐预设用户覆盖与恢复默认
@@ -345,7 +345,7 @@ pdf-compressor-cli quick --target-size 5MB report.pdf --no-notify
 
 quick 模式的默认参数可以在不传参的情况下配置：桌面应用设置视图（标题栏齿轮图标）中的「右键快速压缩」区块（预设、色彩模式、质量、最大边长、目标大小、开关）会持久化到 `<系统配置目录>/pdf-compressor/quick-profile.json`。显式 CLI 参数始终优先于已保存的配置档案；配置缺失或损坏时回退到内置默认值。
 
-在 KDE Plasma 上，Arch 软件包会安装 Dolphin 服务菜单（`packaging/servicemenus/pdf-compressor.desktop` → `/usr/share/kio/servicemenus/`）：右键 PDF 即可看到「PDF 压缩」子菜单，提供均衡 / 最大化 / 灰度 / 目标大小四种动作，全程不打开 GUI 窗口。加密 PDF 会在入口处以 `error.encryptedPdf` 拒绝；quick 模式绝不留下比原文件更大的输出。
+在 KDE Plasma 上，Arch 软件包会安装 Dolphin 服务菜单（`packaging/servicemenus/pdf-compressor.desktop` → `/usr/share/kio/servicemenus/`）：右键 PDF 即可看到「PDF 压缩」子菜单，提供应用内配置 / 最大化 / 灰度 / 黑白 G4 / 目标大小五种动作，全程不打开 GUI 窗口。加密 PDF 会在入口处以 `error.encryptedPdf` 拒绝；quick 模式绝不留下比原文件更大的输出。
 
 PDF 引擎还有 cargo-fuzz 目标（`crates/pdf-core/fuzz`）— 在 `crates/pdf-core` 目录下运行 `cargo +nightly fuzz run pipeline`。
 

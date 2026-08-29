@@ -1,14 +1,32 @@
 {
   "conservative": {
     "imageQuality": 72,
-    "maxImageSizePercent": 84
+    "maxImageSizePercent": 84,
+    "optimizeImages": true,
+    "compressStreams": true,
+    "stripMetadata": false,
+    "grayscale": false,
+    "bilevelCodec": "jpeg",
+    "subsetFonts": false
   },
   "balanced": {
     "imageQuality": 60,
-    "maxImageSizePercent": 68
+    "maxImageSizePercent": 68,
+    "optimizeImages": true,
+    "compressStreams": true,
+    "stripMetadata": true,
+    "grayscale": false,
+    "bilevelCodec": "jpeg",
+    "subsetFonts": false
   },
   "maximum": {
     "imageQuality": 46,
-    "maxImageSizePercent": 52
+    "maxImageSizePercent": 52,
+    "optimizeImages": true,
+    "compressStreams": true,
+    "stripMetadata": true,
+    "grayscale": false,
+    "bilevelCodec": "jpeg",
+    "subsetFonts": true
   }
 }

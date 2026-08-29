@@ -44,6 +44,17 @@ function clonePresetProfile(profile: PresetProfile): PresetProfile {
   return { ...profile }
 }
 
+/** Flag/codec defaults for preset files that predate the extended profile
+ * shape (only imageQuality + maxImageSizePercent used to be persisted). */
+const LEGACY_PROFILE_FALLBACK = {
+  optimizeImages: true,
+  compressStreams: true,
+  stripMetadata: true,
+  grayscale: false,
+  bilevelCodec: 'jpeg',
+  subsetFonts: false,
+} as const
+
 function sanitizePresetProfile(
   profile: Partial<PresetProfile> | undefined,
   fallback: PresetProfile,
@@ -53,6 +64,12 @@ function sanitizePresetProfile(
     maxImageSizePercent: clampMaxImageSizePercent(
       profile?.maxImageSizePercent ?? fallback.maxImageSizePercent,
     ),
+    optimizeImages: profile?.optimizeImages ?? fallback.optimizeImages ?? LEGACY_PROFILE_FALLBACK.optimizeImages,
+    compressStreams: profile?.compressStreams ?? fallback.compressStreams ?? LEGACY_PROFILE_FALLBACK.compressStreams,
+    stripMetadata: profile?.stripMetadata ?? fallback.stripMetadata ?? LEGACY_PROFILE_FALLBACK.stripMetadata,
+    grayscale: profile?.grayscale ?? fallback.grayscale ?? LEGACY_PROFILE_FALLBACK.grayscale,
+    bilevelCodec: profile?.bilevelCodec === 'ccitt-g4' ? 'ccitt-g4' : (fallback.bilevelCodec ?? LEGACY_PROFILE_FALLBACK.bilevelCodec),
+    subsetFonts: profile?.subsetFonts ?? fallback.subsetFonts ?? LEGACY_PROFILE_FALLBACK.subsetFonts,
   }
 }
 
@@ -169,10 +186,7 @@ export function getPresetDefaults(
   preset: CompressionPreset,
 ): PresetDefaults {
   const profile = cachedUserPresetConfig?.presets[preset] ?? defaultPresetProfiles[preset]
-  return {
-    imageQuality: profile.imageQuality,
-    maxImageSizePercent: profile.maxImageSizePercent,
-  }
+  return { ...profile }
 }
 
 export async function saveUserPresetProfile(

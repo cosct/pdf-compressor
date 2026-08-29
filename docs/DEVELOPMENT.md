@@ -131,7 +131,13 @@ cargo run -p pdf-core --bin pdf-compressor-cli -- quick <file.pdf> --grayscale  
   quick-profile.json`，GUI 设置视图的“右键快速压缩”区块写入（`load_quick_profile`/
   `save_quick_profile` 命令），CLI `quick` 子命令读取。字段优先级：显式 CLI 参数 >
   配置档案 > 内置默认（`CompressionSettingsOverrides::or_else` 逐字段回落）；档案缺失或
-  损坏时 quick 静默回退默认值（stderr 警告），绝不因配置失败。
+  损坏时 quick 静默回退默认值（stderr 警告），绝不因配置失败。面板里选择预设（含
+  自定义预设）会把该预设的参数物化进档案——预设的百分比边长按共享参考边
+  `DEFAULT_REFERENCE_IMAGE_EDGE_PX`（3200px）折算成绝对像素，因为 headless 路径没有
+  逐文件分析参考。
+- **预设档案**（`PresetProfilePayload` / `preset-user-config.json`）：每个预设携带完整
+  参数组（质量、最大边长百分比、四个开关、灰度/双级编解码）。旧配置文件只有两个
+  字段也能解析——新增字段全为可选，由前端 sanitize 回填内置默认。
 - **目标大小搜索**（`target_size.rs`）：经典二分求“适配预算的最高质量”；整个质量范围
   失败才收缩边长，且新边长下 `hi` 重置为触发塌缩的质量（不是用户质量）。best-effort
   兜底取“estimate 最小的探测参数”。**中间探测轮的 materialize 禁止 renumber**——

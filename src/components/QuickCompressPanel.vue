@@ -9,8 +9,14 @@
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
+import { loadPresetProfiles } from '../config/presets'
 import type { QuickProfilePayload } from '../lib/bindings'
 import { getQuickProfile, saveQuickProfile } from '../lib/tauri'
+import type { PresetProfileMap } from '../types/pdf'
+import {
+  calculateMaxImageSizePx,
+  DEFAULT_REFERENCE_IMAGE_EDGE_PX,
+} from '../utils/compressionSettings'
 
 defineProps<{ nativeAvailable: boolean }>()
 
@@ -21,23 +27,24 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 
-// Mirrors the engine's per-preset defaults (pdf-core settings.rs) — the
-// quick profile stores absolute pixels because no per-file analysis
-// reference edge exists in the headless path.
-const PRESET_DEFAULTS = {
+// Engine-side px fallbacks per preset (pdf-core settings.rs) — used until the
+// (possibly user-customized) preset profiles finish loading. Presets store a
+// percentage; quick mode has no per-file analysis reference, so the px value
+// is derived against the shared reference edge.
+const ENGINE_FALLBACK = {
   conservative: { quality: 82, maxEdge: 2400 },
   balanced: { quality: 72, maxEdge: 1800 },
   maximum: { quality: 58, maxEdge: 1400 },
 } as const
-type QuickPreset = keyof typeof PRESET_DEFAULTS
-const PRESET_ORDER: QuickPreset[] = ['conservative', 'balanced', 'maximum']
+type QuickPreset = 'conservative' | 'balanced' | 'maximum' | 'custom'
+const PRESET_ORDER: QuickPreset[] = ['conservative', 'balanced', 'maximum', 'custom']
 
 type ColorMode = 'color' | 'grayscale' | 'g4'
 
 const preset = ref<QuickPreset>('balanced')
 const colorMode = ref<ColorMode>('color')
-const quality = ref<number>(PRESET_DEFAULTS.balanced.quality)
-const maxEdge = ref<number>(PRESET_DEFAULTS.balanced.maxEdge)
+const quality = ref<number>(ENGINE_FALLBACK.balanced.quality)
+const maxEdge = ref<number>(ENGINE_FALLBACK.balanced.maxEdge)
 const targetSizeMb = ref('')
 const optimizeImages = ref(true)
 const compressStreams = ref(true)
@@ -46,6 +53,33 @@ const subsetFonts = ref(false)
 
 const loading = ref(true)
 const saving = ref(false)
+const presetProfiles = ref<PresetProfileMap | null>(null)
+
+function presetParams(name: QuickPreset) {
+  const profiles = presetProfiles.value
+  if (profiles) {
+    const profile = profiles[name]
+    return {
+      quality: profile.imageQuality,
+      maxEdge: calculateMaxImageSizePx(profile.maxImageSizePercent, DEFAULT_REFERENCE_IMAGE_EDGE_PX),
+      optimizeImages: profile.optimizeImages,
+      compressStreams: profile.compressStreams,
+      stripMetadata: profile.stripMetadata,
+      colorMode: (profile.bilevelCodec === 'ccitt-g4' ? 'g4' : profile.grayscale ? 'grayscale' : 'color') as ColorMode,
+      subsetFonts: profile.subsetFonts,
+    }
+  }
+  const base = ENGINE_FALLBACK[name === 'custom' ? 'maximum' : name]
+  return {
+    quality: base.quality,
+    maxEdge: base.maxEdge,
+    optimizeImages: true,
+    compressStreams: true,
+    stripMetadata: true,
+    colorMode: 'color' as ColorMode,
+    subsetFonts: name === 'maximum' || name === 'custom',
+  }
+}
 
 const targetSizeInvalid = computed(() => {
   const raw = targetSizeMb.value.trim()
@@ -62,12 +96,13 @@ const canSave = computed(
 
 function applyProfile(profile: QuickProfilePayload) {
   const resolvedPreset =
-    profile.preset === 'conservative' || profile.preset === 'maximum'
+    profile.preset === 'conservative' || profile.preset === 'maximum' || profile.preset === 'custom'
       ? profile.preset
       : 'balanced'
   preset.value = resolvedPreset
-  quality.value = profile.imageQuality ?? PRESET_DEFAULTS[resolvedPreset].quality
-  maxEdge.value = profile.maxImageSizePx ?? PRESET_DEFAULTS[resolvedPreset].maxEdge
+  const params = presetParams(resolvedPreset)
+  quality.value = profile.imageQuality ?? params.quality
+  maxEdge.value = profile.maxImageSizePx ?? params.maxEdge
   colorMode.value = profile.bilevelCodec === 'ccitt-g4' ? 'g4' : profile.grayscale ? 'grayscale' : 'color'
   targetSizeMb.value =
     profile.targetSizeBytes != null
@@ -82,7 +117,9 @@ function applyProfile(profile: QuickProfilePayload) {
 async function load() {
   loading.value = true
   try {
-    applyProfile(await getQuickProfile())
+    const [profile, profiles] = await Promise.all([getQuickProfile(), loadPresetProfiles()])
+    presetProfiles.value = profiles
+    applyProfile(profile)
   } catch (error) {
     emit('error', error)
   } finally {
@@ -92,8 +129,14 @@ async function load() {
 
 function choosePreset(next: QuickPreset) {
   preset.value = next
-  quality.value = PRESET_DEFAULTS[next].quality
-  maxEdge.value = PRESET_DEFAULTS[next].maxEdge
+  const params = presetParams(next)
+  quality.value = params.quality
+  maxEdge.value = params.maxEdge
+  colorMode.value = params.colorMode
+  optimizeImages.value = params.optimizeImages
+  compressStreams.value = params.compressStreams
+  stripMetadata.value = params.stripMetadata
+  subsetFonts.value = params.subsetFonts
 }
 
 function buildPayload(): QuickProfilePayload {
@@ -155,10 +198,7 @@ onMounted(load)
           <circle cx="7" cy="12.5" r="1.8" stroke="currentColor" stroke-width="1.4"/>
         </svg>
       </span>
-      <div class="panel-header__text">
-        <h2>{{ t('quick.title') }}</h2>
-        <p class="panel-header__subtitle">{{ t('quick.subtitle') }}</p>
-      </div>
+      <h2>{{ t('quick.title') }}</h2>
     </header>
 
     <div class="quick-panel__body">
@@ -290,19 +330,7 @@ onMounted(load)
 .quick-panel {
   display: flex;
   flex-direction: column;
-  gap: var(--fd-space-20);
-}
-
-.panel-header__text {
-  display: flex;
-  flex-direction: column;
-  gap: var(--fd-space-2);
-  min-width: 0;
-}
-
-.panel-header__subtitle {
-  color: var(--fd-text-secondary);
-  font: var(--fd-text-caption);
+  gap: var(--fd-space-16);
 }
 
 .quick-panel__body {

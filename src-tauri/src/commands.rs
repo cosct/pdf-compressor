@@ -595,6 +595,7 @@ mod tests {
             pdf_core::models::PresetProfilePayload {
                 image_quality: 72,
                 max_image_size_percent: 80,
+                ..Default::default()
             },
         );
         write_preset_config_at(&config_path, &config).expect("write");

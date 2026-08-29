@@ -80,9 +80,12 @@ const canResetPresets = computed(() => {
     hasCustomPresets.value ||
     clampImageQuality(props.settings.imageQuality) !== defaults.imageQuality ||
     displayMaxImagePercent.value !== defaults.maxImageSizePercent ||
-    props.settings.optimizeImages !== true ||
-    props.settings.compressStreams !== true ||
-    props.settings.stripMetadata !== true
+    props.settings.optimizeImages !== defaults.optimizeImages ||
+    props.settings.compressStreams !== defaults.compressStreams ||
+    props.settings.stripMetadata !== defaults.stripMetadata ||
+    props.settings.grayscale !== defaults.grayscale ||
+    props.settings.bilevelCodec !== defaults.bilevelCodec ||
+    props.settings.subsetFonts !== defaults.subsetFonts
   )
 })
 
@@ -144,9 +147,17 @@ async function saveCurrentAsPreset() {
   presetConfigBusy.value = true
 
   try {
+    // Persist the full parameter set, not just quality/edge: presets are
+    // meant to capture a complete compression recipe.
     await saveUserPresetProfile(preset, {
       imageQuality: clampImageQuality(props.settings.imageQuality),
       maxImageSizePercent: percent,
+      optimizeImages: props.settings.optimizeImages,
+      compressStreams: props.settings.compressStreams,
+      stripMetadata: props.settings.stripMetadata,
+      grayscale: props.settings.grayscale,
+      bilevelCodec: props.settings.bilevelCodec,
+      subsetFonts: props.settings.subsetFonts,
     })
     await refreshPresetProfiles()
     emit('preset-config-saved')
@@ -174,11 +185,7 @@ async function resetToDefaults() {
     emit('update:settings', normalizeWithAnalysis({
       ...props.settings,
       preset: nextPreset,
-      imageQuality: defaults[nextPreset].imageQuality,
-      maxImageSizePercent: defaults[nextPreset].maxImageSizePercent,
-      optimizeImages: true,
-      compressStreams: true,
-      stripMetadata: true,
+      ...defaults[nextPreset],
     }))
   } catch (error) {
     emit('preset-config-error', error)
@@ -205,9 +212,8 @@ function selectPreset(value: CompressionPreset) {
   const defaults = presetProfiles.value[value]
   emit('update:settings', normalizeWithAnalysis({
     ...props.settings,
+    ...defaults,
     preset: value,
-    imageQuality: defaults.imageQuality,
-    maxImageSizePercent: defaults.maxImageSizePercent,
   }))
 }
 

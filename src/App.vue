@@ -8,6 +8,7 @@ import AppearanceSettingsPanel from './components/AppearanceSettingsPanel.vue'
 import CompressionSettingsPanel from './components/CompressionSettingsPanel.vue'
 import ErrorToastViewport from './components/ErrorToastViewport.vue'
 import PdfUploadPanel from './components/PdfUploadPanel.vue'
+import PresetBar from './components/PresetBar.vue'
 import QuickCompressPanel from './components/QuickCompressPanel.vue'
 import { createNotice } from './composables/backendMessages'
 import { usePdfCompressor } from './composables/usePdfCompressor'
@@ -221,6 +222,11 @@ onBeforeUnmount(() => {
         </section>
 
         <aside class="shell-rail fd-card">
+          <PresetBar
+            :settings="settings"
+            :disabled="compressionLoading"
+            @update:settings="updateSettings"
+          />
           <ActivityPanel
             :workflow-state="workflowState"
             :selected-file-name="sourceFileName"
@@ -253,7 +259,6 @@ onBeforeUnmount(() => {
       <div class="settings-page">
         <div class="settings-page__heading">
           <h1>{{ t('settingsView.title') }}</h1>
-          <p>{{ t('settingsView.subtitle') }}</p>
         </div>
 
         <div class="settings-card fd-card">
@@ -338,6 +343,8 @@ onBeforeUnmount(() => {
 
 .shell-rail {
   display: flex;
+  flex-direction: column;
+  gap: var(--fd-space-12);
   padding: var(--fd-space-16);
   overflow: hidden;
 }
@@ -345,7 +352,6 @@ onBeforeUnmount(() => {
 .shell-rail :deep(.activity-panel) {
   flex: 1;
   width: 100%;
-  height: 100%;
   min-height: 0;
 }
 
@@ -372,12 +378,6 @@ onBeforeUnmount(() => {
 
 .settings-page__heading h1 {
   font: var(--fd-text-subtitle);
-}
-
-.settings-page__heading p {
-  margin-top: var(--fd-space-4);
-  color: var(--fd-text-secondary);
-  font: var(--fd-text-body);
 }
 
 .settings-card {

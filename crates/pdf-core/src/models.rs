@@ -88,6 +88,35 @@ pub struct CompressScannedPdfRequest {
 pub struct PresetProfilePayload {
     pub image_quality: u8,
     pub max_image_size_percent: u8,
+    // The rest is optional so older config files keep parsing.
+    #[serde(default)]
+    pub optimize_images: Option<bool>,
+    #[serde(default)]
+    pub compress_streams: Option<bool>,
+    #[serde(default)]
+    pub strip_metadata: Option<bool>,
+    #[serde(default)]
+    pub grayscale: Option<bool>,
+    /// `"jpeg"` (default) or `"ccitt-g4"` for near-bilevel scans.
+    #[serde(default)]
+    pub bilevel_codec: Option<String>,
+    #[serde(default)]
+    pub subset_fonts: Option<bool>,
+}
+
+impl Default for PresetProfilePayload {
+    fn default() -> Self {
+        Self {
+            image_quality: 72,
+            max_image_size_percent: 80,
+            optimize_images: None,
+            compress_streams: None,
+            strip_metadata: None,
+            grayscale: None,
+            bilevel_codec: None,
+            subset_fonts: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

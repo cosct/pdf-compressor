@@ -46,6 +46,12 @@ export interface CompressionSettings {
 export interface PresetDefaults {
   imageQuality: number
   maxImageSizePercent: number
+  optimizeImages: boolean
+  compressStreams: boolean
+  stripMetadata: boolean
+  grayscale: boolean
+  bilevelCodec: BilevelCodec
+  subsetFonts: boolean
 }
 
 export type PresetProfile = PresetDefaults
