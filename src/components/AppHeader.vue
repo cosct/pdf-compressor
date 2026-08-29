@@ -141,9 +141,9 @@ onBeforeUnmount(() => {
             <svg v-if="props.view === 'settings'" width="13" height="13" viewBox="0 0 12 12" fill="none">
               <path d="M7.5 2.5 4 6l3.5 3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
-            <svg v-else width="13" height="13" viewBox="0 0 13 13" fill="none">
-              <circle cx="6.5" cy="6.5" r="1.9" stroke="currentColor" stroke-width="1.15"/>
-              <path d="M6.5 1.2v1.5M6.5 10.3v1.5M1.2 6.5h1.5M10.3 6.5h1.5M2.75 2.75l1.06 1.06M9.19 9.19l1.06 1.06M10.25 2.75 9.19 3.81M3.81 9.19 2.75 10.25" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/>
+            <svg v-else width="14" height="14" viewBox="0 0 20 20" fill="none">
+              <path d="M10 12.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z" stroke="currentColor" stroke-width="1.3"/>
+              <path d="M16.16 12.42a1.27 1.27 0 0 0 .25 1.4l.05.05a1.54 1.54 0 1 1-2.18 2.18l-.05-.05a1.27 1.27 0 0 0-1.4-.25 1.27 1.27 0 0 0-.77 1.16v.14a1.54 1.54 0 0 1-3.08 0v-.07a1.27 1.27 0 0 0-.83-1.16 1.27 1.27 0 0 0-1.4.25l-.05.05A1.54 1.54 0 1 1 4.52 14l.05-.05a1.27 1.27 0 0 0 .25-1.4 1.27 1.27 0 0 0-.25-1.4h-.14a1.54 1.54 0 0 1 0-3.08h.07a1.27 1.27 0 0 0 1.16-.83 1.27 1.27 0 0 0-.25-1.4L4.45 6.42A1.54 1.54 0 1 1 6.63 4.24l.05.05a1.27 1.27 0 0 0 1.4.25h.06a1.27 1.27 0 0 0 .77-1.16v-.14a1.54 1.54 0 0 1 3.08 0v.07a1.27 1.27 0 0 0 .77 1.16 1.27 1.27 0 0 0 1.4-.25l.05-.05a1.54 1.54 0 1 1 2.18 2.18l-.05.05a1.27 1.27 0 0 0-.25 1.4v.06a1.27 1.27 0 0 0 1.16.77h.14a1.54 1.54 0 0 1 0 3.08h-.07a1.27 1.27 0 0 0-1.16.77Z" stroke="currentColor" stroke-width="1.1"/>
             </svg>
           </span>
           <span class="nav-button__label">{{ props.view === 'settings' ? t('header.back') : t('header.settings') }}</span>

@@ -127,7 +127,6 @@ const en = {
     startCompressionAll: 'Compress all ({count})',
     compressSelected: 'Compress selected only',
     allDone: 'All files compressed',
-    noSourcePlaceholder: 'No file added',
     cancel: 'Cancel compression',
     outputLocked: 'Output directory is locked while compression is running.',
     outputDirDesktopOnly: 'Choosing an output directory is only available inside the Tauri app.',

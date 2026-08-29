@@ -7,6 +7,7 @@ import AppHeader from './components/AppHeader.vue'
 import AppearanceSettingsPanel from './components/AppearanceSettingsPanel.vue'
 import CompressionSettingsPanel from './components/CompressionSettingsPanel.vue'
 import ErrorToastViewport from './components/ErrorToastViewport.vue'
+import OutputDirPanel from './components/OutputDirPanel.vue'
 import PdfUploadPanel from './components/PdfUploadPanel.vue'
 import PresetBar from './components/PresetBar.vue'
 import QuickCompressPanel from './components/QuickCompressPanel.vue'
@@ -222,6 +223,12 @@ onBeforeUnmount(() => {
         </section>
 
         <aside class="shell-rail fd-card">
+          <OutputDirPanel
+            :output-dir="settings.outputDir"
+            :native-available="nativeAvailable"
+            :queue-locked="compressionLoading"
+            @select="selectOutputDir"
+          />
           <PresetBar
             :settings="settings"
             :disabled="compressionLoading"
@@ -243,13 +250,10 @@ onBeforeUnmount(() => {
             :completed-count="completedQueueCount"
             :progress-percent="selectedJobProgressPercent"
             :notes="selectedJobNotes"
-            :output-dir="settings.outputDir"
-            :native-available="nativeAvailable"
             :queue-locked="compressionLoading"
             @primary-action="compressCurrentPdf"
             @secondary-action="compressSelectedPdf"
             @cancel-action="cancelCompressionRun"
-            @select-output-dir="selectOutputDir"
           />
         </aside>
       </div>
@@ -261,31 +265,37 @@ onBeforeUnmount(() => {
           <h1>{{ t('settingsView.title') }}</h1>
         </div>
 
-        <div class="settings-card fd-card">
-          <AppearanceSettingsPanel />
-        </div>
+        <div class="settings-grid">
+          <div class="settings-col">
+            <div class="settings-card fd-card">
+              <CompressionSettingsPanel
+                :settings="settings"
+                :disabled="compressionLoading"
+                :can-apply-to-all="canApplySettingsToAll"
+                :apply-to-all-hint="applyToAllHint"
+                :recommended-preset="recommendedPreset"
+                :analysis="analysis"
+                @update:settings="updateSettings"
+                @apply-settings-to-all="applySettingsToAll"
+                @preset-config-error="reportError"
+                @preset-config-saved="handlePresetSaved"
+              />
+            </div>
+          </div>
 
-        <div class="settings-card fd-card">
-          <CompressionSettingsPanel
-            :settings="settings"
-            :disabled="compressionLoading"
-            :can-apply-to-all="canApplySettingsToAll"
-            :apply-to-all-hint="applyToAllHint"
-            :recommended-preset="recommendedPreset"
-            :analysis="analysis"
-            @update:settings="updateSettings"
-            @apply-settings-to-all="applySettingsToAll"
-            @preset-config-error="reportError"
-            @preset-config-saved="handlePresetSaved"
-          />
-        </div>
+          <div class="settings-col">
+            <div class="settings-card fd-card">
+              <AppearanceSettingsPanel />
+            </div>
 
-        <div class="settings-card fd-card">
-          <QuickCompressPanel
-            :native-available="nativeAvailable"
-            @saved="handleQuickProfileSaved"
-            @error="reportError"
-          />
+            <div class="settings-card fd-card">
+              <QuickCompressPanel
+                :native-available="nativeAvailable"
+                @saved="handleQuickProfileSaved"
+                @error="reportError"
+              />
+            </div>
+          </div>
         </div>
       </div>
     </main>
@@ -361,7 +371,8 @@ onBeforeUnmount(() => {
   min-height: 0;
 }
 
-/* Settings view: one centered, scrollable column of cards. */
+/* Settings view: heading + a two-column card grid (macOS-system-settings
+   style) that collapses to one column on narrow windows. */
 .shell-content--settings {
   overflow-y: auto;
   display: block;
@@ -371,7 +382,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: var(--fd-space-16);
-  max-width: 880px;
+  max-width: 1180px;
   margin: 0 auto;
   padding-bottom: var(--fd-space-20);
 }
@@ -380,12 +391,32 @@ onBeforeUnmount(() => {
   font: var(--fd-text-subtitle);
 }
 
+.settings-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+  gap: var(--fd-space-16);
+  align-items: start;
+}
+
+.settings-col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fd-space-16);
+  min-width: 0;
+}
+
 .settings-card {
   padding: var(--fd-space-20);
 }
 
 .settings-card :deep(.settings-dock) {
   height: auto;
+}
+
+@media (max-width: 980px) {
+  .settings-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 1080px) {

@@ -27,8 +27,6 @@ const props = withDefaults(
     pendingCount: number
     completedCount: number
     progressPercent?: number
-    outputDir?: string | null
-    nativeAvailable?: boolean
     queueLocked?: boolean
     notes?: NoticeItem[]
   }>(),
@@ -36,8 +34,6 @@ const props = withDefaults(
     selectedPreset: null,
     secondaryActionLabel: null,
     progressPercent: 0,
-    outputDir: null,
-    nativeAvailable: false,
     queueLocked: false,
     notes: () => [],
   },
@@ -47,7 +43,6 @@ const emit = defineEmits<{
   'primary-action': []
   'secondary-action': []
   'cancel-action': []
-  'select-output-dir': []
 }>()
 
 const { t } = useI18n()
@@ -203,25 +198,6 @@ const reportHighlights = computed<string[]>(() => {
         </ul>
       </div>
 
-      <div class="output-dir">
-        <span class="output-dir__label">{{ t('settings.outputDir') }}</span>
-        <div class="output-dir__row">
-          <span class="output-dir__path" :title="props.outputDir || t('settings.outputDirDefault')">
-            {{ props.outputDir || t('settings.outputDirDefault') }}
-          </span>
-          <button
-            class="fd-button fd-button--subtle output-dir__btn"
-            type="button"
-            :disabled="props.queueLocked || !props.nativeAvailable"
-            :title="props.queueLocked ? t('activity.outputLocked') : props.nativeAvailable ? undefined : t('activity.outputDirDesktopOnly')"
-            @click="emit('select-output-dir')"
-          >
-            {{ t('settings.outputDirBrowse') }}
-          </button>
-        </div>
-        <p v-if="props.queueLocked" class="output-dir__hint">{{ t('activity.outputLocked') }}</p>
-      </div>
-
       <div class="action-block">
         <div v-if="props.canCancel" class="action-single">
           <button
@@ -232,7 +208,16 @@ const reportHighlights = computed<string[]>(() => {
             {{ t('activity.cancel') }}
           </button>
         </div>
-        <div v-else-if="props.pendingCount > 0" class="action-single">
+        <div v-else-if="allDone" class="action-single">
+          <div class="action-done">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.4"/>
+              <path d="M5.2 8.2 7.1 10l3.7-4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <span>{{ t('activity.allDone') }}</span>
+          </div>
+        </div>
+        <div v-else class="action-single">
           <button
             class="fd-button fd-button--accent compress-btn"
             type="button"
@@ -253,18 +238,6 @@ const reportHighlights = computed<string[]>(() => {
           >
             {{ props.secondaryActionLabel }}
           </button>
-        </div>
-        <div v-else-if="allDone" class="action-single">
-          <div class="action-done">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-              <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.4"/>
-              <path d="M5.2 8.2 7.1 10l3.7-4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-            <span>{{ t('activity.allDone') }}</span>
-          </div>
-        </div>
-        <div v-else class="action-empty">
-          {{ t('activity.noSourcePlaceholder') }}
         </div>
       </div>
 
@@ -300,13 +273,12 @@ const reportHighlights = computed<string[]>(() => {
   display: grid;
   flex: 1;
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto auto auto auto;
+  grid-template-rows: auto auto auto;
   grid-template-areas:
     'status'
     'action'
-    'metrics'
-    'output';
-  gap: var(--fd-space-10);
+    'metrics';
+  gap: var(--fd-space-12);
   min-height: 0;
   align-content: start;
 }
@@ -427,51 +399,6 @@ const reportHighlights = computed<string[]>(() => {
   max-width: 100%;
 }
 
-.output-dir {
-  grid-area: output;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  gap: var(--fd-space-6);
-  padding: 12px;
-  border: 1px solid var(--fd-stroke-card);
-  border-radius: 18px;
-  background: color-mix(in srgb, var(--fd-layer-2) 90%, transparent);
-}
-
-.output-dir__label {
-  font: var(--fd-text-caption);
-  font-weight: 500;
-  color: var(--fd-text-tertiary);
-}
-
-.output-dir__row {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: var(--fd-space-8);
-}
-
-.output-dir__path {
-  font: var(--fd-text-caption);
-  color: var(--fd-text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.output-dir__btn {
-  width: 100%;
-  min-height: 30px;
-  padding: 0 10px;
-  font: var(--fd-text-caption);
-}
-
-.output-dir__hint {
-  color: var(--fd-text-tertiary);
-  font: var(--fd-text-caption);
-}
-
 .action-block {
   grid-area: action;
   display: flex;
@@ -497,20 +424,6 @@ const reportHighlights = computed<string[]>(() => {
   border-radius: 12px;
   font: var(--fd-text-caption);
   white-space: normal;
-  text-align: center;
-}
-
-.action-empty {
-  display: flex;
-  flex: 1;
-  align-items: center;
-  justify-content: center;
-  min-height: 64px;
-  padding: 12px;
-  border: 1px dashed var(--fd-stroke-card);
-  border-radius: var(--fd-radius-md);
-  color: var(--fd-text-tertiary);
-  font: var(--fd-text-body-strong);
   text-align: center;
 }
 
@@ -586,11 +499,4 @@ const reportHighlights = computed<string[]>(() => {
   color: var(--fd-text-primary);
 }
 
-@media (max-width: 900px) {
-  .output-dir__path {
-    white-space: normal;
-    overflow: visible;
-    text-overflow: clip;
-  }
-}
 </style>

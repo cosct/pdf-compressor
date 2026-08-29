@@ -127,7 +127,6 @@ const zhCN = {
     startCompressionAll: '压缩全部（{count}）',
     compressSelected: '仅压缩当前文件',
     allDone: '全部文件已压缩完成',
-    noSourcePlaceholder: '没有添加文件',
     cancel: '取消压缩',
     outputLocked: '压缩进行中，输出目录已锁定。',
     outputDirDesktopOnly: '仅支持在 Tauri 桌面应用中选择输出目录。',
