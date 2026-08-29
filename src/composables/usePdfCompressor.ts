@@ -152,6 +152,7 @@ function createJob(path: string): PdfQueueJob {
     settings: { ...defaults },
     recommendedSettings: { ...defaults },
     useRecommendedSettings: true,
+    settingsRestored: false,
     error: null,
   }
 }
@@ -317,6 +318,14 @@ export function usePdfCompressor() {
     job.recommendedSettings = {
       ...createRecommendedSettings(job.analysis),
       outputDir,
+    }
+    // A job restored from the persisted queue keeps its previous settings —
+    // they are the user's earlier choices, not a fresh draft. The flag is
+    // one-shot: any later re-analysis behaves like a newly added file.
+    if (job.settingsRestored) {
+      job.settingsRestored = false
+      job.useRecommendedSettings = settingsMatch(job.settings, job.recommendedSettings)
+      return
     }
     job.settings = { ...job.recommendedSettings }
     job.useRecommendedSettings = true
@@ -842,6 +851,7 @@ export function usePdfCompressor() {
       )
       if (job) {
         job.settings = normalizeSettings({ ...entry.settings })
+        job.settingsRestored = true
       }
     }
   }

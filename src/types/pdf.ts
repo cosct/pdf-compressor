@@ -122,5 +122,8 @@ export interface PdfQueueJob {
   settings: CompressionSettings
   recommendedSettings: CompressionSettings
   useRecommendedSettings: boolean
+  /** Settings came from the persisted queue — the first analysis pass after
+   *  a restart must not overwrite them with the fresh recommendation. */
+  settingsRestored: boolean
   error: NoticeItem | null
 }

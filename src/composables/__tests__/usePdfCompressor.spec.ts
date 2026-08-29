@@ -28,6 +28,7 @@ import {
   compressPdf,
   compressScannedPdf,
   cancelCompression,
+  existingPaths,
 } from '../../lib/tauri'
 import {
   getCompressionConcurrency,
@@ -89,9 +90,32 @@ async function readyQueue(paths: string[]) {
   return composable
 }
 
+// happy-dom here ships no localStorage — the composable guards every access
+// with try/catch, so a fresh in-memory stub per test exercises the real
+// persistence paths (queue restore among them).
+let localStorageStore: Map<string, string>
+
 beforeEach(() => {
   vi.clearAllMocks()
   mockedCancel.mockResolvedValue(undefined)
+  localStorageStore = new Map<string, string>()
+  Object.defineProperty(window, 'localStorage', {
+    configurable: true,
+    value: {
+      get length() {
+        return localStorageStore.size
+      },
+      clear: () => localStorageStore.clear(),
+      getItem: (key: string) => localStorageStore.get(key) ?? null,
+      key: (index: number) => [...localStorageStore.keys()][index] ?? null,
+      removeItem: (key: string) => {
+        localStorageStore.delete(key)
+      },
+      setItem: (key: string, value: string) => {
+        localStorageStore.set(key, String(value))
+      },
+    } satisfies Storage,
+  })
 })
 
 describe('getCompressionConcurrency', () => {
@@ -368,5 +392,57 @@ describe('localizeNotices', () => {
 
     expect(notices[0].tone).toBe('neutral')
     expect(notices[0].body).toBe('Something new from the backend')
+  })
+})
+
+describe('queue restore', () => {
+  it('keeps restored per-job settings when the analysis lands', async () => {
+    const persistedSettings = normalizeSettings({
+      preset: 'maximum',
+      imageQuality: 45,
+      maxImageSizePercent: 55,
+      referenceMaxImageEdgePx: null,
+      optimizeImages: true,
+      compressStreams: true,
+      stripMetadata: true,
+      grayscale: true,
+      bilevelCodec: 'ccitt-g4',
+      subsetFonts: true,
+      outputDir: '/tmp/custom-out',
+      targetFileSizeMb: null,
+    })
+    window.localStorage.setItem(
+      'pdf-compressor-queue',
+      JSON.stringify([{ sourcePath: '/tmp/restored.pdf', settings: persistedSettings }]),
+    )
+    vi.mocked(existingPaths).mockResolvedValue(['/tmp/restored.pdf'])
+    mockedAnalyze.mockResolvedValue(analysisResponse({ recommendedPreset: 'conservative' }))
+
+    const composable = usePdfCompressor()
+    await vi.waitFor(() => {
+      expect(composable.jobs.value[0]?.status).toBe('ready')
+    })
+
+    // The analysis recommendation must not clobber the restored settings.
+    const job = composable.jobs.value[0]
+    expect(job.analysis?.recommendedPreset).toBe('conservative')
+    expect(job.settings.preset).toBe('maximum')
+    expect(job.settings.imageQuality).toBe(45)
+    expect(job.settings.grayscale).toBe(true)
+    expect(job.settings.outputDir).toBe('/tmp/custom-out')
+    expect(job.useRecommendedSettings).toBe(false)
+  })
+
+  it('still applies recommended settings to newly added files', async () => {
+    mockedAnalyze.mockResolvedValue(analysisResponse({ recommendedPreset: 'maximum' }))
+
+    const composable = usePdfCompressor()
+    composable.addSourcePaths(['/tmp/fresh.pdf'])
+    await vi.waitFor(() => {
+      expect(composable.jobs.value[0]?.status).toBe('ready')
+    })
+
+    expect(composable.jobs.value[0].settings.preset).toBe('maximum')
+    expect(composable.jobs.value[0].useRecommendedSettings).toBe(true)
   })
 })
