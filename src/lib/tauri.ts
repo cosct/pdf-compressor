@@ -13,6 +13,7 @@ import type {
   AnalysisResponse as AnalysisResponseWire,
   CompressionResponse as CompressionResponseWire,
   PresetUserConfigPayload,
+  QuickProfilePayload,
   ProgressUpdate as ProgressUpdateWire,
 } from './bindings'
 import { commands } from './bindings'
@@ -244,6 +245,31 @@ export async function clearPresetUserConfig(): Promise<void> {
   }
 
   await unwrap(commands.clearPresetUserConfig())
+}
+
+// ---------------------------------------------------------------------------
+// Quick-mode (right-click) profile — persisted by the backend at the shared
+// OS-config location so `pdf-compressor-cli quick` picks up these settings.
+// Browser preview keeps a session-local copy only.
+// ---------------------------------------------------------------------------
+
+let browserQuickProfile: QuickProfilePayload | null = null
+
+export async function getQuickProfile(): Promise<QuickProfilePayload> {
+  if (!hasNativeCommands()) {
+    return browserQuickProfile ?? { version: 1 }
+  }
+
+  return unwrap(commands.loadQuickProfile())
+}
+
+export async function saveQuickProfile(profile: QuickProfilePayload): Promise<QuickProfilePayload> {
+  if (!hasNativeCommands()) {
+    browserQuickProfile = { ...profile }
+    return profile
+  }
+
+  return unwrap(commands.saveQuickProfile(profile))
 }
 
 // ---------------------------------------------------------------------------

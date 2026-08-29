@@ -150,6 +150,7 @@ User-customized preset profiles are persisted to disk via `src/config/presets.ts
 - Adjustable image quality and maximum image edge (percentage-based with reference edge)
 - Toggles for image optimization, stream compression, and metadata removal, plus a color mode selector (color / grayscale / black-and-white G4)
 - Custom preset saving, per-preset user overrides, and reset to defaults
+- Dedicated settings view (header gear): queue compression defaults plus an independent right-click quick-compress profile
 - Apply settings to all queued files at once
 - Selectable output directory for compressed files
 - Queue-aware activity view with output path, progress, size delta, and optimization counts
@@ -264,6 +265,7 @@ Vue UI -> Tauri bridge -> Rust commands -> PDF analysis/compression engine -> ou
 - `crates/pdf-core/src/models.rs` — Analysis/compression payloads serialized between Rust and callers
 - `crates/pdf-core/src/error.rs` — Shared engine error type with i18n-compatible error codes
 - `crates/pdf-core/src/bin/pdf-compressor-cli.rs` — `pdf-compressor-cli` binary (analyze / compress, and the headless `quick` mode with desktop notifications)
+- `crates/pdf-core/src/quick_profile.rs` — Quick-mode profile persistence shared by the settings view (writer) and `quick` subcommand (reader)
 - `crates/pdf-core/benches/` — Criterion benchmarks (compression pipeline, JPEG encoder comparison)
 - `crates/pdf-core/fuzz/fuzz_targets/pipeline.rs` — cargo-fuzz target
 
@@ -422,6 +424,8 @@ pdf-compressor-cli quick --grayscale book-scan.pdf   # grayscale re-encode
 pdf-compressor-cli quick --bilevel g4 book-scan.pdf  # lossless CCITT G4 for B&W scans
 pdf-compressor-cli quick --target-size 5MB report.pdf --no-notify
 ```
+
+Quick mode's defaults are configurable without flags: the desktop app's settings view (header gear icon) has a *Right-click quick compress* section (preset, color mode, quality, max edge, target size, toggles) persisted to `<os-config-dir>/pdf-compressor/quick-profile.json`. Every explicit CLI flag still wins over the saved profile; a missing or unreadable profile falls back to the built-in defaults.
 
 On KDE Plasma, the Arch package installs a Dolphin service menu (`packaging/servicemenus/pdf-compressor.desktop` → `/usr/share/kio/servicemenus/`), so right-clicking PDFs offers a *PDF Compressor* submenu with balanced / maximum / grayscale / black-and-white G4 / target-size actions — no GUI window is opened. Encrypted PDFs are rejected up front with `error.encryptedPdf`; quick mode never leaves a file that is larger than the original.
 

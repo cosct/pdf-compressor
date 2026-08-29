@@ -44,7 +44,7 @@ cargo run -p pdf-core --bin pdf-compressor-cli -- quick <file.pdf> --grayscale  
 ```
 ┌─────────────────────────────┐       ┌──────────────────────────────┐
 │  前端 (src/, Vue 3 + TS)     │  IPC  │  桌面壳 (src-tauri, Tauri 2) │
-│  App.vue ─ 5 个面板组件      │ ◄───► │  commands.rs（10 个命令）     │
+│  App.vue ─ 主视图/设置视图    │ ◄───► │  commands.rs（12 个命令）     │
 │  usePdfCompressor（核心状态）│ typed │  任务注册表 / 输出路径白名单    │
 └─────────────────────────────┘  IPC  └──────────────┬───────────────┘
                                                       │ 直接调用
@@ -127,6 +127,11 @@ cargo run -p pdf-core --bin pdf-compressor-cli -- quick <file.pdf> --grayscale  
   字符串上 IPC 线格式）；GUI 的“色彩模式”三态选择在 `CompressionSettingsPanel` 里映射成这对
   字段（黑白 = grayscale+G4）。CLI 为 `--grayscale` / `--bilevel g4`（后者已入
   `split_quick_inputs` 的 `VALUE_FLAGS`）。
+- **quick 模式配置档案**（`quick_profile.rs`）：`<os-config-dir>/pdf-compressor/
+  quick-profile.json`，GUI 设置视图的“右键快速压缩”区块写入（`load_quick_profile`/
+  `save_quick_profile` 命令），CLI `quick` 子命令读取。字段优先级：显式 CLI 参数 >
+  配置档案 > 内置默认（`CompressionSettingsOverrides::or_else` 逐字段回落）；档案缺失或
+  损坏时 quick 静默回退默认值（stderr 警告），绝不因配置失败。
 - **目标大小搜索**（`target_size.rs`）：经典二分求“适配预算的最高质量”；整个质量范围
   失败才收缩边长，且新边长下 `hi` 重置为触发塌缩的质量（不是用户质量）。best-effort
   兜底取“estimate 最小的探测参数”。**中间探测轮的 materialize 禁止 renumber**——

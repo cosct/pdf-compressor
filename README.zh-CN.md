@@ -114,6 +114,7 @@ Rust 压缩引擎进行了针对性的性能改进：
 - 可调图片质量和最大图片边长（百分比方式，基于分析返回的参考边长）
 - 开关切换：图片优化、流压缩、元数据移除
 - 自定义预设保存、逐预设用户覆盖与恢复默认
+- 独立设置视图（标题栏齿轮）：队列压缩默认参数 + 右键快速压缩的独立配置档案
 - 一键将设置应用到所有队列文件
 - 可选择压缩输出目录
 - 队列感知的活动视图，展示输出路径、进度、体积变化和优化计数
@@ -184,6 +185,7 @@ Vue UI -> Tauri bridge -> Rust commands -> PDF analysis/compression engine -> ou
 - `crates/pdf-core/src/models.rs` — Rust 与调用方之间序列化传输的分析/压缩载荷结构
 - `crates/pdf-core/src/error.rs` — 引擎统一错误类型，带 i18n 兼容的错误码
 - `crates/pdf-core/src/bin/pdf-compressor-cli.rs` — `pdf-compressor-cli` 命令行工具（analyze / compress / 后台 quick 模式，支持桌面通知）
+- `crates/pdf-core/src/quick_profile.rs` — quick 模式配置档案持久化，由设置视图（写入）与 `quick` 子命令（读取）共享
 - `crates/pdf-core/benches/` — criterion 基准测试（压缩管线、JPEG 编码器对比）
 - `crates/pdf-core/fuzz/fuzz_targets/pipeline.rs` — cargo-fuzz 目标
 
@@ -338,6 +340,8 @@ pdf-compressor-cli quick --preset maximum scans.pdf  # 最大化压缩
 pdf-compressor-cli quick --grayscale book-scan.pdf   # 黑白扫描件最佳
 pdf-compressor-cli quick --target-size 5MB report.pdf --no-notify
 ```
+
+quick 模式的默认参数可以在不传参的情况下配置：桌面应用设置视图（标题栏齿轮图标）中的「右键快速压缩」区块（预设、色彩模式、质量、最大边长、目标大小、开关）会持久化到 `<系统配置目录>/pdf-compressor/quick-profile.json`。显式 CLI 参数始终优先于已保存的配置档案；配置缺失或损坏时回退到内置默认值。
 
 在 KDE Plasma 上，Arch 软件包会安装 Dolphin 服务菜单（`packaging/servicemenus/pdf-compressor.desktop` → `/usr/share/kio/servicemenus/`）：右键 PDF 即可看到「PDF 压缩」子菜单，提供均衡 / 最大化 / 灰度 / 目标大小四种动作，全程不打开 GUI 窗口。加密 PDF 会在入口处以 `error.encryptedPdf` 拒绝；quick 模式绝不留下比原文件更大的输出。
 

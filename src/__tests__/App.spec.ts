@@ -17,6 +17,8 @@ vi.mock('../lib/tauri', () => ({
   openPath: vi.fn(),
   openPdfDialog: vi.fn(),
   revealPathInFolder: vi.fn(),
+  getQuickProfile: vi.fn().mockResolvedValue({ version: 1 }),
+  saveQuickProfile: vi.fn().mockImplementation((profile) => Promise.resolve(profile)),
 }))
 
 import App from '../App.vue'
@@ -35,16 +37,30 @@ function mountApp() {
 }
 
 describe('App', () => {
-  it('renders the header, dropzone, settings and activity panels', () => {
+  it('renders the header, dropzone and activity rail in the main view', () => {
     const wrapper = mountApp()
 
     const html = wrapper.html()
     expect(wrapper.find('header.app-header').exists()).toBe(true)
     expect(wrapper.find('section.upload-panel').exists()).toBe(true)
-    expect(wrapper.find('section.settings-dock').exists()).toBe(true)
     expect(wrapper.find('section.activity-panel').exists()).toBe(true)
+    // The settings panels live on their own view now.
+    expect(wrapper.find('section.settings-dock').exists()).toBe(false)
     // No leaked raw i18n keys in the rendered shell.
     expect(html).not.toMatch(/[a-z]+\.[a-zA-Z]+__MISSING/)
+  })
+
+  it('switches to the settings view (with quick-mode panel) and back', async () => {
+    const wrapper = mountApp()
+
+    await wrapper.find('button.nav-button').trigger('click')
+    expect(wrapper.find('section.settings-dock').exists()).toBe(true)
+    expect(wrapper.find('section.quick-panel').exists()).toBe(true)
+    expect(wrapper.find('section.upload-panel').exists()).toBe(false)
+
+    await wrapper.find('button.nav-button').trigger('click')
+    expect(wrapper.find('section.upload-panel').exists()).toBe(true)
+    expect(wrapper.find('section.settings-dock').exists()).toBe(false)
   })
 
   it('shows the empty-queue placeholder in the activity panel', () => {

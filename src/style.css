@@ -3,30 +3,30 @@
 [data-theme='dark'] {
   color-scheme: dark;
 
-  --fd-bg-solid: #202020;
-  --fd-bg-mica: #252423;
-  --fd-bg-acrylic: rgba(37, 36, 35, 0.72);
-  --fd-bg-smoke: rgba(0, 0, 0, 0.16);
+  --fd-bg-solid: #15171c;
+  --fd-bg-mica: #1a1d23;
+  --fd-bg-acrylic: rgba(26, 29, 35, 0.78);
+  --fd-bg-smoke: rgba(0, 0, 0, 0.14);
 
-  --fd-surface: rgba(43, 42, 41, 0.92);
-  --fd-surface-raised: rgba(50, 49, 48, 0.96);
-  --fd-surface-hover: rgba(55, 54, 53, 0.98);
-  --fd-surface-active: rgba(61, 60, 59, 1);
+  --fd-surface: rgba(255, 255, 255, 0.045);
+  --fd-surface-raised: rgba(255, 255, 255, 0.07);
+  --fd-surface-hover: rgba(255, 255, 255, 0.1);
+  --fd-surface-active: rgba(255, 255, 255, 0.13);
 
-  --fd-card-bg: rgba(45, 44, 43, 0.88);
-  --fd-card-bg-secondary: rgba(40, 39, 38, 0.94);
-  --fd-flyout-bg: rgba(48, 47, 46, 0.96);
+  --fd-card-bg: #21252d;
+  --fd-card-bg-secondary: #1e2229;
+  --fd-flyout-bg: rgba(37, 41, 49, 0.97);
 
-  --fd-text-primary: #faf9f8;
-  --fd-text-secondary: #d2d0ce;
-  --fd-text-tertiary: #a19f9d;
-  --fd-text-disabled: #797775;
+  --fd-text-primary: #f2f4f8;
+  --fd-text-secondary: #c3c9d2;
+  --fd-text-tertiary: #8f97a3;
+  --fd-text-disabled: #646c78;
 
-  --fd-accent: #60cdff;
-  --fd-accent-hover: #7bd8ff;
-  --fd-accent-active: #3aa0e3;
-  --fd-accent-subtle: rgba(96, 205, 255, 0.12);
-  --fd-accent-text: #082338;
+  --fd-accent: #5aa9e6;
+  --fd-accent-hover: #78bdf0;
+  --fd-accent-active: #3f8fd4;
+  --fd-accent-subtle: rgba(90, 169, 230, 0.14);
+  --fd-accent-text: #0a1e30;
 
   --fd-success: #6ccb5f;
   --fd-success-subtle: rgba(108, 203, 95, 0.16);
@@ -38,60 +38,60 @@
   --fd-danger-subtle: rgba(255, 153, 164, 0.16);
   --fd-danger-border: rgba(255, 153, 164, 0.34);
   --fd-danger-strong: #c42b1c;
-  --fd-accent-border: rgba(96, 205, 255, 0.3);
+  --fd-accent-border: rgba(90, 169, 230, 0.32);
 
-  --fd-stroke-card: rgba(255, 255, 255, 0.08);
-  --fd-stroke-divider: rgba(255, 255, 255, 0.12);
-  --fd-stroke-soft: rgba(255, 255, 255, 0.06);
-  --fd-stroke-focus-outer: rgba(76, 194, 255, 0.32);
+  --fd-stroke-card: rgba(255, 255, 255, 0.07);
+  --fd-stroke-divider: rgba(255, 255, 255, 0.11);
+  --fd-stroke-soft: rgba(255, 255, 255, 0.05);
+  --fd-stroke-focus-outer: rgba(90, 169, 230, 0.35);
   --fd-stroke-focus-inner: rgba(17, 17, 17, 0.9);
 
-  --fd-control-bg: rgba(255, 255, 255, 0.06);
-  --fd-control-bg-hover: rgba(255, 255, 255, 0.1);
-  --fd-control-bg-active: rgba(255, 255, 255, 0.14);
-  --fd-control-bg-disabled: rgba(255, 255, 255, 0.04);
-  --fd-control-stroke: rgba(255, 255, 255, 0.1);
+  --fd-control-bg: rgba(255, 255, 255, 0.055);
+  --fd-control-bg-hover: rgba(255, 255, 255, 0.09);
+  --fd-control-bg-active: rgba(255, 255, 255, 0.13);
+  --fd-control-bg-disabled: rgba(255, 255, 255, 0.035);
+  --fd-control-stroke: rgba(255, 255, 255, 0.09);
   --fd-layer-1: rgba(255, 255, 255, 0.04);
-  --fd-layer-2: rgba(255, 255, 255, 0.07);
+  --fd-layer-2: rgba(255, 255, 255, 0.065);
   --fd-subtle-bg: transparent;
-  --fd-subtle-bg-hover: rgba(255, 255, 255, 0.06);
-  --fd-subtle-bg-active: rgba(255, 255, 255, 0.1);
+  --fd-subtle-bg-hover: rgba(255, 255, 255, 0.055);
+  --fd-subtle-bg-active: rgba(255, 255, 255, 0.09);
 
-  --fd-shadow-4: 0 10px 28px rgba(0, 0, 0, 0.22);
-  --fd-shadow-8: 0 16px 42px rgba(0, 0, 0, 0.28);
+  --fd-shadow-4: 0 8px 24px rgba(0, 0, 0, 0.24);
+  --fd-shadow-8: 0 16px 40px rgba(0, 0, 0, 0.3);
   --fd-shadow-lg: var(--fd-shadow-8);
   --fd-shadow-focus: 0 0 0 1px var(--fd-stroke-focus-inner), 0 0 0 4px var(--fd-stroke-focus-outer);
 
-  --fd-scrollbar-thumb: rgba(255, 255, 255, 0.2);
-  --fd-scrollbar-thumb-hover: rgba(255, 255, 255, 0.32);
+  --fd-scrollbar-thumb: rgba(255, 255, 255, 0.18);
+  --fd-scrollbar-thumb-hover: rgba(255, 255, 255, 0.3);
 }
 
 [data-theme='light'] {
   color-scheme: light;
 
-  --fd-bg-solid: #f3f3f3;
-  --fd-bg-mica: #faf9f8;
-  --fd-bg-acrylic: rgba(255, 255, 255, 0.72);
-  --fd-bg-smoke: rgba(0, 0, 0, 0.03);
+  --fd-bg-solid: #eef0f4;
+  --fd-bg-mica: #f6f7f9;
+  --fd-bg-acrylic: rgba(255, 255, 255, 0.78);
+  --fd-bg-smoke: rgba(0, 0, 0, 0.025);
 
   --fd-surface: rgba(255, 255, 255, 0.92);
   --fd-surface-raised: rgba(255, 255, 255, 0.98);
-  --fd-surface-hover: rgba(246, 246, 246, 0.98);
-  --fd-surface-active: rgba(237, 235, 233, 1);
+  --fd-surface-hover: rgba(246, 247, 249, 0.98);
+  --fd-surface-active: rgba(236, 238, 242, 1);
 
-  --fd-card-bg: rgba(255, 255, 255, 0.92);
-  --fd-card-bg-secondary: rgba(250, 249, 248, 0.98);
+  --fd-card-bg: #ffffff;
+  --fd-card-bg-secondary: #fbfbfc;
   --fd-flyout-bg: rgba(255, 255, 255, 0.98);
 
-  --fd-text-primary: #201f1e;
-  --fd-text-secondary: #605e5c;
-  --fd-text-tertiary: #797775;
-  --fd-text-disabled: #a19f9d;
+  --fd-text-primary: #1c2128;
+  --fd-text-secondary: #57606a;
+  --fd-text-tertiary: #7d8590;
+  --fd-text-disabled: #a8b0ba;
 
-  --fd-accent: #0f6cbd;
-  --fd-accent-hover: #115ea3;
-  --fd-accent-active: #0c3b5e;
-  --fd-accent-subtle: rgba(15, 108, 189, 0.12);
+  --fd-accent: #1a6fc4;
+  --fd-accent-hover: #155fa9;
+  --fd-accent-active: #0d4a86;
+  --fd-accent-subtle: rgba(26, 111, 196, 0.1);
   --fd-accent-text: #ffffff;
 
   --fd-success: #107c10;
@@ -104,32 +104,32 @@
   --fd-danger-subtle: rgba(209, 52, 56, 0.12);
   --fd-danger-border: rgba(209, 52, 56, 0.24);
   --fd-danger-strong: #c42b1c;
-  --fd-accent-border: rgba(15, 108, 189, 0.26);
+  --fd-accent-border: rgba(26, 111, 196, 0.28);
 
-  --fd-stroke-card: rgba(0, 0, 0, 0.08);
-  --fd-stroke-divider: rgba(0, 0, 0, 0.1);
-  --fd-stroke-soft: rgba(0, 0, 0, 0.06);
-  --fd-stroke-focus-outer: rgba(15, 108, 189, 0.2);
+  --fd-stroke-card: rgba(16, 24, 40, 0.08);
+  --fd-stroke-divider: rgba(16, 24, 40, 0.13);
+  --fd-stroke-soft: rgba(16, 24, 40, 0.05);
+  --fd-stroke-focus-outer: rgba(26, 111, 196, 0.22);
   --fd-stroke-focus-inner: rgba(255, 255, 255, 0.96);
 
-  --fd-control-bg: rgba(255, 255, 255, 0.82);
-  --fd-control-bg-hover: rgba(255, 255, 255, 0.98);
-  --fd-control-bg-active: rgba(243, 242, 241, 1);
+  --fd-control-bg: rgba(255, 255, 255, 0.85);
+  --fd-control-bg-hover: rgba(255, 255, 255, 1);
+  --fd-control-bg-active: rgba(242, 244, 247, 1);
   --fd-control-bg-disabled: rgba(255, 255, 255, 0.5);
-  --fd-control-stroke: rgba(0, 0, 0, 0.1);
-  --fd-layer-1: rgba(255, 255, 255, 0.72);
-  --fd-layer-2: rgba(255, 255, 255, 0.9);
+  --fd-control-stroke: rgba(16, 24, 40, 0.1);
+  --fd-layer-1: rgba(16, 24, 40, 0.035);
+  --fd-layer-2: rgba(16, 24, 40, 0.05);
   --fd-subtle-bg: transparent;
-  --fd-subtle-bg-hover: rgba(0, 0, 0, 0.04);
-  --fd-subtle-bg-active: rgba(0, 0, 0, 0.08);
+  --fd-subtle-bg-hover: rgba(16, 24, 40, 0.045);
+  --fd-subtle-bg-active: rgba(16, 24, 40, 0.08);
 
-  --fd-shadow-4: 0 8px 24px rgba(0, 0, 0, 0.08);
-  --fd-shadow-8: 0 14px 36px rgba(0, 0, 0, 0.12);
+  --fd-shadow-4: 0 6px 20px rgba(16, 24, 40, 0.07);
+  --fd-shadow-8: 0 14px 36px rgba(16, 24, 40, 0.11);
   --fd-shadow-lg: var(--fd-shadow-8);
   --fd-shadow-focus: 0 0 0 1px var(--fd-stroke-focus-inner), 0 0 0 4px var(--fd-stroke-focus-outer);
 
-  --fd-scrollbar-thumb: rgba(0, 0, 0, 0.16);
-  --fd-scrollbar-thumb-hover: rgba(0, 0, 0, 0.26);
+  --fd-scrollbar-thumb: rgba(16, 24, 40, 0.16);
+  --fd-scrollbar-thumb-hover: rgba(16, 24, 40, 0.26);
 }
 
 :root {
@@ -145,10 +145,10 @@
   --fd-space-20: 20px;
   --fd-space-24: 24px;
   --fd-space-28: 28px;
-  --fd-radius-sm: 10px;
-  --fd-radius-md: 16px;
-  --fd-radius-lg: 22px;
-  --fd-radius-xl: 28px;
+  --fd-radius-sm: 8px;
+  --fd-radius-md: 12px;
+  --fd-radius-lg: 16px;
+  --fd-radius-xl: 22px;
   --fd-radius-full: 999px;
   --fd-control-height-xs: 22px;
   --fd-control-height-sm: 32px;
@@ -189,30 +189,12 @@ html {
 body {
   margin: 0;
   background:
-    radial-gradient(circle at 18% -8%, var(--fd-accent-subtle), transparent 28%),
-    linear-gradient(180deg, var(--fd-bg-mica), var(--fd-bg-solid));
+    radial-gradient(1200px 480px at 50% -12%, var(--fd-accent-subtle), transparent 70%),
+    var(--fd-bg-solid);
   color: var(--fd-text-primary);
   font: var(--fd-text-body);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-}
-
-body::before,
-body::after {
-  content: '';
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-}
-
-body::before {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent 22%);
-}
-
-body::after {
-  background:
-    radial-gradient(circle at 84% 10%, rgba(255, 255, 255, 0.045), transparent 20%),
-    linear-gradient(180deg, transparent, var(--fd-bg-smoke));
 }
 
 button,
@@ -242,10 +224,8 @@ dd {
   position: relative;
   border: 1px solid var(--fd-stroke-card);
   border-radius: var(--fd-radius-lg);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 30%),
-    linear-gradient(180deg, var(--fd-card-bg), var(--fd-card-bg-secondary));
-  padding: var(--fd-space-24);
+  background: var(--fd-card-bg);
+  padding: var(--fd-space-20);
   box-shadow: var(--fd-shadow-4);
 }
 
@@ -306,14 +286,13 @@ dd {
   min-height: var(--fd-control-height-md);
   padding: 0 14px;
   border: 1px solid var(--fd-control-stroke);
-  border-radius: 12px;
+  border-radius: var(--fd-radius-sm);
   background: var(--fd-control-bg);
   color: var(--fd-text-primary);
   cursor: pointer;
   transition:
     background-color var(--fd-duration-fast) var(--fd-easing-standard),
     border-color var(--fd-duration-fast) var(--fd-easing-standard),
-    transform var(--fd-duration-fast) var(--fd-easing-standard),
     box-shadow var(--fd-duration-fast) var(--fd-easing-standard);
 }
 

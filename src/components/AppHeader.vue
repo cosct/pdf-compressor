@@ -18,10 +18,13 @@ const props = defineProps<{
   nativeAvailable: boolean
   locale: AppLocale
   locales: readonly AppLocale[]
+  /** Which top-level view is showing — drives the settings/back button. */
+  view: 'main' | 'settings'
 }>()
 
 const emit = defineEmits<{
   'update:locale': [value: AppLocale]
+  'toggle-settings': []
 }>()
 
 const { t } = useI18n()
@@ -246,6 +249,25 @@ onBeforeUnmount(() => {
 
       <div class="titlebar__controls">
         <div class="titlebar__prefs">
+          <button
+            class="picker__trigger nav-button"
+            type="button"
+            :aria-label="props.view === 'settings' ? t('header.back') : t('header.settings')"
+            :title="props.view === 'settings' ? t('header.back') : t('header.settings')"
+            @click.stop="emit('toggle-settings')"
+          >
+            <span class="picker__icon" aria-hidden="true">
+              <svg v-if="props.view === 'settings'" width="13" height="13" viewBox="0 0 12 12" fill="none">
+                <path d="M7.5 2.5 4 6l3.5 3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              <svg v-else width="13" height="13" viewBox="0 0 13 13" fill="none">
+                <circle cx="6.5" cy="6.5" r="1.9" stroke="currentColor" stroke-width="1.15"/>
+                <path d="M6.5 1.2v1.5M6.5 10.3v1.5M1.2 6.5h1.5M10.3 6.5h1.5M2.75 2.75l1.06 1.06M9.19 9.19l1.06 1.06M10.25 2.75 9.19 3.81M3.81 9.19 2.75 10.25" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/>
+              </svg>
+            </span>
+            <span class="picker__label">{{ props.view === 'settings' ? t('header.back') : t('header.settings') }}</span>
+          </button>
+
           <div class="picker picker--theme" :class="{ 'picker--open': openPicker === 'theme' }">
             <button
               ref="themeTriggerRef"

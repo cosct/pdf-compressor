@@ -26,6 +26,26 @@ const en = {
     maximize: 'Maximize',
     restore: 'Restore',
     close: 'Close',
+    settings: 'Settings',
+    back: 'Back',
+  },
+  settingsView: {
+    title: 'Settings',
+    subtitle:
+      'Compression defaults for the queue, plus the independent profile used by right-click quick compress in your file manager.',
+  },
+  quick: {
+    title: 'Right-click quick compress',
+    subtitle:
+      'Used by the file-manager “PDF Compressor” actions — compression runs in the background and writes next to the original file.',
+    preset: 'Starting preset',
+    maxEdgeUnit: 'px',
+    targetSize: 'Target size (MB)',
+    save: 'Save quick settings',
+    saving: 'Saving…',
+    savedTitle: 'Quick settings saved',
+    savedBody: 'Right-click compression now uses these settings.',
+    note: 'Stored in the OS config directory and applies to right-click actions on this machine.',
   },
   intake: {
     browse: 'Browse',

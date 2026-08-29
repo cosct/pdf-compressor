@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import ActivityPanel from './components/ActivityPanel.vue'
@@ -7,6 +7,7 @@ import AppHeader from './components/AppHeader.vue'
 import CompressionSettingsPanel from './components/CompressionSettingsPanel.vue'
 import ErrorToastViewport from './components/ErrorToastViewport.vue'
 import PdfUploadPanel from './components/PdfUploadPanel.vue'
+import QuickCompressPanel from './components/QuickCompressPanel.vue'
 import { createNotice } from './composables/backendMessages'
 import { usePdfCompressor } from './composables/usePdfCompressor'
 import { appLocales, setAppLocale, type AppLocale } from './i18n'
@@ -49,6 +50,14 @@ const {
 } = usePdfCompressor()
 
 const { t, locale } = useI18n()
+
+// Top-level navigation: the queue workflow is the main view; compression and
+// quick-mode (right-click) settings live on their own page.
+const currentView = ref<'main' | 'settings'>('main')
+
+function toggleSettingsView() {
+  currentView.value = currentView.value === 'main' ? 'settings' : 'main'
+}
 
 const busy = computed(() => analysisLoading.value || compressionLoading.value)
 const recommendedPreset = computed(() => analysis.value?.recommendedPreset ?? null)
@@ -152,6 +161,17 @@ function handlePresetSaved() {
   )
 }
 
+function handleQuickProfileSaved() {
+  pushErrorToast(
+    createNotice(
+      'quick:saved',
+      'success',
+      t('quick.savedTitle'),
+      t('quick.savedBody'),
+    ),
+  )
+}
+
 // PDFs handed to an already-running instance ("Open with…") join the queue.
 let stopListeningOpenPdf: (() => void) | null = null
 
@@ -177,7 +197,9 @@ onBeforeUnmount(() => {
       :native-available="nativeAvailable"
       :locale="locale as AppLocale"
       :locales="appLocales"
+      :view="currentView"
       @update:locale="updateLocale"
+      @toggle-settings="toggleSettingsView"
     />
     <ErrorToastViewport
       :items="errorToasts"
@@ -186,7 +208,7 @@ onBeforeUnmount(() => {
       @resume="resumeErrorToast"
     />
 
-    <main class="shell-content">
+    <main v-if="currentView === 'main'" class="shell-content">
       <div class="shell-frame">
         <section class="shell-stage">
           <div class="shell-stage__panel">
@@ -205,49 +227,64 @@ onBeforeUnmount(() => {
           </div>
         </section>
 
-        <section class="shell-dock fd-card fd-card--acrylic">
-          <div class="shell-dock__panel shell-dock__panel--settings">
-            <CompressionSettingsPanel
-              :settings="settings"
-              :disabled="compressionLoading"
-              :can-apply-to-all="canApplySettingsToAll"
-              :apply-to-all-hint="applyToAllHint"
-              :recommended-preset="recommendedPreset"
-              :analysis="analysis"
-              @update:settings="updateSettings"
-              @apply-settings-to-all="applySettingsToAll"
-              @preset-config-error="reportError"
-              @preset-config-saved="handlePresetSaved"
-            />
-          </div>
+        <aside class="shell-rail fd-card">
+          <ActivityPanel
+            :workflow-state="workflowState"
+            :selected-file-name="sourceFileName"
+            :selected-preset="settings.preset"
+            :recommended-preset="recommendedPreset"
+            :analysis="analysis"
+            :result="result"
+            :primary-action-label="primaryActionLabel"
+            :primary-action-disabled="!canCompress"
+            :secondary-action-label="secondaryActionLabel"
+            :can-cancel="canCancelCompression"
+            :queue-count="activeQueueCount"
+            :pending-count="pendingQueueCount"
+            :completed-count="completedQueueCount"
+            :progress-percent="selectedJobProgressPercent"
+            :notes="selectedJobNotes"
+            :output-dir="settings.outputDir"
+            :native-available="nativeAvailable"
+            :queue-locked="compressionLoading"
+            @primary-action="compressCurrentPdf"
+            @secondary-action="compressSelectedPdf"
+            @cancel-action="cancelCompressionRun"
+            @select-output-dir="selectOutputDir"
+          />
+        </aside>
+      </div>
+    </main>
 
-          <div class="shell-dock__panel shell-dock__panel--activity">
-            <ActivityPanel
-              :workflow-state="workflowState"
-              :selected-file-name="sourceFileName"
-              :selected-preset="settings.preset"
-              :recommended-preset="recommendedPreset"
-              :analysis="analysis"
-              :result="result"
-              :primary-action-label="primaryActionLabel"
-              :primary-action-disabled="!canCompress"
-              :secondary-action-label="secondaryActionLabel"
-              :can-cancel="canCancelCompression"
-              :queue-count="activeQueueCount"
-              :pending-count="pendingQueueCount"
-              :completed-count="completedQueueCount"
-              :progress-percent="selectedJobProgressPercent"
-              :notes="selectedJobNotes"
-              :output-dir="settings.outputDir"
-              :native-available="nativeAvailable"
-              :queue-locked="compressionLoading"
-              @primary-action="compressCurrentPdf"
-              @secondary-action="compressSelectedPdf"
-              @cancel-action="cancelCompressionRun"
-              @select-output-dir="selectOutputDir"
-            />
-          </div>
-        </section>
+    <main v-else class="shell-content shell-content--settings">
+      <div class="settings-page">
+        <div class="settings-page__heading">
+          <h1>{{ t('settingsView.title') }}</h1>
+          <p>{{ t('settingsView.subtitle') }}</p>
+        </div>
+
+        <div class="settings-card fd-card">
+          <CompressionSettingsPanel
+            :settings="settings"
+            :disabled="compressionLoading"
+            :can-apply-to-all="canApplySettingsToAll"
+            :apply-to-all-hint="applyToAllHint"
+            :recommended-preset="recommendedPreset"
+            :analysis="analysis"
+            @update:settings="updateSettings"
+            @apply-settings-to-all="applySettingsToAll"
+            @preset-config-error="reportError"
+            @preset-config-saved="handlePresetSaved"
+          />
+        </div>
+
+        <div class="settings-card fd-card">
+          <QuickCompressPanel
+            :native-available="nativeAvailable"
+            @saved="handleQuickProfileSaved"
+            @error="reportError"
+          />
+        </div>
       </div>
     </main>
   </div>
@@ -265,13 +302,14 @@ onBeforeUnmount(() => {
   flex: 1;
   display: flex;
   min-height: 0;
-  padding: var(--fd-space-14) var(--fd-space-20) var(--fd-space-20);
+  padding: var(--fd-space-16) var(--fd-space-20) var(--fd-space-20);
   overflow: hidden;
 }
 
+/* Main view: the queue is the hero; the activity rail stays docked right. */
 .shell-frame {
   display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) 400px;
   gap: var(--fd-space-16);
   width: 100%;
   flex: 1;
@@ -281,7 +319,7 @@ onBeforeUnmount(() => {
 }
 
 .shell-stage,
-.shell-dock {
+.shell-rail {
   min-width: 0;
   min-height: 0;
   height: 100%;
@@ -301,27 +339,13 @@ onBeforeUnmount(() => {
   min-height: 0;
 }
 
-.shell-dock {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--fd-space-12);
-  padding: var(--fd-space-14);
-  /* Fixed per user preference; the advanced settings section scrolls
-     internally if its content exceeds this height. */
-  height: 380px;
-  min-height: 0;
-  overflow: hidden;
-}
-
-.shell-dock__panel {
+.shell-rail {
   display: flex;
-  min-width: 0;
-  min-height: 0;
+  padding: var(--fd-space-16);
   overflow: hidden;
 }
 
-.shell-dock__panel :deep(.settings-dock),
-.shell-dock__panel :deep(.activity-panel) {
+.shell-rail :deep(.activity-panel) {
   flex: 1;
   width: 100%;
   height: 100%;
@@ -334,11 +358,43 @@ onBeforeUnmount(() => {
   min-height: 0;
 }
 
-@media (max-width: 1180px) {
-  .shell-dock {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: var(--fd-space-14);
-    padding: var(--fd-space-16);
+/* Settings view: one centered, scrollable column of cards. */
+.shell-content--settings {
+  overflow-y: auto;
+  display: block;
+}
+
+.settings-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fd-space-16);
+  max-width: 880px;
+  margin: 0 auto;
+  padding-bottom: var(--fd-space-20);
+}
+
+.settings-page__heading h1 {
+  font: var(--fd-text-subtitle);
+}
+
+.settings-page__heading p {
+  margin-top: var(--fd-space-4);
+  color: var(--fd-text-secondary);
+  font: var(--fd-text-body);
+}
+
+.settings-card {
+  padding: var(--fd-space-20);
+}
+
+.settings-card :deep(.settings-dock) {
+  height: auto;
+}
+
+@media (max-width: 1080px) {
+  .shell-frame {
+    grid-template-columns: minmax(0, 1fr) 340px;
+    gap: var(--fd-space-12);
   }
 }
 
@@ -348,18 +404,18 @@ onBeforeUnmount(() => {
   }
 
   .shell-frame {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 1fr) auto;
     gap: var(--fd-space-12);
+    overflow-y: auto;
   }
 
   .shell-stage__panel {
-    min-height: 0;
+    min-height: 320px;
   }
 
-  .shell-dock {
-    grid-template-columns: 1fr;
-    gap: var(--fd-space-12);
+  .shell-rail {
     height: auto;
-    padding: var(--fd-space-12);
   }
 }
 </style>

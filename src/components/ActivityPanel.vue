@@ -299,14 +299,16 @@ const reportHighlights = computed<string[]>(() => {
 .activity-grid {
   display: grid;
   flex: 1;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto auto auto auto;
   grid-template-areas:
-    'status output'
-    'action metrics';
-  gap: var(--fd-space-8);
+    'status'
+    'action'
+    'metrics'
+    'output';
+  gap: var(--fd-space-10);
   min-height: 0;
-  align-items: stretch;
+  align-content: start;
 }
 
 .status-card {
@@ -316,7 +318,7 @@ const reportHighlights = computed<string[]>(() => {
   gap: var(--fd-space-8);
   padding: 12px;
   border: 1px solid var(--fd-stroke-card);
-  border-radius: 18px;
+  border-radius: var(--fd-radius-md);
   background: color-mix(in srgb, var(--fd-layer-2) 90%, transparent);
 }
 
@@ -503,10 +505,10 @@ const reportHighlights = computed<string[]>(() => {
   flex: 1;
   align-items: center;
   justify-content: center;
-  min-height: 0;
+  min-height: 64px;
   padding: 12px;
   border: 1px dashed var(--fd-stroke-card);
-  border-radius: 16px;
+  border-radius: var(--fd-radius-md);
   color: var(--fd-text-tertiary);
   font: var(--fd-text-body-strong);
   text-align: center;
@@ -521,7 +523,7 @@ const reportHighlights = computed<string[]>(() => {
   min-height: 46px;
   padding: 0 12px;
   border: 1px solid var(--fd-success-border);
-  border-radius: 14px;
+  border-radius: var(--fd-radius-md);
   background: var(--fd-success-subtle);
   color: var(--fd-success);
   font: var(--fd-text-body-strong);
@@ -531,7 +533,7 @@ const reportHighlights = computed<string[]>(() => {
 .compress-btn {
   width: min(100%, 220px);
   min-height: 50px;
-  border-radius: 16px;
+  border-radius: var(--fd-radius-md);
   font: var(--fd-text-body-strong);
   gap: var(--fd-space-6);
   white-space: normal;
@@ -539,7 +541,7 @@ const reportHighlights = computed<string[]>(() => {
 }
 
 .cancel-btn {
-  border-radius: 14px;
+  border-radius: var(--fd-radius-md);
   background: var(--fd-danger-subtle);
   border-color: var(--fd-danger-border);
   color: var(--fd-danger);
@@ -555,7 +557,6 @@ const reportHighlights = computed<string[]>(() => {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--fd-space-8);
-  height: 100%;
   margin: 0;
   padding: 0;
 }
@@ -565,10 +566,10 @@ const reportHighlights = computed<string[]>(() => {
   flex-direction: column;
   justify-content: center;
   gap: var(--fd-space-2);
-  min-height: 0;
+  min-height: 52px;
   padding: 10px 12px;
   border: 1px solid var(--fd-stroke-card);
-  border-radius: 16px;
+  border-radius: var(--fd-radius-md);
   background: color-mix(in srgb, var(--fd-layer-2) 88%, transparent);
   text-align: left;
 }
@@ -586,15 +587,6 @@ const reportHighlights = computed<string[]>(() => {
 }
 
 @media (max-width: 900px) {
-  .activity-grid {
-    grid-template-columns: 1fr;
-    grid-template-areas:
-      'status'
-      'output'
-      'action'
-      'metrics';
-  }
-
   .output-dir__path {
     white-space: normal;
     overflow: visible;
