@@ -46,6 +46,22 @@ pub(crate) fn remove_unused_resources(document: &mut Document) -> usize {
     let mut usage_by_owner: HashMap<ResourcesOwner, UsedNames> = HashMap::new();
     // Which owners are safe to clean, and how to reach their dictionary.
     let mut cleanable: Vec<ResourcesOwner> = Vec::new();
+    // Pages that passed every probe and completed their content walk.
+    let mut processed_pages: HashSet<ObjectId> = HashSet::new();
+
+    // Pages sharing one indirect /Resources object stand or fall together:
+    // a sibling whose usage cannot be proven (failed safety probe,
+    // undecodable content, …) must veto cleaning for the whole group —
+    // its untracked references may resolve against the same dictionary.
+    let mut shared_pages: HashMap<ObjectId, Vec<ObjectId>> = HashMap::new();
+    for page_id in pages.values().copied() {
+        let Some(Object::Dictionary(page_dict)) = document.objects.get(&page_id) else {
+            continue;
+        };
+        if let Ok(Object::Reference(resources_id)) = page_dict.get(b"Resources") {
+            shared_pages.entry(*resources_id).or_default().push(page_id);
+        }
+    }
 
     for page_id in pages.values().copied() {
         let Some(Object::Dictionary(page_dict)) = document.objects.get(&page_id) else {
@@ -102,6 +118,7 @@ pub(crate) fn remove_unused_resources(document: &mut Document) -> usize {
         for (form_id, usage) in form_usage {
             merge_usage(&mut usage_by_owner, ResourcesOwner::Form(form_id), &usage);
         }
+        processed_pages.insert(page_id);
         cleanable.push(owner);
         cleanable.extend(
             visited_forms
@@ -117,6 +134,14 @@ pub(crate) fn remove_unused_resources(document: &mut Document) -> usize {
         ResourcesOwner::Page(id) | ResourcesOwner::SharedResources(id) | ResourcesOwner::Form(id) => *id,
     });
     cleanable.dedup();
+    // A shared resources object is cleaned only when every page referencing
+    // it was fully processed — one unproven sibling vetoes the group.
+    cleanable.retain(|owner| match owner {
+        ResourcesOwner::SharedResources(resources_id) => shared_pages
+            .get(resources_id)
+            .is_some_and(|ids| ids.iter().all(|id| processed_pages.contains(id))),
+        _ => true,
+    });
 
     let mut removed_entries = 0;
     for owner in cleanable {

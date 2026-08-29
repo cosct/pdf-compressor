@@ -924,11 +924,17 @@ fn encode_dynamic_image_as_jpeg(
 /// `EncodedByteAlign` streams stay unsupported.
 #[cfg(feature = "ccitt")]
 fn ccitt_g4_parms(stream: &Stream) -> Option<(u32, u32, bool)> {
-    let width = optional_integer(stream, b"Width")? as u32;
-    let height = optional_integer(stream, b"Height")? as u32;
-    if width == 0 || height == 0 {
+    let width = optional_integer(stream, b"Width")?;
+    let height = optional_integer(stream, b"Height")?;
+    // Never let hostile dimensions reach the decoded-plane allocation: a
+    // negative i64 would wrap to a huge value at the `as u32` cast. The
+    // ceiling matches the JPEG format limit the encoder already enforces —
+    // a bigger plane could never be re-encoded anyway.
+    if !(1..=65_535).contains(&width) || !(1..=65_535).contains(&height) {
         return None;
     }
+    let width = width as u32;
+    let height = height as u32;
 
     // An absent /DecodeParms defaults to K = 0 (Group 3 one-dimensional),
     // which is not decodable here. Indirect parameter references are rare

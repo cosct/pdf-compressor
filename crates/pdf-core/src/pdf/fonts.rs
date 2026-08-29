@@ -6,17 +6,22 @@
 //! The typst `subsetter` crate retains glyphs by id and strips `cmap`, so a
 //! subset can only be consumed as a CID font. That is exactly what we have:
 //! content strings keep their original 2-byte CIDs untouched, and the new
-//! glyph numbering is bridged with a generated `/CIDToGIDMap` stream plus a
-//! remapped `/W` width array. Nothing outside the font object tree is
-//! rewritten. Fail-closed: any font with an unusual shape (non-Identity
-//! encoding, non-TrueType outlines, unreadable CIDToGIDMap, subsetting
-//! failure, or no size win) keeps its original program, and one ambiguous
-//! `Tf` name anywhere aborts the whole pass.
+//! glyph numbering is bridged with a generated `/CIDToGIDMap` stream. `/W`
+//! is left untouched: widths are keyed by CID (ISO 32000, table 115) and
+//! the CIDs never change, so the original array stays correct. Nothing
+//! outside the font object tree is rewritten. Fail-closed: any font with an
+//! unusual shape (non-Identity encoding, non-TrueType outlines, unreadable
+//! CIDToGIDMap, subsetting failure, or no size win) keeps its original
+//! program; an annotation appearance stream, a Type3 font, a font program
+//! shared with a non-candidate font, or one ambiguous `Tf` name anywhere
+//! aborts the whole pass.
 //! typst 的 `subsetter` 按字形 id 保留并剥离 `cmap`，子集只能作 CID 字体使用——
-//! 这正合适：内容流的 2 字节 CID 原样保留，用生成的 `/CIDToGIDMap` 流与重映射的
-//! `/W` 宽度数组桥接新字形编号，字体对象树之外零改写。任何异常形态（非 Identity
-//! 编码、非 TrueType 轮廓、CIDToGIDMap 不可读、子集化失败、无体积收益）都保留
-//! 原字体；任一处出现无法解析的 `Tf` 名字则整体放弃本轮。
+//! 这正合适：内容流的 2 字节 CID 原样保留，用生成的 `/CIDToGIDMap` 流桥接新字形
+//! 编号；`/W` 不做任何改写（宽度以 CID 为键，见 ISO 32000 表 115，CID 未变则原
+//! 数组仍然正确），字体对象树之外零改写。任何异常形态（非 Identity 编码、非
+//! TrueType 轮廓、CIDToGIDMap 不可读、子集化失败、无体积收益）都保留原字体；
+//! 注解外观流、Type3 字体、与非候选字体共享的字体程序、或任一处无法解析的
+//! `Tf` 名字，都会整体放弃本轮。
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{atomic::AtomicBool, Arc};
@@ -60,6 +65,13 @@ pub(crate) fn subset_embedded_fonts(
     let mut used_cids: HashMap<ObjectId, HashSet<u16>> = HashMap::new();
     let mut visited_forms: HashSet<ObjectId> = HashSet::new();
     for page_id in pages.values().copied() {
+        // Annotation appearance streams are content streams of their own
+        // that this walk never sees — one /AP anywhere aborts the pass.
+        if let Some(Object::Dictionary(page_dict)) = document.objects.get(&page_id) {
+            if page_has_appearance_streams(document, page_dict) {
+                return Ok(FontSubsetOutcome::default());
+            }
+        }
         let resources = match effective_page_resources(document, page_id) {
             Some(resources) => resources,
             None => continue,
@@ -85,10 +97,24 @@ pub(crate) fn subset_embedded_fonts(
     for (type0_id, candidate) in &candidates {
         files.entry(candidate.font_file_id).or_default().push(*type0_id);
     }
+    let consumers = font_file_consumers(document);
 
     let mut outcome = FontSubsetOutcome::default();
     for (font_file_id, type0_ids) in files {
         ensure_not_cancelled(cancel_flag, task_id)?;
+
+        // A program shared with any font outside the candidate set keeps its
+        // glyphs — the other consumer's numbering would break under the subset.
+        let candidate_descendants: HashSet<ObjectId> = type0_ids
+            .iter()
+            .filter_map(|id| candidates.get(id))
+            .map(|candidate| candidate.descendant_id)
+            .collect();
+        if consumers.get(&font_file_id).is_some_and(|ids| {
+            ids.iter().any(|id| !candidate_descendants.contains(id))
+        }) {
+            continue;
+        }
 
         // Union of the glyph ids every sharing font draws.
         let mut old_gids: HashSet<u16> = HashSet::new();
@@ -239,6 +265,78 @@ fn index_candidates(document: &Document) -> HashMap<ObjectId, Type0Candidate> {
     candidates
 }
 
+/// Annotation appearance streams carry their own content (and resources)
+/// that may draw any embedded font — a context this pass never walks.
+fn page_has_appearance_streams(document: &Document, page_dict: &Dictionary) -> bool {
+    let Ok(Object::Array(annotations)) = page_dict.get(b"Annots") else {
+        return false;
+    };
+    annotations.iter().any(|annotation| {
+        let annotation_dict = match annotation {
+            Object::Reference(annotation_id) => match document.objects.get(annotation_id) {
+                Some(Object::Dictionary(dict)) => Some(dict),
+                _ => None,
+            },
+            Object::Dictionary(dict) => Some(dict),
+            _ => None,
+        };
+        annotation_dict.is_some_and(|dict| dict.get(b"AP").is_ok())
+    })
+}
+
+/// Map each embedded TrueType program to every font dictionary consuming
+/// it: `Type0` chains land on their descendant CIDFont id, simple fonts on
+/// their own id. A program shared with a font outside the candidate set
+/// must not be subset — the other consumer's glyph numbering would break.
+fn font_file_consumers(document: &Document) -> HashMap<ObjectId, Vec<ObjectId>> {
+    let mut consumers: HashMap<ObjectId, Vec<ObjectId>> = HashMap::new();
+    for (&object_id, object) in &document.objects {
+        let Object::Dictionary(font_dict) = object else {
+            continue;
+        };
+        if !matches!(font_dict.get(b"Type"), Ok(Object::Name(kind)) if kind.as_slice() == b"Font")
+        {
+            continue;
+        }
+        if matches!(font_dict.get(b"Subtype"), Ok(Object::Name(kind)) if kind.as_slice() == b"Type0")
+        {
+            let Some(descendant_id) = font_dict
+                .get(b"DescendantFonts")
+                .ok()
+                .and_then(|entry| entry.as_array().ok())
+                .and_then(|entries| entries.first().cloned())
+                .and_then(|entry| entry.as_reference().ok())
+            else {
+                continue;
+            };
+            let Some(Object::Dictionary(descendant)) = document.objects.get(&descendant_id)
+            else {
+                continue;
+            };
+            if let Some(font_file_id) = font_file_of(document, descendant) {
+                consumers.entry(font_file_id).or_default().push(descendant_id);
+            }
+        } else if let Some(font_file_id) = font_file_of(document, font_dict) {
+            // Simple (non-CID) fonts embed FontFile2 directly.
+            consumers.entry(font_file_id).or_default().push(object_id);
+        }
+    }
+    consumers
+}
+
+/// `FontDescriptor → FontFile2` reference of one font or CIDFont dictionary.
+fn font_file_of(document: &Document, font_dict: &Dictionary) -> Option<ObjectId> {
+    let descriptor_id = font_dict
+        .get(b"FontDescriptor")
+        .ok()?
+        .as_reference()
+        .ok()?;
+    let Some(Object::Dictionary(descriptor)) = document.objects.get(&descriptor_id) else {
+        return None;
+    };
+    descriptor.get(b"FontFile2").ok()?.as_reference().ok()
+}
+
 /// Resolve a page's `/Resources`, climbing `/Parent` for inherited entries.
 fn effective_page_resources(document: &Document, page_id: ObjectId) -> Option<&Dictionary> {
     let mut current = page_id;
@@ -320,7 +418,22 @@ fn collect_context_cids(
                     let Some(font_dict) = font_dict else {
                         return Ok(false);
                     };
-                    if font_dict.get(name.as_slice()).is_err() {
+                    let Ok(font_entry) = font_dict.get(name.as_slice()) else {
+                        return Ok(false);
+                    };
+                    // Type3 glyph procedures are content streams that may
+                    // select and draw the candidate fonts — a context this
+                    // pass never walks, so one Type3 anywhere aborts.
+                    let font_object = match font_entry {
+                        Object::Reference(font_id) => document.objects.get(font_id),
+                        Object::Dictionary(_) => Some(font_entry),
+                        _ => None,
+                    };
+                    if matches!(
+                        font_object,
+                        Some(Object::Dictionary(font))
+                            if matches!(font.get(b"Subtype"), Ok(Object::Name(subtype)) if subtype.as_slice() == b"Type3")
+                    ) {
                         return Ok(false);
                     }
                 }
@@ -447,7 +560,9 @@ fn cid_to_gid(candidate: &Type0Candidate, cid: u16) -> u16 {
 }
 
 /// Point the descendant CIDFont at the subset: generate a `/CIDToGIDMap`
-/// stream covering every used CID and remap `/W` widths to the new glyph ids.
+/// stream covering every used CID. `/W` is left untouched — widths are
+/// keyed by CID (ISO 32000, table 115) and the content stream's CIDs are
+/// unchanged, so the original array remains correct for every renderer.
 fn rewire_descendant_font(
     document: &mut Document,
     candidate: &Type0Candidate,
@@ -476,98 +591,12 @@ fn rewire_descendant_font(
         map_bytes,
     );
 
-    let Some(Object::Dictionary(descendant)) = document.objects.get(&candidate.descendant_id)
-    else {
-        return false;
-    };
-
-    // Collect old widths (cid → width object) before renumbering.
-    let old_widths = match descendant.get(b"W") {
-        Ok(Object::Array(entries)) => parse_width_array(entries),
-        _ => Vec::new(),
-    };
-
-    let mut new_widths: Vec<Object> = Vec::new();
-    let mut sorted_cids: Vec<u16> = cids.iter().copied().collect();
-    sorted_cids.sort_unstable();
-    for &cid in &sorted_cids {
-        let gid = cid_to_gid(candidate, cid);
-        let Some(new_gid) = remapper.get(gid) else {
-            continue;
-        };
-        if let Some((_, width)) = old_widths.iter().find(|(old_cid, _)| *old_cid == cid) {
-            new_widths.push(Object::Integer(i64::from(new_gid)));
-            new_widths.push(Object::Array(vec![width.clone()]));
-        }
-    }
-
     let map_id = document.add_object(map_stream);
     let Some(Object::Dictionary(descendant)) = document.objects.get_mut(&candidate.descendant_id)
     else {
         return false;
     };
     descendant.set("CIDToGIDMap", Object::Reference(map_id));
-    if !new_widths.is_empty() {
-        descendant.set("W", Object::Array(new_widths));
-    }
 
     true
-}
-
-/// Parse a `/W` width array into `(cid, width)` pairs. Width objects are kept
-/// verbatim (Integer or Real) to avoid any float re-serialization drift.
-fn parse_width_array(entries: &[Object]) -> Vec<(u16, Object)> {
-    let mut widths = Vec::new();
-    let mut index = 0;
-
-    let as_int = |object: &Object| -> Option<u16> {
-        match object {
-            Object::Integer(value) if (0..=65_535).contains(value) => Some(*value as u16),
-            _ => None,
-        }
-    };
-
-    while index < entries.len() {
-        let Some(start) = as_int(&entries[index]) else {
-            break;
-        };
-        index += 1;
-        match entries.get(index) {
-            Some(Object::Array(values)) => {
-                for (offset, value) in values.iter().enumerate() {
-                    if let Some(cid) = start.checked_add(offset as u16) {
-                        widths.push((cid, value.clone()));
-                    }
-                }
-                index += 1;
-            }
-            Some(first) if as_int(first).is_some() => {
-                let first = as_int(first).unwrap_or_default();
-                index += 1;
-                match entries.get(index) {
-                    Some(Object::Array(values)) => {
-                        for (offset, value) in values.iter().enumerate() {
-                            if let Some(cid) = first.checked_add(offset as u16) {
-                                widths.push((cid, value.clone()));
-                            }
-                        }
-                        index += 1;
-                    }
-                    Some(width) => {
-                        // Constant width for start..=first.
-                        if first >= start {
-                            for cid in start..=first {
-                                widths.push((cid, width.clone()));
-                            }
-                        }
-                        index += 1;
-                    }
-                    None => break,
-                }
-            }
-            _ => break,
-        }
-    }
-
-    widths
 }

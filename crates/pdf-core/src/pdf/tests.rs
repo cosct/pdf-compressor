@@ -632,7 +632,6 @@ fn identical_images_with_shared_smask_merge() {
 
 /// One page with two fonts (F1 used, F2 unused) and two images (Im0 unused,
 /// Im1 used). Returns the built bytes plus the option to attach annotations.
-#[allow(dead_code)]
 fn build_unused_resources_pdf(annotations: bool) -> Vec<u8> {
     let mut doc = Document::with_version("1.5");
     let pages_id = doc.new_object_id();
@@ -832,6 +831,207 @@ fn keeps_resources_when_annotation_appearance_present() {
     let _ = response;
 }
 
+/// Two pages sharing one indirect /Resources object. F1/Im1 are used by
+/// page 1, F2/Im0 by nobody in walkable content. With `unsafe_sibling`,
+/// page 2 carries an annotation appearance stream (its resource usage is
+/// unprovable) and must veto cleaning for the whole shared dictionary.
+fn build_shared_resources_pdf(unsafe_sibling: bool) -> Vec<u8> {
+    let mut doc = Document::with_version("1.5");
+    let pages_id = doc.new_object_id();
+
+    let font_used = doc.add_object(dictionary! {
+        "Type" => "Font",
+        "Subtype" => "Type1",
+        "BaseFont" => "Helvetica",
+    });
+    let font_unused = doc.add_object(dictionary! {
+        "Type" => "Font",
+        "Subtype" => "Type1",
+        "BaseFont" => "Courier",
+    });
+    let image_used = {
+        let jpeg = encode_jpeg(fixture_rgb_image(400, 300), 90);
+        doc.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject",
+                "Subtype" => "Image",
+                "Width" => 400,
+                "Height" => 300,
+                "ColorSpace" => "DeviceRGB",
+                "BitsPerComponent" => 8,
+                "Filter" => "DCTDecode",
+            },
+            jpeg,
+        ))
+    };
+    let image_unused = {
+        let jpeg = encode_jpeg(fixture_rgb_image(400, 300), 90);
+        doc.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject",
+                "Subtype" => "Image",
+                "Width" => 400,
+                "Height" => 300,
+                "ColorSpace" => "DeviceRGB",
+                "BitsPerComponent" => 8,
+                "Filter" => "DCTDecode",
+            },
+            jpeg,
+        ))
+    };
+
+    let resources_id = doc.add_object(dictionary! {
+        "Font" => dictionary! {
+            "F1" => font_used,
+            "F2" => font_unused,
+        },
+        "XObject" => dictionary! {
+            "Im0" => image_unused,
+            "Im1" => image_used,
+        },
+    });
+
+    let content1 = format!(
+        "q 300 0 0 225 72 400 cm /Im1 Do Q\nBT /F1 24 Tf 72 720 Td ({FIXTURE_TEXT}) Tj ET\n"
+    );
+    let content1_id = doc.add_object(Stream::new(dictionary! {}, content1.into_bytes()));
+    let page1_id = doc.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => pages_id,
+        "Contents" => content1_id,
+        "Resources" => Object::Reference(resources_id),
+        "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+    });
+
+    let mut page2_dict = dictionary! {
+        "Type" => "Page",
+        "Parent" => pages_id,
+        "Resources" => Object::Reference(resources_id),
+        "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+    };
+    if unsafe_sibling {
+        let appearance = doc.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject",
+                "Subtype" => "Form",
+                "BBox" => vec![0.into(), 0.into(), 10.into(), 10.into()],
+            },
+            "0 0 10 10 re f".as_bytes().to_vec(),
+        ));
+        let annotation = doc.add_object(dictionary! {
+            "Type" => "Annot",
+            "Subtype" => "Square",
+            "Rect" => vec![10.into(), 10.into(), 100.into(), 100.into()],
+            "AP" => dictionary! { "N" => appearance },
+        });
+        page2_dict.set("Annots", vec![Object::Reference(annotation)]);
+    }
+    let content2_id = doc.add_object(Stream::new(dictionary! {}, b"0 0 m\n".to_vec()));
+    page2_dict.set("Contents", content2_id);
+    let page2_id = doc.add_object(page2_dict);
+
+    doc.objects.insert(
+        pages_id,
+        Object::Dictionary(dictionary! {
+            "Type" => "Pages",
+            "Kids" => vec![Object::Reference(page1_id), Object::Reference(page2_id)],
+            "Count" => 2,
+        }),
+    );
+    let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+    doc.trailer.set("Root", catalog_id);
+
+    let mut bytes = Vec::new();
+    doc.save_modern(&mut bytes).expect("save fixture");
+    bytes
+}
+
+/// Entry names of one category in the first page's resources, following an
+/// indirect /Resources reference when present.
+fn shared_resource_names(document: &Document, category: &[u8]) -> Vec<String> {
+    let page_id = *document
+        .get_pages()
+        .values()
+        .next()
+        .expect("at least one page");
+    let Object::Dictionary(page_dict) = document
+        .objects
+        .get(&page_id)
+        .expect("page object")
+    else {
+        panic!("page must be a dictionary");
+    };
+    let resources_dict = match page_dict.get(b"Resources") {
+        Ok(Object::Reference(resources_id)) => match document.objects.get(resources_id) {
+            Some(Object::Dictionary(dict)) => dict,
+            _ => panic!("shared resources must be a dictionary"),
+        },
+        Ok(Object::Dictionary(dict)) => dict,
+        _ => panic!("page must carry resources"),
+    };
+    let Ok(Object::Dictionary(entries)) = resources_dict.get(category) else {
+        panic!("category must exist: {}", String::from_utf8_lossy(category));
+    };
+    entries
+        .iter()
+        .map(|(key, _)| String::from_utf8_lossy(key).into_owned())
+        .collect()
+}
+
+#[test]
+fn unsafe_sibling_vetoes_shared_resources_cleanup() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_fixture(
+        dir.path(),
+        "shared-unsafe.pdf",
+        &build_shared_resources_pdf(true),
+    );
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(),
+        maximum_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+    // Page 2's annotation appearance may fall back to the shared resources —
+    // the whole dictionary keeps every entry, including the unused ones.
+    let fonts = shared_resource_names(&reloaded, b"Font");
+    assert!(fonts.contains(&"F2".to_string()), "shared fonts stay untouched: {fonts:?}");
+    let xobjects = shared_resource_names(&reloaded, b"XObject");
+    assert!(
+        xobjects.contains(&"Im0".to_string()),
+        "shared xobjects stay untouched: {xobjects:?}"
+    );
+    let _ = response;
+}
+
+#[test]
+fn all_safe_siblings_still_clean_shared_resources() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_fixture(
+        dir.path(),
+        "shared-safe.pdf",
+        &build_shared_resources_pdf(false),
+    );
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(),
+        maximum_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+    // Both pages are provably safe — the veto must not overreach.
+    assert_eq!(shared_resource_names(&reloaded, b"Font"), vec!["F1"]);
+    assert_eq!(shared_resource_names(&reloaded, b"XObject"), vec!["Im1"]);
+    let _ = response;
+}
+
 // ---------------------------------------------------------------------------
 // Font subsetting
 // ---------------------------------------------------------------------------
@@ -927,24 +1127,37 @@ fn subsets_cid_truetype_font_to_used_glyphs() {
     // An unused CID (A = 19) must not map anywhere.
     assert_eq!(gid_at(TEST_FONT_GID_A), 0);
 
-    // /W widths must follow the new numbering.
+    // /W stays keyed by the original CIDs — widths are CID-level data
+    // (ISO 32000, table 115) and the content stream's CIDs are unchanged.
     let Ok(Object::Array(widths)) = descendant.get(b"W") else {
         panic!("W array must survive");
     };
     let mut width_for = std::collections::HashMap::new();
     let mut index = 0;
     while index + 1 < widths.len() {
-        if let (Object::Integer(gid), Object::Array(values)) = (&widths[index], &widths[index + 1])
+        if let (Object::Integer(cid), Object::Array(values)) = (&widths[index], &widths[index + 1])
         {
             if let Some(Object::Integer(width)) = values.first() {
-                width_for.insert(*gid, *width);
+                width_for.insert(*cid, *width);
             }
         }
         index += 2;
     }
-    assert_eq!(width_for.get(&i64::from(new_gid_p)), Some(&650), "P keeps 650");
-    assert_eq!(width_for.get(&i64::from(new_gid_d)), Some(&700), "D keeps 700");
-    assert_eq!(width_for.get(&i64::from(new_gid_f)), Some(&600), "F keeps 600");
+    assert_eq!(
+        width_for.get(&i64::from(TEST_FONT_GID_P)),
+        Some(&650),
+        "P keeps 650 under its original CID"
+    );
+    assert_eq!(
+        width_for.get(&i64::from(TEST_FONT_GID_D)),
+        Some(&700),
+        "D keeps 700 under its original CID"
+    );
+    assert_eq!(
+        width_for.get(&i64::from(TEST_FONT_GID_F)),
+        Some(&600),
+        "F keeps 600 under its original CID"
+    );
 
     // The page content must be untouched — the original CID bytes still there.
     let page_id = *reloaded.get_pages().values().next().expect("page");
@@ -1012,6 +1225,181 @@ fn subset_fonts_off_keeps_font_program_unchanged() {
             }
         }
     }
+}
+
+/// Load the Type0 fixture into a Document for surgical mutation, then save.
+#[cfg(feature = "subset-fonts")]
+fn mutate_type0_fixture(mutate: impl FnOnce(&mut Document)) -> Vec<u8> {
+    use crate::testutil::build_type0_pdf_bytes;
+
+    let mut doc = Document::load_mem(&build_type0_pdf_bytes()).expect("fixture loads");
+    mutate(&mut doc);
+    let mut bytes = Vec::new();
+    doc.save_modern(&mut bytes).expect("save mutated fixture");
+    bytes
+}
+
+/// (page id, shared resources id, content stream id) of the Type0 fixture.
+#[cfg(feature = "subset-fonts")]
+fn type0_fixture_ids(doc: &Document) -> (lopdf::ObjectId, lopdf::ObjectId, lopdf::ObjectId) {
+    let page_id = *doc.get_pages().values().next().expect("page");
+    let Some(Object::Dictionary(page_dict)) = doc.objects.get(&page_id) else {
+        panic!("page dict")
+    };
+    let Ok(Object::Reference(resources_id)) = page_dict.get(b"Resources") else {
+        panic!("resources reference")
+    };
+    let Ok(Object::Reference(content_id)) = page_dict.get(b"Contents") else {
+        panic!("contents reference")
+    };
+    (page_id, *resources_id, *content_id)
+}
+
+/// Compress the mutated fixture and assert the font program survived
+/// byte-identical with no subsetting notice.
+#[cfg(feature = "subset-fonts")]
+fn assert_subsetting_aborted(dir: &Path, name: &str, bytes: &[u8]) {
+    use crate::testutil::TEST_FONT;
+
+    let path = write_fixture(dir, name, bytes);
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(),
+        subset_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+    assert!(
+        !response
+            .notices
+            .iter()
+            .any(|n| n.code == "compress.note.fontsSubsetted"),
+        "no font may be subsetted: {:?}",
+        response.notices
+    );
+
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+    let mut programs = 0;
+    for object in reloaded.objects.values() {
+        if let Object::Stream(stream) = object {
+            if stream.dict.get(b"Length1").is_ok() {
+                programs += 1;
+                let program = stream.get_plain_content().unwrap_or_default();
+                assert_eq!(program.as_slice(), TEST_FONT, "font program must be untouched");
+            }
+        }
+    }
+    assert!(programs > 0, "FontFile2 must survive");
+}
+
+#[cfg(feature = "subset-fonts")]
+#[test]
+fn annotation_appearance_stream_aborts_font_subsetting() {
+    let bytes = mutate_type0_fixture(|doc| {
+        let annotation_id = doc.add_object(dictionary! {
+            "Type" => "Annot",
+            "Subtype" => "Widget",
+            "Rect" => vec![0.into(), 0.into(), 10.into(), 10.into()],
+            "AP" => dictionary! {},
+        });
+        let (page_id, _, _) = type0_fixture_ids(doc);
+        let Some(Object::Dictionary(page_dict)) = doc.objects.get_mut(&page_id) else {
+            panic!("page dict")
+        };
+        page_dict.set("Annots", vec![Object::Reference(annotation_id)]);
+    });
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    assert_subsetting_aborted(dir.path(), "type0-ap.pdf", &bytes);
+}
+
+#[cfg(feature = "subset-fonts")]
+#[test]
+fn type3_font_aborts_font_subsetting() {
+    let bytes = mutate_type0_fixture(|doc| {
+        let type3_id = doc.add_object(dictionary! {
+            "Type" => "Font",
+            "Subtype" => "Type3",
+            "Name" => "T3",
+            "FontBBox" => vec![0.into(), 0.into(), 10.into(), 10.into()],
+            "FontMatrix" => vec![0.001.into(), 0.into(), 0.into(), 0.001.into(), 0.into(), 0.into()],
+            "CharProcs" => dictionary! {},
+            "Encoding" => dictionary! {
+                "Type" => "Encoding",
+                "Differences" => Vec::<Object>::new(),
+            },
+            "FirstChar" => 0,
+            "LastChar" => 0,
+            "Widths" => Vec::<Object>::new(),
+        });
+        let (_, resources_id, content_id) = type0_fixture_ids(doc);
+        let Some(Object::Dictionary(resources)) = doc.objects.get_mut(&resources_id) else {
+            panic!("resources dict")
+        };
+        let Ok(Object::Dictionary(fonts)) = resources.get_mut(b"Font") else {
+            panic!("font category")
+        };
+        fonts.set("T3", Object::Reference(type3_id));
+        let Some(Object::Stream(content)) = doc.objects.get_mut(&content_id) else {
+            panic!("content stream")
+        };
+        // A Type3 selection anywhere — its glyph procedures are a content
+        // context the CID collector never walks.
+        content.set_content(b"BT /F1 24 Tf 72 720 Td <00220016> Tj /T3 9 Tf ET\n".to_vec());
+    });
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    assert_subsetting_aborted(dir.path(), "type0-type3.pdf", &bytes);
+}
+
+#[cfg(feature = "subset-fonts")]
+#[test]
+fn font_program_shared_with_simple_font_aborts_subsetting() {
+    let bytes = mutate_type0_fixture(|doc| {
+        let font_file_id = doc
+            .objects
+            .iter()
+            .find_map(|(id, object)| match object {
+                Object::Stream(stream) if stream.dict.get(b"Length1").is_ok() => Some(*id),
+                _ => None,
+            })
+            .expect("font file");
+        let descriptor_id = doc.add_object(dictionary! {
+            "Type" => "FontDescriptor",
+            "FontName" => "TestFontSimple",
+            "Flags" => 4,
+            "FontBBox" => vec![0.into(), 0.into(), 1200.into(), 900.into()],
+            "ItalicAngle" => 0,
+            "Ascent" => 900,
+            "Descent" => Object::Integer(-200),
+            "CapHeight" => 700,
+            "StemV" => 80,
+            "FontFile2" => font_file_id,
+        });
+        // A simple (non-CID) TrueType font embedding the very same program —
+        // the subsetter strips cmap, which would break this consumer.
+        let simple_id = doc.add_object(dictionary! {
+            "Type" => "Font",
+            "Subtype" => "TrueType",
+            "BaseFont" => "TestFontSimple",
+            "Encoding" => "WinAnsiEncoding",
+            "FirstChar" => 32,
+            "LastChar" => 255,
+            "Widths" => Vec::<Object>::new(),
+            "FontDescriptor" => descriptor_id,
+        });
+        let (_, resources_id, _) = type0_fixture_ids(doc);
+        let Some(Object::Dictionary(resources)) = doc.objects.get_mut(&resources_id) else {
+            panic!("resources dict")
+        };
+        let Ok(Object::Dictionary(fonts)) = resources.get_mut(b"Font") else {
+            panic!("font category")
+        };
+        fonts.set("F9", Object::Reference(simple_id));
+    });
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    assert_subsetting_aborted(dir.path(), "type0-shared-program.pdf", &bytes);
 }
 
 // ---------------------------------------------------------------------------
@@ -1675,6 +2063,44 @@ fn ccitt_g4_input_transcodes_when_resize_needed() {
         extracted_text(Path::new(&response.output_path)).contains(FIXTURE_TEXT),
         "text must survive the rewrite"
     );
+}
+
+#[test]
+fn ccitt_stream_with_negative_dimensions_is_skipped() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let image = bilevel_scan_image(1600, 1200, FIXTURE_SEED);
+    let g4_bytes = encode_ccitt_g4(&image);
+    let bytes = build_ccitt_pdf_bytes(g4_bytes.clone(), 1600, 1200, -1);
+
+    // Corrupt the stream dimensions: a negative value must never reach the
+    // decoded-plane allocation (`as u32` would wrap it into a huge size).
+    let mut doc = Document::load_mem(&bytes).expect("fixture loads");
+    for object in doc.objects.values_mut() {
+        if let Object::Stream(stream) = object {
+            if matches!(stream.dict.get(b"Filter"), Ok(Object::Name(name)) if name.as_slice() == b"CCITTFaxDecode")
+            {
+                stream.dict.set("Width", Object::Integer(-1));
+                stream.dict.set("Height", Object::Integer(-1));
+            }
+        }
+    }
+    let mut corrupted = Vec::new();
+    doc.save_modern(&mut corrupted).expect("save corrupted fixture");
+    let path = write_fixture(dir.path(), "ccitt-negative.pdf", &corrupted);
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(),
+        g4_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed, not abort on allocation");
+    assert_eq!(response.images_recompressed, 0, "hostile dimensions must skip");
+
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+    let streams = image_streams(&reloaded);
+    assert_eq!(streams.len(), 1);
+    assert_eq!(streams[0].content, g4_bytes, "payload must be byte-identical");
 }
 
 #[test]
