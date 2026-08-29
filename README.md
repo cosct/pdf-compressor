@@ -298,8 +298,10 @@ Vue UI -> Tauri bridge -> Rust commands -> PDF analysis/compression engine -> ou
 │  ├─ components/
 │  │  ├─ PdfUploadPanel.vue         # Queue intake and drag-and-drop UI (primary view)
 │  │  ├─ CompressionSettingsPanel.vue # Preset grid, sliders, toggles
+│  │  ├─ QuickCompressPanel.vue       # Right-click quick-mode profile editor
+│  │  ├─ AppearanceSettingsPanel.vue  # Theme and language (settings view)
 │  │  ├─ ActivityPanel.vue          # Current job state, compress button, metrics
-│  │  ├─ AppHeader.vue              # Brand, theme switcher, locale switcher, window controls
+│  │  ├─ AppHeader.vue              # Brand, settings navigation, window controls
 │  │  └─ ErrorToastViewport.vue     # Floating error/warning toast notifications
 │  ├─ i18n/
 │  │  └─ index.ts                   # Locale setup and persistence

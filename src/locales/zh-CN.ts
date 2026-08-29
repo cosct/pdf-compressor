@@ -31,7 +31,11 @@ const zhCN = {
   },
   settingsView: {
     title: '设置',
-    subtitle: '队列压缩的默认参数，以及文件管理器右键「快速压缩」使用的独立配置。',
+    subtitle: '主题与语言、队列压缩的默认参数，以及文件管理器右键「快速压缩」使用的独立配置。',
+  },
+  appearance: {
+    title: '外观',
+    subtitle: '主题与界面语言，即时生效。',
   },
   quick: {
     title: '右键快速压缩',

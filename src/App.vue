@@ -4,13 +4,13 @@ import { useI18n } from 'vue-i18n'
 
 import ActivityPanel from './components/ActivityPanel.vue'
 import AppHeader from './components/AppHeader.vue'
+import AppearanceSettingsPanel from './components/AppearanceSettingsPanel.vue'
 import CompressionSettingsPanel from './components/CompressionSettingsPanel.vue'
 import ErrorToastViewport from './components/ErrorToastViewport.vue'
 import PdfUploadPanel from './components/PdfUploadPanel.vue'
 import QuickCompressPanel from './components/QuickCompressPanel.vue'
 import { createNotice } from './composables/backendMessages'
 import { usePdfCompressor } from './composables/usePdfCompressor'
-import { appLocales, setAppLocale, type AppLocale } from './i18n'
 import { listenForOpenPdf } from './lib/tauri'
 import type { NoticeItem } from './types/pdf'
 import { formatBytes, formatPercent } from './utils/format'
@@ -49,7 +49,7 @@ const {
   reportError,
 } = usePdfCompressor()
 
-const { t, locale } = useI18n()
+const { t } = useI18n()
 
 // Top-level navigation: the queue workflow is the main view; compression and
 // quick-mode (right-click) settings live on their own page.
@@ -146,10 +146,6 @@ const queueItems = computed(() =>
     }),
 )
 
-function updateLocale(nextLocale: AppLocale) {
-  setAppLocale(nextLocale)
-}
-
 function handlePresetSaved() {
   pushErrorToast(
     createNotice(
@@ -195,10 +191,7 @@ onBeforeUnmount(() => {
   <div class="app-shell" :aria-busy="busy ? 'true' : 'false'">
     <AppHeader
       :native-available="nativeAvailable"
-      :locale="locale as AppLocale"
-      :locales="appLocales"
       :view="currentView"
-      @update:locale="updateLocale"
       @toggle-settings="toggleSettingsView"
     />
     <ErrorToastViewport
@@ -261,6 +254,10 @@ onBeforeUnmount(() => {
         <div class="settings-page__heading">
           <h1>{{ t('settingsView.title') }}</h1>
           <p>{{ t('settingsView.subtitle') }}</p>
+        </div>
+
+        <div class="settings-card fd-card">
+          <AppearanceSettingsPanel />
         </div>
 
         <div class="settings-card fd-card">

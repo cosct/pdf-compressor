@@ -32,7 +32,11 @@ const en = {
   settingsView: {
     title: 'Settings',
     subtitle:
-      'Compression defaults for the queue, plus the independent profile used by right-click quick compress in your file manager.',
+      'Theme and language, queue compression defaults, and the independent profile used by right-click quick compress in your file manager.',
+  },
+  appearance: {
+    title: 'Appearance',
+    subtitle: 'Theme and interface language — applied instantly.',
   },
   quick: {
     title: 'Right-click quick compress',

@@ -218,8 +218,10 @@ Vue UI -> Tauri bridge -> Rust commands -> PDF analysis/compression engine -> ou
 │  ├─ components/
 │  │  ├─ PdfUploadPanel.vue         # 队列上传与拖放界面（主视图）
 │  │  ├─ CompressionSettingsPanel.vue # 预设网格、滑块、开关
+│  │  ├─ QuickCompressPanel.vue       # 右键快速压缩配置档案编辑
+│  │  ├─ AppearanceSettingsPanel.vue  # 主题与语言（设置视图）
 │  │  ├─ ActivityPanel.vue          # 当前任务状态、压缩按钮、指标
-│  │  ├─ AppHeader.vue              # 品牌、主题切换、语言切换、窗口控件
+│  │  ├─ AppHeader.vue              # 品牌、设置导航、窗口控件
 │  │  └─ ErrorToastViewport.vue     # 浮动错误/警告通知
 │  ├─ i18n/
 │  │  └─ index.ts                   # 语言初始化与持久化
