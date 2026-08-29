@@ -3041,6 +3041,7 @@ name = "pdf-core"
 version = "0.3.0"
 dependencies = [
  "criterion",
+ "dirs-next",
  "fast_image_resize",
  "fax",
  "flate2",

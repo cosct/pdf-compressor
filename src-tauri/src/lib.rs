@@ -20,6 +20,8 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         commands::load_preset_user_config,
         commands::save_preset_user_config,
         commands::clear_preset_user_config,
+        commands::load_quick_profile,
+        commands::save_quick_profile,
         commands::open_path,
         commands::reveal_path_in_folder,
         commands::analyze_pdf,

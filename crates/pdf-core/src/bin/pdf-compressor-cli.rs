@@ -26,6 +26,8 @@ use serde::Serialize;
 
 use pdf_core::{
     analyze_pdf_with_progress, compress_pdf_to_target_size, compress_pdf_with_progress,
+    models::QuickProfilePayload,
+    quick_profile::{default_quick_profile_path, quick_profile_overrides, read_quick_profile_at},
     AppError, AppErrorPayload, BilevelCodec, CompressionResponse, CompressionSettings,
     CompressionSettingsOverrides,
 };
@@ -49,6 +51,9 @@ QUICK OPTIONS (background mode, used by file-manager context menus):
     --keep-metadata       Keep document metadata (removed by default)
     --target-size <SIZE>  Fit the output under this size (e.g. 5MB, 500K)
     --no-notify           Skip the desktop notification
+
+    Fields left unset fall back to the quick profile saved in the desktop
+    app's settings page (<os-config-dir>/pdf-compressor/quick-profile.json).
 
 COMPRESS OPTIONS:
     (same as QUICK, plus:)
@@ -293,8 +298,30 @@ fn run_quick(rest: &[String], notify: bool) -> Result<QuickSummary, AppError> {
         ));
     }
 
-    let overrides = compression_overrides(&flags)?;
-    let target = target_size_bytes(&flags)?;
+    let flag_overrides = compression_overrides(&flags)?;
+    let mut target = target_size_bytes(&flags)?;
+
+    // The persisted quick profile (edited in the desktop app's settings page)
+    // fills every field the explicit flags did not set. A missing or unreadable
+    // profile degrades to the built-in defaults — quick mode never hard-fails
+    // over configuration.
+    let profile = match default_quick_profile_path() {
+        Ok(path) => match read_quick_profile_at(&path) {
+            Ok(profile) => profile,
+            Err(error) => {
+                eprintln!(
+                    "warning: ignoring unreadable quick profile at {}: {error}",
+                    path.display()
+                );
+                QuickProfilePayload::default()
+            }
+        },
+        Err(_) => QuickProfilePayload::default(),
+    };
+    let overrides = flag_overrides.or_else(quick_profile_overrides(&profile));
+    if target.is_none() {
+        target = profile.target_size_bytes.map(u64::from);
+    }
     let settings = CompressionSettings::from_sources(None, overrides);
 
     let mut results = Vec::with_capacity(inputs.len());

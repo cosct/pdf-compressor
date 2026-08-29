@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-fn default_preset_config_version() -> u32 {
+fn default_config_version() -> u32 {
     1
 }
 
@@ -94,7 +94,7 @@ pub struct PresetProfilePayload {
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
 pub struct PresetUserConfigPayload {
-    #[serde(default = "default_preset_config_version")]
+    #[serde(default = "default_config_version")]
     pub version: u32,
     #[serde(default)]
     pub presets: BTreeMap<String, PresetProfilePayload>,
@@ -103,8 +103,60 @@ pub struct PresetUserConfigPayload {
 impl Default for PresetUserConfigPayload {
     fn default() -> Self {
         Self {
-            version: default_preset_config_version(),
+            version: default_config_version(),
             presets: BTreeMap::new(),
+        }
+    }
+}
+
+/// Persisted quick-mode (right-click) profile, edited from the desktop
+/// settings page and consumed by `pdf-compressor-cli quick`. Every field is
+/// optional — an explicit CLI flag wins first, then this profile, then the
+/// engine's built-in defaults.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(rename_all = "camelCase")]
+pub struct QuickProfilePayload {
+    #[serde(default = "default_config_version")]
+    pub version: u32,
+    #[serde(default)]
+    pub preset: Option<String>,
+    #[serde(default)]
+    pub image_quality: Option<u8>,
+    #[serde(default)]
+    pub max_image_size_px: Option<u16>,
+    #[serde(default)]
+    pub optimize_images: Option<bool>,
+    #[serde(default)]
+    pub compress_streams: Option<bool>,
+    #[serde(default)]
+    pub strip_metadata: Option<bool>,
+    #[serde(default)]
+    pub grayscale: Option<bool>,
+    /// `"jpeg"` (default) or `"ccitt-g4"` for near-bilevel scans.
+    #[serde(default)]
+    pub bilevel_codec: Option<String>,
+    #[serde(default)]
+    pub subset_fonts: Option<bool>,
+    /// Byte budget for target-size mode; absent means plain compression.
+    #[serde(default)]
+    pub target_size_bytes: Option<u32>,
+}
+
+impl Default for QuickProfilePayload {
+    fn default() -> Self {
+        Self {
+            version: default_config_version(),
+            preset: None,
+            image_quality: None,
+            max_image_size_px: None,
+            optimize_images: None,
+            compress_streams: None,
+            strip_metadata: None,
+            grayscale: None,
+            bilevel_codec: None,
+            subset_fonts: None,
+            target_size_bytes: None,
         }
     }
 }

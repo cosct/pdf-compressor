@@ -7,6 +7,12 @@ export const commands = {
 	loadPresetUserConfig: () => typedError<PresetUserConfigPayload, AppErrorPayload>(__TAURI_INVOKE("load_preset_user_config")),
 	savePresetUserConfig: (config: PresetUserConfigPayload) => typedError<PresetUserConfigPayload, AppErrorPayload>(__TAURI_INVOKE("save_preset_user_config", { config })),
 	clearPresetUserConfig: () => typedError<null, AppErrorPayload>(__TAURI_INVOKE("clear_preset_user_config")),
+	/**
+	 *  Quick-mode (right-click) profile, persisted at the shared OS-config
+	 *  location so the CLI's `quick` subcommand picks up GUI edits.
+	 */
+	loadQuickProfile: () => typedError<QuickProfilePayload, AppErrorPayload>(__TAURI_INVOKE("load_quick_profile")),
+	saveQuickProfile: (profile: QuickProfilePayload) => typedError<QuickProfilePayload, AppErrorPayload>(__TAURI_INVOKE("save_quick_profile", { profile })),
 	openPath: (path: string) => typedError<null, AppErrorPayload>(__TAURI_INVOKE("open_path", { path })),
 	revealPathInFolder: (path: string) => typedError<null, AppErrorPayload>(__TAURI_INVOKE("reveal_path_in_folder", { path })),
 	analyzePdf: (path: string | null, inputPath: string | null, onProgress: Channel<ProgressUpdate>) => typedError<AnalysisResponse, AppErrorPayload>(__TAURI_INVOKE("analyze_pdf", { path, inputPath, onProgress })),
@@ -201,6 +207,28 @@ export type ProgressUpdate = {
 	phase: string,
 	percent: number | null,
 	message: BackendNotice | null,
+};
+
+/**
+ *  Persisted quick-mode (right-click) profile, edited from the desktop
+ *  settings page and consumed by `pdf-compressor-cli quick`. Every field is
+ *  optional — an explicit CLI flag wins first, then this profile, then the
+ *  engine's built-in defaults.
+ */
+export type QuickProfilePayload = {
+	version?: number,
+	preset?: string | null,
+	imageQuality?: number | null,
+	maxImageSizePx?: number | null,
+	optimizeImages?: boolean | null,
+	compressStreams?: boolean | null,
+	stripMetadata?: boolean | null,
+	grayscale?: boolean | null,
+	/**  `"jpeg"` (default) or `"ccitt-g4"` for near-bilevel scans. */
+	bilevelCodec?: string | null,
+	subsetFonts?: boolean | null,
+	/**  Byte budget for target-size mode; absent means plain compression. */
+	targetSizeBytes?: number | null,
 };
 
 /* Tauri Specta runtime */

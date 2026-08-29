@@ -15,6 +15,7 @@
 pub mod error;
 pub mod models;
 pub mod pdf;
+pub mod quick_profile;
 #[cfg(feature = "testutil")]
 pub mod testutil;
 

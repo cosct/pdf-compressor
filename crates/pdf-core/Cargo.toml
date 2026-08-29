@@ -42,6 +42,9 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tempfile = "3"
 thiserror = "2"
+# Quick-profile path resolution (`quick-profile.json` under the OS config
+# dir), shared by the CLI reader and the desktop settings writer.
+dirs-next = "2.0"
 specta = { version = "=2.0.0-rc.25", optional = true }
 jpeg-encoder = { version = "0.7", features = ["simd"] }
 # Not referenced in code: declared so feature unification switches lopdf's

@@ -119,6 +119,25 @@ pub struct CompressionSettingsOverrides {
     pub output_dir: Option<String>,
 }
 
+impl CompressionSettingsOverrides {
+    /// Field-wise merge: `self` wins wherever set, `fallback` fills the rest
+    /// (explicit CLI flags over the persisted quick profile, for instance).
+    pub fn or_else(self, fallback: Self) -> Self {
+        Self {
+            preset: self.preset.or(fallback.preset),
+            image_quality: self.image_quality.or(fallback.image_quality),
+            max_image_size_px: self.max_image_size_px.or(fallback.max_image_size_px),
+            optimize_images: self.optimize_images.or(fallback.optimize_images),
+            compress_streams: self.compress_streams.or(fallback.compress_streams),
+            strip_metadata: self.strip_metadata.or(fallback.strip_metadata),
+            grayscale: self.grayscale.or(fallback.grayscale),
+            bilevel_codec: self.bilevel_codec.or(fallback.bilevel_codec),
+            subset_fonts: self.subset_fonts.or(fallback.subset_fonts),
+            output_dir: self.output_dir.or(fallback.output_dir),
+        }
+    }
+}
+
 impl CompressionSettings {
     pub fn from_sources(
         payload: Option<CompressionSettingsPayload>,

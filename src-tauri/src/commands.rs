@@ -25,7 +25,7 @@ use pdf_core::{
     analyze_pdf_with_progress, compress_pdf_to_target_size, compress_pdf_with_progress,
     models::{
         AnalysisResponse, CompressPdfRequest, CompressScannedPdfRequest, CompressionResponse,
-        PresetUserConfigPayload, ProgressUpdate,
+        PresetUserConfigPayload, ProgressUpdate, QuickProfilePayload,
     },
     AppError, AppErrorPayload, BilevelCodec, CompressionSettings, CompressionSettingsOverrides,
 };
@@ -258,6 +258,26 @@ pub fn save_preset_user_config(
 #[specta::specta]
 pub fn clear_preset_user_config() -> Result<(), AppErrorPayload> {
     clear_preset_user_config_file().map_err(AppErrorPayload::from)
+}
+
+/// Quick-mode (right-click) profile, persisted at the shared OS-config
+/// location so the CLI's `quick` subcommand picks up GUI edits.
+#[tauri::command]
+#[specta::specta]
+pub fn load_quick_profile() -> Result<QuickProfilePayload, AppErrorPayload> {
+    let path = pdf_core::quick_profile::default_quick_profile_path().map_err(AppErrorPayload::from)?;
+    pdf_core::quick_profile::read_quick_profile_at(&path).map_err(AppErrorPayload::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn save_quick_profile(
+    profile: QuickProfilePayload,
+) -> Result<QuickProfilePayload, AppErrorPayload> {
+    let path = pdf_core::quick_profile::default_quick_profile_path().map_err(AppErrorPayload::from)?;
+    pdf_core::quick_profile::write_quick_profile_at(&path, &profile)
+        .map_err(AppErrorPayload::from)?;
+    Ok(profile)
 }
 
 #[tauri::command]
