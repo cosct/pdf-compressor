@@ -1184,7 +1184,7 @@ fn stream_filter_info(stream: &Stream) -> StreamFilterInfo {
     info
 }
 
-fn longest_edge(stream: &Stream) -> Option<u32> {
+pub(crate) fn longest_edge(stream: &Stream) -> Option<u32> {
     let w = optional_integer(stream, b"Width")?;
     let h = optional_integer(stream, b"Height")?;
     if w <= 0 || h <= 0 {

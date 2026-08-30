@@ -32,7 +32,7 @@ use super::compressor::{
     build_output_path, ensure_input_size_supported, estimated_decoded_bitmap_bytes,
     image_worker_count, prepare_document, CompressionStats,
 };
-use super::encode::SkipPolicy;
+use super::encode::{longest_edge, SkipPolicy};
 use super::ensure_not_cancelled;
 use super::search::{
     enforce_bitmap_cache_budget, materialize_image_entry, probe_image_at,
@@ -139,8 +139,13 @@ where
     // --- Parameter search ---
     // Classic bisection on JPEG quality for "the highest quality that fits":
     // a fitting probe raises the floor so leftover budget is spent on quality,
-    // an over-budget probe lowers the ceiling. The edge only shrinks after the
-    // whole quality range failed, and never while a fitting round is known.
+    // an over-budget probe lowers the ceiling. The search spans the FULL
+    // quality range and starts at the document's own largest image edge (i.e.
+    // no downscale) — the preset's quality/edge are hints, not ceilings.
+    // Capping at the preset would finish far under budget whenever the preset
+    // is more aggressive than the target needs (e.g. a "maximum" preset with
+    // a generous budget). The edge only shrinks after the whole quality range
+    // failed, and never while a fitting round is known.
     let skip_policy = SkipPolicy::for_document(
         entries.len(),
         settings.grayscale || settings.bilevel_codec.uses_ccitt(),
@@ -157,16 +162,15 @@ where
         original_size_bytes,
         started_at,
     };
-    let user_quality = i32::from(settings.image_quality.max(MIN_SEARCH_QUALITY));
     let mut lo = i32::from(MIN_SEARCH_QUALITY);
-    let mut hi = user_quality;
-    let mut edge = settings.max_image_size_px;
+    let mut hi = i32::from(u8::MAX);
+    let mut edge = start_search_edge(&entries);
     let mut best: Option<(RoundParams, CompressionResponse)> = None;
     let mut last_materialized: Option<RoundParams> = None;
     // Quality whose failure collapsed the current range — the next smaller
-    // edge restarts the range at that quality instead of the user's, because
+    // edge restarts the range at that quality instead of the top, because
     // higher qualities already proved over budget at a *larger* edge.
-    let mut collapse_quality = user_quality;
+    let mut collapse_quality = i32::from(u8::MAX);
     // Smallest estimated probe — the best-effort fallback when nothing fits,
     // so the final output is a measured near-minimum rather than a guess.
     let mut smallest_probe: Option<(RoundParams, u64)> = None;
@@ -325,6 +329,17 @@ fn update_quality_range(lo: i32, hi: i32, quality: i32, fits: bool) -> (i32, i32
 /// floored at `MIN_SEARCH_EDGE`.
 fn shrink_search_edge(edge: u16) -> u16 {
     ((u32::from(edge) * 3 / 4).max(u32::from(MIN_SEARCH_EDGE))) as u16
+}
+
+/// Starting edge for the search: the document's own largest image edge, so
+/// the first rounds never downscale (each image is clamped to its own edge
+/// anyway). Shrinking kicks in only when the budget demands it.
+fn start_search_edge(entries: &[ImageSearchEntry]) -> u16 {
+    entries
+        .iter()
+        .filter_map(|entry| longest_edge(&entry.stream))
+        .max()
+        .map_or(MIN_SEARCH_EDGE, |edge| edge.clamp(u32::from(MIN_SEARCH_EDGE), u32::from(u16::MAX)) as u16)
 }
 
 /// Untouched byte footprint of an entry's streams.

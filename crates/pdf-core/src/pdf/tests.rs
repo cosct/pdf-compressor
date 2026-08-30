@@ -2210,6 +2210,47 @@ fn target_size_mode_meets_budget() {
 }
 
 #[test]
+fn target_size_mode_spends_a_generous_budget_on_quality() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = fresh_fixture(dir.path());
+    let original = fs::metadata(&path).expect("fixture metadata").len();
+    // A generous budget with an aggressive preset: the preset's quality is a
+    // starting hint, not a ceiling — leftover budget must buy quality back
+    // instead of finishing far under the target.
+    let target = original * 90 / 100;
+
+    let mut progress = |_| {};
+    let response = compress_pdf_to_target_size(
+        path.to_str().unwrap(),
+        target,
+        maximum_settings(),
+        noop_cancel_flag(),
+        &mut progress,
+    )
+    .expect("target-size compression must succeed");
+
+    assert!(
+        (response.compressed_size_bytes as u64) <= target,
+        "output must fit the budget"
+    );
+    let met = response
+        .notices
+        .iter()
+        .find(|notice| notice.code == "compress.note.targetSizeMet")
+        .expect("target must be met under a generous budget");
+    let winning_quality: i32 = met
+        .values
+        .get("quality")
+        .and_then(|value| value.parse().ok())
+        .expect("target-met notice carries the winning quality");
+    let preset_quality = i32::from(maximum_settings().image_quality);
+    assert!(
+        winning_quality > preset_quality,
+        "a generous budget must buy quality above the preset's {preset_quality}, got {winning_quality}"
+    );
+}
+
+#[test]
 fn target_size_mode_reports_best_effort() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = fresh_fixture(dir.path());
