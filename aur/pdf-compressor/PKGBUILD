@@ -34,7 +34,9 @@ build() {
   npm ci
   npm run build
 
-  cargo build --release --locked --manifest-path src-tauri/Cargo.toml
+  # custom-protocol embeds dist/ into the binary; without it the app is a
+  # dev-server build that waits on vite at localhost:5173 and shows no window.
+  cargo build --release --locked --features custom-protocol --manifest-path src-tauri/Cargo.toml
   cargo build --release --locked --manifest-path crates/pdf-core/Cargo.toml --bin pdf-compressor-cli
 }
 

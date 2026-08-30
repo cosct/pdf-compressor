@@ -16,6 +16,12 @@ rust-version = "1.93"
 name = "app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+# Embed the built frontend into the binary instead of expecting the vite
+# dev server. `tauri build` enables this implicitly; plain `cargo build`
+# (AUR PKGBUILD, local Arch script) must pass --features custom-protocol.
+custom-protocol = ["tauri/custom-protocol"]
+
 [build-dependencies]
 tauri-build = { version = "2.5.6", features = [] }
 
