@@ -25,17 +25,18 @@ if (tauriConf.version !== version) {
   console.log(`${tauriConfPath}: already at ${version}`)
 }
 
-// --- Cargo.toml (only the [package] version line) ---
-const cargoPath = 'src-tauri/Cargo.toml'
-const cargo = readFileSync(cargoPath, 'utf8')
-const cargoPattern = /^version = ".*"$/m
-if (!cargoPattern.test(cargo)) {
-  throw new Error(`No version line found in ${cargoPath}`)
-}
-const updatedCargo = cargo.replace(cargoPattern, `version = "${version}"`)
-if (updatedCargo !== cargo) {
-  writeFileSync(cargoPath, updatedCargo)
-  console.log(`${cargoPath}: version -> ${version}`)
-} else {
-  console.log(`${cargoPath}: already at ${version}`)
+// --- Cargo.toml of every workspace crate (only the [package] version line) ---
+for (const cargoPath of ['src-tauri/Cargo.toml', 'crates/pdf-core/Cargo.toml']) {
+  const cargo = readFileSync(cargoPath, 'utf8')
+  const cargoPattern = /^version = ".*"$/m
+  if (!cargoPattern.test(cargo)) {
+    throw new Error(`No version line found in ${cargoPath}`)
+  }
+  const updatedCargo = cargo.replace(cargoPattern, `version = "${version}"`)
+  if (updatedCargo !== cargo) {
+    writeFileSync(cargoPath, updatedCargo)
+    console.log(`${cargoPath}: version -> ${version}`)
+  } else {
+    console.log(`${cargoPath}: already at ${version}`)
+  }
 }
