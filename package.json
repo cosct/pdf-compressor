@@ -1,7 +1,7 @@
 {
   "name": "pdf-compressor",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.4.0",
   "author": "cosct",
   "license": "MIT",
   "description": "A desktop-first PDF compressor built with Vue, Tauri, and Rust.",

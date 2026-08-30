@@ -42,3 +42,6 @@ RTK.md
 
 # Local Arch package build outputs (scripts/build-arch-local.sh)
 pdf-compressor-local/
+
+# ZCode session state
+.zcode
