@@ -16,7 +16,8 @@ const props = withDefaults(
     workflowState: WorkflowState
     selectedFileName: string
     selectedPreset: CompressionPreset | null
-    recommendedPreset: CompressionPreset | null
+    /** Active-mode badge override, e.g. "Target size" in target-size mode. */
+    modeLabel?: string | null
     analysis: AnalysisSummary | null
     result: CompressionResult | null
     primaryActionLabel: string
@@ -32,6 +33,7 @@ const props = withDefaults(
   }>(),
   {
     selectedPreset: null,
+    modeLabel: null,
     secondaryActionLabel: null,
     progressPercent: 0,
     queueLocked: false,
@@ -66,10 +68,33 @@ const statusCopy = computed(() => {
   }
 })
 
+/**
+ * Savings metric: percentage plus the (estimated) saved bytes — the analysis
+ * estimate derives bytes from the original size so the number is meaningful
+ * before the first compression run.
+ */
+const savingsMetric = computed(() => {
+  const pct = formatPercent(
+    props.result?.savingsPercent ?? props.analysis?.estimatedSavingsPercent,
+  )
+
+  if (props.result && (props.result.savedBytes ?? 0) > 0) {
+    return `${pct} · ${formatBytes(props.result.savedBytes)}`
+  }
+
+  const estimate = props.analysis?.estimatedSavingsPercent
+  const base = props.analysis?.fileSizeBytes
+  if (estimate != null && estimate > 0 && base != null && base > 0) {
+    return `${pct} · ${formatBytes(Math.round((base * estimate) / 100))}`
+  }
+
+  return pct
+})
+
 const metrics = computed(() => [
   {
     label: t('activity.metricSavings'),
-    value: formatPercent(props.result?.savingsPercent ?? props.analysis?.estimatedSavingsPercent),
+    value: savingsMetric.value,
   },
   {
     label: t('activity.metricProgress'),
@@ -84,10 +109,6 @@ const metrics = computed(() => [
     value: `${props.completedCount}`,
   },
 ])
-
-const allDone = computed(
-  () => props.queueCount > 0 && props.pendingCount === 0 && props.completedCount > 0,
-)
 
 /**
  * Compact result report: surfaces the compression stats the backend already
@@ -133,7 +154,18 @@ const reportHighlights = computed<string[]>(() => {
         </svg>
         <h2>{{ t('activity.eyebrow') }}</h2>
       </div>
-      <span v-if="props.queueLocked" class="fd-badge fd-badge--accent">{{ t('upload.lockedTag') }}</span>
+      <!-- Preset badge lives on the head row's right side instead of taking
+           up its own line inside the status card; the recommended preset is
+           marked on the main-view PresetBar options. -->
+      <div class="activity-head__side">
+        <span
+          v-if="props.modeLabel || props.selectedPreset"
+          class="fd-badge fd-badge--accent"
+        >
+          {{ props.modeLabel ?? t(`app.preset.${props.selectedPreset}`) }}
+        </span>
+        <span v-if="props.queueLocked" class="fd-badge fd-badge--accent">{{ t('upload.lockedTag') }}</span>
+      </div>
     </div>
 
     <div class="activity-grid">
@@ -148,20 +180,6 @@ const reportHighlights = computed<string[]>(() => {
         <div class="status-card__chips">
           <div v-if="props.selectedFileName" class="status-card__file">
             <span class="fd-badge">{{ props.selectedFileName }}</span>
-          </div>
-          <div
-            v-if="props.selectedPreset || (props.recommendedPreset && props.recommendedPreset !== props.selectedPreset)"
-            class="status-card__tags"
-          >
-            <span v-if="props.selectedPreset" class="fd-badge fd-badge--accent">
-              {{ t(`app.preset.${props.selectedPreset}`) }}
-            </span>
-            <span
-              v-if="props.recommendedPreset && props.recommendedPreset !== props.selectedPreset"
-              class="fd-badge"
-            >
-              {{ t(`app.preset.${props.recommendedPreset}`) }}
-            </span>
           </div>
         </div>
 
@@ -208,15 +226,9 @@ const reportHighlights = computed<string[]>(() => {
             {{ t('activity.cancel') }}
           </button>
         </div>
-        <div v-else-if="allDone" class="action-single">
-          <div class="action-done">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-              <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.4"/>
-              <path d="M5.2 8.2 7.1 10l3.7-4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-            <span>{{ t('activity.allDone') }}</span>
-          </div>
-        </div>
+        <!-- The compress button stays available after every job finished:
+             completed files can be re-compressed (the label switches to
+             "Re-compress"), so completion never dead-ends the queue. -->
         <div v-else class="action-single">
           <button
             class="fd-button fd-button--accent compress-btn"
@@ -231,7 +243,7 @@ const reportHighlights = computed<string[]>(() => {
           </button>
           <button
             v-if="props.secondaryActionLabel"
-            class="fd-button fd-button--subtle compress-secondary"
+            class="fd-button compress-secondary"
             type="button"
             :disabled="props.primaryActionDisabled"
             @click="emit('secondary-action')"
@@ -255,7 +267,7 @@ const reportHighlights = computed<string[]>(() => {
 .activity-panel {
   display: flex;
   flex-direction: column;
-  gap: var(--fd-space-10);
+  gap: var(--fd-space-8);
   width: 100%;
   height: 100%;
   min-width: 0;
@@ -269,29 +281,43 @@ const reportHighlights = computed<string[]>(() => {
   gap: var(--fd-space-10);
 }
 
+.activity-head__side {
+  display: flex;
+  align-items: center;
+  gap: var(--fd-space-6);
+  min-width: 0;
+}
+
 .activity-grid {
   display: grid;
   flex: 1;
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto auto auto;
+  /* Leftover height splits between the status card and the metrics band
+     (proportional rows); the metrics band keeps a 120px floor so the value
+     text never clips on short windows — the status card yields instead. */
+  grid-template-rows: minmax(0, 1fr) auto minmax(120px, 0.55fr);
   grid-template-areas:
     'status'
     'action'
     'metrics';
   gap: var(--fd-space-12);
   min-height: 0;
-  align-content: start;
+  align-content: stretch;
 }
 
 .status-card {
   grid-area: status;
   display: flex;
+  /* The card keeps a share of the rail's height; its content forms one
+     centered group instead of rows scattered across the whole card. */
+  justify-content: center;
   flex-direction: column;
-  gap: var(--fd-space-8);
-  padding: 12px;
+  gap: var(--fd-space-10);
+  padding: 16px;
   border: 1px solid var(--fd-stroke-card);
   border-radius: var(--fd-radius-md);
   background: color-mix(in srgb, var(--fd-layer-2) 90%, transparent);
+  overflow: hidden;
 }
 
 .status-card--accent {
@@ -317,18 +343,28 @@ const reportHighlights = computed<string[]>(() => {
 
 .status-card__header strong {
   min-width: 0;
-  font: var(--fd-text-body-strong);
+  font: 600 16px/22px var(--fd-font-family);
   color: var(--fd-text-primary);
 }
 
 .status-card__chips {
   display: flex;
   flex-direction: column;
-  gap: var(--fd-space-6);
+  gap: var(--fd-space-8);
 }
 
-.status-card__file,
-.status-card__tags {
+/* The selected file is the hero of the card — give its badge real weight. */
+.status-card__file .fd-badge {
+  min-height: 26px;
+  font: var(--fd-text-body-strong);
+}
+
+/* The status card's own progress reads better chunkier than the queue's. */
+.status-card .fd-progress {
+  height: 8px;
+}
+
+.status-card__file {
   display: flex;
   flex-wrap: wrap;
   gap: var(--fd-space-6);
@@ -410,47 +446,40 @@ const reportHighlights = computed<string[]>(() => {
 .action-single {
   display: flex;
   flex: 1;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
   justify-content: center;
   gap: var(--fd-space-8);
   min-height: 0;
 }
 
+/* Queue-scope and single-file-scope actions sit side by side; a lone button
+   simply stretches to the full rail width. */
 .compress-secondary {
-  width: min(100%, 220px);
+  flex: 1;
   min-height: 34px;
   padding: 0 10px;
-  border-radius: 12px;
-  font: var(--fd-text-caption);
-  white-space: normal;
-  text-align: center;
-}
-
-.action-done {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--fd-space-6);
-  width: min(100%, 220px);
-  min-height: 46px;
-  padding: 0 12px;
-  border: 1px solid var(--fd-success-border);
   border-radius: var(--fd-radius-md);
-  background: var(--fd-success-subtle);
-  color: var(--fd-success);
-  font: var(--fd-text-body-strong);
+  font: var(--fd-text-body);
+  white-space: normal;
   text-align: center;
 }
 
 .compress-btn {
-  width: min(100%, 220px);
-  min-height: 50px;
+  flex: 1;
+  min-height: 34px;
   border-radius: var(--fd-radius-md);
   font: var(--fd-text-body-strong);
   gap: var(--fd-space-6);
   white-space: normal;
   text-align: center;
+}
+
+/* Disabled: mirror the standard outlined disabled look (same as the
+   apply-to-all button) — the accent variant otherwise keeps a transparent
+   border, which makes the button visually vanish. */
+.compress-btn:disabled {
+  border-color: var(--fd-control-stroke);
 }
 
 .cancel-btn {
@@ -461,14 +490,17 @@ const reportHighlights = computed<string[]>(() => {
 }
 
 .cancel-btn--center {
-  width: min(100%, 220px);
-  min-height: 46px;
+  width: 100%;
+  min-height: 34px;
 }
 
 .metrics-grid {
   grid-area: metrics;
   display: grid;
+  height: 100%;
+  min-height: 0;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: repeat(2, minmax(0, 1fr));
   gap: var(--fd-space-8);
   margin: 0;
   padding: 0;
@@ -477,14 +509,16 @@ const reportHighlights = computed<string[]>(() => {
 .metric-card {
   display: flex;
   flex-direction: column;
+  align-items: flex-start;
   justify-content: center;
   gap: var(--fd-space-2);
-  min-height: 52px;
-  padding: 10px 12px;
+  min-height: 0;
+  padding: 6px 12px;
   border: 1px solid var(--fd-stroke-card);
   border-radius: var(--fd-radius-md);
   background: color-mix(in srgb, var(--fd-layer-2) 88%, transparent);
   text-align: left;
+  overflow: hidden;
 }
 
 .metric-card dt {
@@ -495,8 +529,24 @@ const reportHighlights = computed<string[]>(() => {
 
 .metric-card dd {
   margin: 0;
-  font: 600 16px/20px var(--fd-font-family);
+  font: 600 15px/20px var(--fd-font-family);
+  font-variant-numeric: tabular-nums;
   color: var(--fd-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Tall windows: the metrics band gains weight so the panel's bottom section
+   balances the grown status card. */
+@media (min-height: 900px) {
+  .metric-card dd {
+    font-size: 17px;
+  }
+
+  .status-card__header strong {
+    font-size: 17px;
+  }
 }
 
 </style>

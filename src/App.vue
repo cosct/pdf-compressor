@@ -63,6 +63,11 @@ function toggleSettingsView() {
 
 const busy = computed(() => analysisLoading.value || compressionLoading.value)
 const recommendedPreset = computed(() => analysis.value?.recommendedPreset ?? null)
+// Target-size is its own compression mode: badges and queue labels name the
+// mode instead of the underlying preset when it is active.
+const activeModeLabel = computed(() =>
+  settings.value.targetFileSizeMb != null ? t('settings.targetMode') : null,
+)
 const activeQueueCount = computed(() => jobs.value.filter((job) => job.sourcePath.trim()).length)
 const completedQueueCount = computed(() => jobs.value.filter((job) => job.status === 'success').length)
 const canApplySettingsToAll = computed(
@@ -78,11 +83,17 @@ const applyToAllHint = computed(() =>
 const selectedJobProgressPercent = computed(
   () => jobs.value.find((job) => job.id === selectedJobId.value)?.progress.percent ?? 0,
 )
-const primaryActionLabel = computed(() =>
-  pendingQueueCount.value > 1
-    ? t('activity.startCompressionAll', { count: pendingQueueCount.value })
-    : t('activity.startCompression'),
-)
+const primaryActionLabel = computed(() => {
+  if (pendingQueueCount.value > 1) {
+    return t('activity.startCompressionAll', { count: pendingQueueCount.value })
+  }
+  // Everything finished and a completed file selected: offer a re-run of
+  // that file instead of a dead-end "all done" state.
+  if (pendingQueueCount.value === 0 && selectedJobIsCompleted.value) {
+    return t('activity.recompress')
+  }
+  return t('activity.startCompression')
+})
 // The queue-scope button compresses everything pending; when several files
 // are pending and the selection itself is pending, offer the single-file
 // scope as a secondary action.
@@ -90,11 +101,25 @@ const selectedJobIsPending = computed(() => {
   const job = jobs.value.find((item) => item.id === selectedJobId.value)
   return Boolean(job && job.status !== 'compressing' && job.status !== 'success')
 })
-const secondaryActionLabel = computed(() =>
-  pendingQueueCount.value > 1 && selectedJobIsPending.value && !compressionLoading.value
-    ? t('activity.compressSelected')
-    : null,
+const selectedJobIsCompleted = computed(
+  () => jobs.value.find((item) => item.id === selectedJobId.value)?.status === 'success',
 )
+const secondaryActionLabel = computed(() => {
+  if (compressionLoading.value || !selectedJobId.value) {
+    return null
+  }
+  // The primary button covers the whole pending queue; offer the single-file
+  // scope whenever that differs from just the selected file — several files
+  // pending, or a finished/failed selection alongside pending ones (re-run
+  // just this file).
+  if (
+    pendingQueueCount.value === 0 ||
+    (pendingQueueCount.value === 1 && selectedJobIsPending.value)
+  ) {
+    return null
+  }
+  return t('activity.compressSelected')
+})
 // Backend notes for the selected job (analysis hints + compression report).
 const selectedJobNotes = computed<NoticeItem[]>(() => {
   const job = jobs.value.find((item) => item.id === selectedJobId.value)
@@ -131,7 +156,10 @@ const queueItems = computed(() =>
         fileName: job.fileName || t('app.emptySource'),
         path: job.sourcePath,
         status: job.status,
-        presetLabel: t(`app.preset.${job.settings.preset}`),
+        presetLabel:
+          job.settings.targetFileSizeMb != null
+            ? t('settings.targetMode')
+            : t(`app.preset.${job.settings.preset}`),
         detail:
           job.error && job.status === 'error'
             ? job.error.body
@@ -232,13 +260,17 @@ onBeforeUnmount(() => {
           <PresetBar
             :settings="settings"
             :disabled="compressionLoading"
+            :can-apply-to-all="canApplySettingsToAll"
+            :apply-to-all-hint="applyToAllHint"
+            :recommended-preset="recommendedPreset"
             @update:settings="updateSettings"
+            @apply-settings-to-all="applySettingsToAll"
           />
           <ActivityPanel
             :workflow-state="workflowState"
             :selected-file-name="sourceFileName"
             :selected-preset="settings.preset"
-            :recommended-preset="recommendedPreset"
+            :mode-label="activeModeLabel"
             :analysis="analysis"
             :result="result"
             :primary-action-label="primaryActionLabel"
@@ -266,17 +298,17 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="settings-grid">
+          <div class="settings-card fd-card settings-card--appearance">
+            <AppearanceSettingsPanel />
+          </div>
+
           <div class="settings-col">
             <div class="settings-card fd-card">
               <CompressionSettingsPanel
                 :settings="settings"
                 :disabled="compressionLoading"
-                :can-apply-to-all="canApplySettingsToAll"
-                :apply-to-all-hint="applyToAllHint"
-                :recommended-preset="recommendedPreset"
                 :analysis="analysis"
                 @update:settings="updateSettings"
-                @apply-settings-to-all="applySettingsToAll"
                 @preset-config-error="reportError"
                 @preset-config-saved="handlePresetSaved"
               />
@@ -284,10 +316,6 @@ onBeforeUnmount(() => {
           </div>
 
           <div class="settings-col">
-            <div class="settings-card fd-card">
-              <AppearanceSettingsPanel />
-            </div>
-
             <div class="settings-card fd-card">
               <QuickCompressPanel
                 :native-available="nativeAvailable"
@@ -321,7 +349,7 @@ onBeforeUnmount(() => {
 /* Main view: the queue is the hero; the activity rail stays docked right. */
 .shell-frame {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 400px;
+  grid-template-columns: minmax(0, 1fr) 420px;
   gap: var(--fd-space-16);
   width: 100%;
   flex: 1;
@@ -354,8 +382,8 @@ onBeforeUnmount(() => {
 .shell-rail {
   display: flex;
   flex-direction: column;
-  gap: var(--fd-space-12);
-  padding: var(--fd-space-16);
+  gap: var(--fd-space-10);
+  padding: var(--fd-space-12);
   overflow: hidden;
 }
 
@@ -371,18 +399,23 @@ onBeforeUnmount(() => {
   min-height: 0;
 }
 
-/* Settings view: heading + a two-column card grid (macOS-system-settings
-   style) that collapses to one column on narrow windows. */
+/* Settings view: appearance spans a full row on top; below it the
+   compression preset and the right-click quick preset sit as symmetric
+   equal-width cards. The grid fills the viewport height so a maximized
+   window stretches the cards instead of leaving bottom whitespace. */
 .shell-content--settings {
   overflow-y: auto;
-  display: block;
+  display: flex;
+  flex-direction: column;
 }
 
 .settings-page {
   display: flex;
   flex-direction: column;
+  flex: 1;
   gap: var(--fd-space-16);
-  max-width: 1180px;
+  /* Full width — the view scales with the window, maximized included. */
+  width: 100%;
   margin: 0 auto;
   padding-bottom: var(--fd-space-20);
 }
@@ -393,9 +426,17 @@ onBeforeUnmount(() => {
 
 .settings-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+  flex: 1;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  /* Appearance keeps its natural toolbar height; the two preset cards
+     absorb all remaining height between them. */
+  grid-template-rows: auto minmax(0, 1fr);
   gap: var(--fd-space-16);
-  align-items: start;
+  align-items: stretch;
+}
+
+.settings-card--appearance {
+  grid-column: 1 / -1;
 }
 
 .settings-col {
@@ -403,6 +444,21 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: var(--fd-space-16);
   min-width: 0;
+}
+
+/* Whichever of the two preset cards ends up shorter stretches so the row
+   reads as one symmetric block: the compression panel's advanced section
+   and the quick panel's footer both absorb the extra height. */
+.settings-col > .settings-card:last-child {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-col > .settings-card:last-child :deep(.settings-dock),
+.settings-col > .settings-card:last-child :deep(.quick-panel) {
+  flex: 1;
+  min-height: 0;
 }
 
 .settings-card {
@@ -421,7 +477,7 @@ onBeforeUnmount(() => {
 
 @media (max-width: 1080px) {
   .shell-frame {
-    grid-template-columns: minmax(0, 1fr) 340px;
+    grid-template-columns: minmax(0, 1fr) 360px;
     gap: var(--fd-space-12);
   }
 }

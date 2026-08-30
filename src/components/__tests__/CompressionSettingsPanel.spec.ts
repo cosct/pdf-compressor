@@ -1,11 +1,12 @@
 /**
- * Component tests for the settings panel: preset selection, apply-to-all
- * gating, target-size validation feedback, and preset save notification.
- * 设置面板组件测试：预设选择、应用到全部的门控、目标大小校验反馈与保存预设通知。
+ * Component tests for the settings panel: preset selection and preset save
+ * notification. (Target-size input and apply-to-all live in the main view's
+ * PresetBar, not here.)
+ * 设置面板组件测试：预设选择与保存预设通知。
+ * （目标大小输入与「应用到全部」位于主视图的预设条，不在此面板。）
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
-import { nextTick } from 'vue'
 
 vi.mock('../../config/presets', () => {
   const flags = {
@@ -63,7 +64,6 @@ function mountPanel(props: Record<string, unknown> = {}) {
     props: {
       settings: makeSettings(),
       disabled: false,
-      recommendedPreset: null,
       ...props,
     },
     global: {
@@ -105,60 +105,41 @@ describe('CompressionSettingsPanel', () => {
     expect(next.maxImageSizePercent).toBe(60)
   })
 
-  it('selecting black & white switches grayscale and the G4 codec together', async () => {
+  it('numeric quality entry commits valid values and rejects out-of-range ones', async () => {
     const wrapper = mountPanel()
-    const colorModeGroup = wrapper.findAll('.color-mode-seg__item')
-    expect(colorModeGroup).toHaveLength(3)
+    const inputs = wrapper.findAll('.slider-field input')
+    expect(inputs).toHaveLength(2)
+    const quality = inputs[0]
 
-    await colorModeGroup[2].trigger('click')
+    ;(quality.element as HTMLInputElement).value = '80'
+    await quality.trigger('change')
+    const next = wrapper.emitted('update:settings')!.at(-1)![0] as CompressionSettings
+    expect(next.imageQuality).toBe(80)
 
-    const emitted = wrapper.emitted('update:settings')
-    expect(emitted).toBeTruthy()
-    const next = emitted![0][0] as CompressionSettings
-    expect(next.grayscale).toBe(true)
-    expect(next.bilevelCodec).toBe('ccitt-g4')
+    ;(quality.element as HTMLInputElement).value = '0'
+    await quality.trigger('change')
+    expect(quality.attributes('aria-invalid')).toBe('true')
+    const count = wrapper.emitted('update:settings')!.length
+    ;(quality.element as HTMLInputElement).value = '55'
+    await quality.trigger('change')
+    const recovered = wrapper.emitted('update:settings')!.at(-1)![0] as CompressionSettings
+    expect(recovered.imageQuality).toBe(55)
+    expect(quality.attributes('aria-invalid')).toBeUndefined()
+    expect(wrapper.emitted('update:settings')!.length).toBe(count + 1)
   })
 
-  it('apply-to-all is disabled without the flag and emits when enabled', async () => {
-    const wrapper = mountPanel({ canApplyToAll: false })
-    const applyButton = wrapper
-      .findAll('button')
-      .find((button) => button.text() === 'Apply to all')
-
-    expect(applyButton).toBeTruthy()
-    expect((applyButton!.element as HTMLButtonElement).disabled).toBe(true)
-
-    await wrapper.setProps({ canApplyToAll: true })
-    expect((applyButton!.element as HTMLButtonElement).disabled).toBe(false)
-
-    await applyButton!.trigger('click')
-    expect(wrapper.emitted('apply-settings-to-all')).toHaveLength(1)
-  })
-
-  it('rejects an invalid target size with visible feedback, then accepts a valid one', async () => {
+  it('numeric size-cap entry commits percent within range', async () => {
     const wrapper = mountPanel()
-    const input = wrapper.find('.target-size-input')
+    const percent = wrapper.findAll('.slider-field input')[1]
 
-    // Assign the element value directly: `setValue` routes through happy-dom's
-    // value sanitizer differently for number inputs. `0` parses as a number
-    // but fails the > 0 rule.
-    ;(input.element as HTMLInputElement).value = '0'
-    await input.trigger('change')
-    await nextTick()
+    ;(percent.element as HTMLInputElement).value = '50'
+    await percent.trigger('change')
+    const next = wrapper.emitted('update:settings')!.at(-1)![0] as CompressionSettings
+    expect(next.maxImageSizePercent).toBe(50)
 
-    expect(wrapper.find('.target-size-warning').exists()).toBe(true)
-    expect(input.attributes('aria-invalid')).toBe('true')
-    const rejected = wrapper.emitted('update:settings')!.at(-1)![0] as CompressionSettings
-    expect(rejected.targetFileSizeMb).toBeNull()
-
-    ;(input.element as HTMLInputElement).value = '5'
-    await input.trigger('change')
-    await nextTick()
-
-    expect(wrapper.find('.target-size-warning').exists()).toBe(false)
-    expect(input.attributes('aria-invalid')).toBeUndefined()
-    const accepted = wrapper.emitted('update:settings')!.at(-1)![0] as CompressionSettings
-    expect(accepted.targetFileSizeMb).toBe(5)
+    ;(percent.element as HTMLInputElement).value = '3'
+    await percent.trigger('change')
+    expect(percent.attributes('aria-invalid')).toBe('true')
   })
 
   it('saving a preset notifies success; reset stays disabled without changes', async () => {

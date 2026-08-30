@@ -34,6 +34,7 @@ function chooseLocale(value: AppLocale) {
 </script>
 
 <template>
+  <!-- 外观标题独占一行；主题与语言并排一行（标签在上、控件在下）。 -->
   <section class="appearance-panel">
     <header class="panel-header">
       <span class="panel-header__icon" aria-hidden="true">
@@ -89,7 +90,7 @@ function chooseLocale(value: AppLocale) {
 .appearance-panel {
   display: flex;
   flex-direction: column;
-  gap: var(--fd-space-16);
+  gap: var(--fd-space-12);
 }
 
 .appearance-panel__body {
@@ -101,13 +102,15 @@ function chooseLocale(value: AppLocale) {
 .appearance-field {
   display: flex;
   flex-direction: column;
-  gap: var(--fd-space-8);
+  gap: var(--fd-space-6);
+  width: 100%;
   min-width: 0;
 }
 
 .appearance-field__label {
   color: var(--fd-text-secondary);
   font: var(--fd-text-body-strong);
+  white-space: nowrap;
 }
 
 .appearance-segmented {
@@ -117,6 +120,7 @@ function chooseLocale(value: AppLocale) {
   border: 1px solid var(--fd-stroke-card);
   border-radius: var(--fd-radius-sm);
   background: var(--fd-layer-1);
+  width: 100%;
 }
 
 .appearance-segmented__option {
@@ -150,7 +154,7 @@ function chooseLocale(value: AppLocale) {
   box-shadow: var(--fd-shadow-focus);
 }
 
-@media (max-width: 640px) {
+@media (max-width: 720px) {
   .appearance-panel__body {
     grid-template-columns: 1fr;
   }

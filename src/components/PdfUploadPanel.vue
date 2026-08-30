@@ -608,10 +608,10 @@ onBeforeUnmount(() => {
 .queue-shell {
   display: flex;
   flex-direction: column;
-  gap: var(--fd-space-12);
+  gap: var(--fd-space-14);
   min-height: 0;
   position: relative;
-  padding: var(--fd-space-16);
+  padding: var(--fd-space-18, 18px);
   border-radius: var(--fd-radius-xl);
   background: color-mix(in srgb, var(--fd-layer-2) 92%, transparent);
   border: 1px solid var(--fd-stroke-card);
@@ -634,6 +634,7 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   gap: var(--fd-space-12);
+  min-height: 34px;
 }
 
 .queue-shell__heading {
@@ -657,27 +658,35 @@ onBeforeUnmount(() => {
 
 .queue-shell__add {
   flex-shrink: 0;
-  min-height: 26px;
-  padding: 0 8px;
+  min-height: 32px;
+  padding: 0 12px;
   border-radius: 12px;
   font: var(--fd-text-caption);
 }
 
 .queue-list {
   display: flex;
+  flex: 1;
   flex-direction: column;
-  gap: var(--fd-space-10);
+  gap: var(--fd-space-12);
   min-height: 0;
   overflow: auto;
-  padding-right: 2px;
+  padding-right: 4px;
   scrollbar-width: thin;
 }
 
 .queue-item {
   display: flex;
   flex-direction: column;
-  gap: var(--fd-space-6);
-  padding: 12px 14px;
+  justify-content: center;
+  /* Each row is exactly one fifth of the visible list (minus the four gaps
+     between the five visible rows): up to 5 files fill the panel evenly,
+     more keep that height and the list scrolls. */
+  flex: 0 0 auto;
+  height: calc((100% - 4 * var(--fd-space-12)) / 5);
+  min-height: 96px;
+  gap: var(--fd-space-8);
+  padding: 14px 16px;
   border: 1px solid var(--fd-stroke-card);
   border-radius: var(--fd-radius-sm);
   background: color-mix(in srgb, var(--fd-layer-1) 88%, transparent);
@@ -711,7 +720,7 @@ onBeforeUnmount(() => {
 .queue-item__row {
   display: flex;
   align-items: center;
-  gap: var(--fd-space-10);
+  gap: var(--fd-space-12);
 }
 
 .queue-item__info {
@@ -719,7 +728,7 @@ onBeforeUnmount(() => {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--fd-space-4);
+  gap: var(--fd-space-6);
 }
 
 .queue-item__title-line {
@@ -770,7 +779,7 @@ onBeforeUnmount(() => {
 .queue-item__meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 6px;
+  gap: 5px 8px;
   align-items: center;
 }
 
@@ -789,7 +798,7 @@ onBeforeUnmount(() => {
 }
 
 .fd-progress--sm {
-  height: 4px;
+  height: 5px;
 }
 
 .queue-context-menu {

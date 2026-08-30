@@ -315,6 +315,10 @@ export function usePdfCompressor() {
 
   function applyRecommendedSettings(job: PdfQueueJob) {
     const outputDir = job.settings.outputDir ?? draftSettings.value.outputDir
+    // A target size is a user-given byte budget, orthogonal to the
+    // analysis-recommended quality knobs — applying a recommendation must
+    // not silently drop it (same rule as the output directory).
+    const targetFileSizeMb = job.settings.targetFileSizeMb ?? draftSettings.value.targetFileSizeMb
     job.recommendedSettings = {
       ...createRecommendedSettings(job.analysis),
       outputDir,
@@ -327,7 +331,7 @@ export function usePdfCompressor() {
       job.useRecommendedSettings = settingsMatch(job.settings, job.recommendedSettings)
       return
     }
-    job.settings = { ...job.recommendedSettings }
+    job.settings = { ...job.recommendedSettings, targetFileSizeMb }
     job.useRecommendedSettings = true
   }
 
@@ -516,7 +520,9 @@ export function usePdfCompressor() {
 
       job.analysis = mapAnalysisSummary(response, requestedPath)
       applyRecommendedSettings(job)
-      job.progress = { phase: 'done', percent: 100 }
+      // Analysis done ≠ compressed: reset the progress so the bar reads 0%
+      // until an actual compression run drives it to 100%.
+      job.progress = { phase: 'queued', percent: 0 }
       setJobStatus(job, 'ready')
     } catch (error) {
       if (job.sourcePath !== requestedPath) {
@@ -525,7 +531,7 @@ export function usePdfCompressor() {
 
       job.error = normalizeError(error)
       pushErrorToast(job.error)
-      job.progress = { phase: 'error', percent: 100 }
+      job.progress = { phase: 'error', percent: 0 }
       setJobStatus(job, 'error')
     }
   }
@@ -612,7 +618,9 @@ export function usePdfCompressor() {
 
       job.error = normalizeError(error)
       pushErrorToast(job.error)
-      job.progress = { phase: 'error', percent: 100 }
+      // A failed run is not "complete" — keep the progress bar at 0% so only
+      // a finished compression ever reads 100%.
+      job.progress = { phase: 'error', percent: 0 }
       setJobStatus(job, 'error')
     } finally {
       if (isActiveCompressionTask(job.id, taskId)) {

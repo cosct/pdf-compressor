@@ -9,6 +9,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { AnalysisResponse, CompressionResponse } from '../../lib/bindings'
+import type { CompressionSettings } from '../../types/pdf'
 
 vi.mock('../../lib/tauri', () => ({
   hasNativeCommands: () => true,
@@ -71,6 +72,24 @@ function compressionResponse(overrides: Partial<CompressionResponse> = {}): Comp
     metadataRemoved: true,
     outputWasSmaller: true,
     notices: [],
+    ...overrides,
+  }
+}
+
+function makeSettings(overrides: Partial<CompressionSettings> = {}): CompressionSettings {
+  return {
+    preset: 'balanced',
+    imageQuality: 72,
+    maxImageSizePercent: 80,
+    referenceMaxImageEdgePx: null,
+    optimizeImages: true,
+    compressStreams: true,
+    stripMetadata: true,
+    grayscale: false,
+    bilevelCodec: 'jpeg',
+    subsetFonts: false,
+    outputDir: null,
+    targetFileSizeMb: null,
     ...overrides,
   }
 }
@@ -214,6 +233,51 @@ describe('addSourcePaths', () => {
     expect(composable.jobs.value.every((job) => job.analysis !== null)).toBe(true)
   })
 
+  it('preserves a draft target size when analysis applies recommended settings', async () => {
+    // With no file selected, edits land in the draft; a target size is a user
+    // budget orthogonal to the recommended quality knobs, so applying the
+    // recommendation on analysis completion must not drop it.
+    const composable = usePdfCompressor()
+    mockedAnalyze.mockResolvedValue(analysisResponse())
+    composable.updateSettings(
+      normalizeSettings({
+        ...makeSettings(),
+        targetFileSizeMb: 5,
+      }),
+    )
+
+    composable.addSourcePaths(['/tmp/a.pdf'])
+    await vi.waitFor(() => {
+      expect(composable.jobs.value[0].status).toBe('ready')
+    })
+
+    expect(composable.jobs.value[0].settings.targetFileSizeMb).toBe(5)
+  })
+
+  it('resets progress to 0% when analysis finishes — 100% means compressed', async () => {
+    const composable = await readyQueue(['/tmp/a.pdf'])
+
+    expect(composable.jobs.value[0].status).toBe('ready')
+    expect(composable.jobs.value[0].progress.percent).toBe(0)
+
+    // Only a completed compression run reaches 100%.
+    mockedCompress.mockResolvedValue(compressionResponse())
+    await composable.compressCurrentPdf()
+    expect(composable.jobs.value[0].status).toBe('success')
+    expect(composable.jobs.value[0].progress.percent).toBe(100)
+  })
+
+  it('keeps progress at 0% when analysis fails', async () => {
+    mockedAnalyze.mockRejectedValue(new Error('boom'))
+    const composable = usePdfCompressor()
+    composable.addSourcePaths(['/tmp/broken.pdf'])
+
+    await vi.waitFor(() => {
+      expect(composable.jobs.value[0].status).toBe('error')
+    })
+    expect(composable.jobs.value[0].progress.percent).toBe(0)
+  })
+
   it('ignores duplicate paths case-insensitively', async () => {
     const composable = await readyQueue(['/tmp/A.pdf'])
     composable.addSourcePaths(['/tmp/a.pdf'])
@@ -255,6 +319,21 @@ describe('compressCurrentPdf', () => {
 
     expect(composable.jobs.value[0].status).toBe('success')
     expect(composable.jobs.value[0].result?.outputPath).toBe('/tmp/out.pdf')
+  })
+
+  it('re-compresses a completed job once nothing is pending', async () => {
+    const composable = await readyQueue(['/tmp/a.pdf'])
+    mockedCompress.mockResolvedValue(compressionResponse())
+
+    await composable.compressCurrentPdf()
+    expect(composable.jobs.value[0].status).toBe('success')
+
+    // Completion must not dead-end the queue: with no pending files left the
+    // selected job itself becomes the target again.
+    await composable.compressCurrentPdf()
+
+    expect(mockedCompress).toHaveBeenCalledTimes(2)
+    expect(composable.jobs.value[0].status).toBe('success')
   })
 
   it('routes scan-heavy documents through the scanned pipeline', async () => {
