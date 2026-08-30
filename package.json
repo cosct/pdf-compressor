@@ -16,8 +16,8 @@
     "sync-version": "node scripts/sync-version.mjs"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.10.1",
-    "@tauri-apps/plugin-dialog": "^2.6.0",
+    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/plugin-dialog": "^2.7.2",
     "vue": "^3.5.30",
     "vue-i18n": "^11.3.0"
   },
