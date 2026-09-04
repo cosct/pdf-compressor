@@ -26,7 +26,7 @@ cargo install cargo-fuzz cargo-mutants
 ```bash
 pnpm run dev                  # 仅启动前端（浏览器预览，无原生能力）
 pnpm run tauri dev            # 完整桌面应用开发模式（推荐日常使用）
-pnpm exec vp check            # 前端格式化 + lint + 类型检查（oxfmt/oxlint/tsgo）
+pnpm run check                # 前端格式化 + lint + 类型检查（oxfmt/oxlint/tsgo）
 pnpm test                     # 前端单元测试（vp test，Vitest 引擎）
 pnpm run build                # 前端类型检查（vue-tsc）+ 生产构建（vp build）
 
@@ -40,11 +40,14 @@ cargo run -p pdf-core --bin pdf-compressor-cli -- compress <file.pdf> --target-s
 cargo run -p pdf-core --bin pdf-compressor-cli -- quick <file.pdf> --grayscale   # 后台模式（右键集成用）
 ```
 
+> 前端代码在 `frontend/` 子目录（`index.html` / `src` / `public` / `vite.config.ts` / `tsconfig*`）。
+> pnpm 脚本经 `vp -C frontend` 以该目录为根运行；依赖与脚本仍由根 `package.json` 统一管理。
+
 ## 3. 架构总览
 
 ```
 ┌─────────────────────────────┐       ┌──────────────────────────────┐
-│  前端 (src/, Vue 3 + TS)     │  IPC  │  桌面壳 (src-tauri, Tauri 2) │
+│  前端 (frontend/, Vue 3 + TS) │  IPC  │  桌面壳 (src-tauri, Tauri 2) │
 │  App.vue ─ 主视图/设置视图    │ ◄───► │  commands.rs（12 个命令）     │
 │  usePdfCompressor（核心状态）│ typed │  任务注册表 / 输出路径白名单    │
 └─────────────────────────────┘  IPC  └──────────────┬───────────────┘
@@ -71,8 +74,8 @@ cargo run -p pdf-core --bin pdf-compressor-cli -- quick <file.pdf> --grayscale  
   只接受本会话产物，防止 IPC 沦为“打开任意文件”的原语）。
 - **前端**：无 Pinia，状态集中在单例 composable `usePdfCompressor`
   （队列、逐任务设置、并发调度、取消、localStorage 持久化）。
-  `src/lib/bindings.ts` 是 tauri-specta 生成的类型化 IPC 层（勿手改）；
-  `src/lib/tauri.ts` 在其上封装进度通道归一化与浏览器降级。
+  `frontend/src/lib/bindings.ts` 是 tauri-specta 生成的类型化 IPC 层（勿手改）；
+  `frontend/src/lib/tauri.ts` 在其上封装进度通道归一化与浏览器降级。
 
 ### 一次压缩请求的数据流
 
@@ -93,7 +96,7 @@ cargo run -p pdf-core --bin pdf-compressor-cli -- quick <file.pdf> --grayscale  
 | 引擎集成 | `cargo test -p pdf-core --lib`（`pdf/tests.rs`） | 真实 lopdf 构造的 PDF：往返保文本且缩减>50%、去重、SMask、灰度、目标大小、96 用例变异语料不 panic、真加密拒绝/owner-only 解锁、多图小流解除跳过、灰度强制重编码、不写更大输出、预估排除不可解码编码器 |
 | CLI 单元 | `cargo test -p pdf-core --bin pdf-compressor-cli` | `parse_size`/`flag_value`/`split_quick_inputs` 参数解析、quick 通知文案（en/zh） |
 | 桌面壳单元 | `cargo test -p app --lib` | 任务注册表（注册/取消/注销）、输出路径白名单（含规范化）、预设配置原子写/读回/清除/损坏 JSON、`existing_paths` 过滤 |
-| Bindings | `cargo test --workspace`（含 `export_bindings`） | 由 Rust 签名再生成 `src/lib/bindings.ts` —— **命令签名变更后必须运行并提交再生成结果** |
+| Bindings | `cargo test --workspace`（含 `export_bindings`） | 由 Rust 签名再生成 `frontend/src/lib/bindings.ts` —— **命令签名变更后必须运行并提交再生成结果** |
 | 基准 | `cargo bench -p pdf-core` | 全管线各预设、编码器对比（jpeg-encoder vs image crate）；夹具生成器共享自 `testutil` |
 | 变异测试 | `cargo mutants`（在 `crates/pdf-core` 下，配置 `.cargo/mutants.toml`） | 每周一 CI 自动跑（`.github/workflows/mutants.yml`），报告在 `mutants.out/` |
 | 模糊测试 | `cd crates/pdf-core && cargo +nightly fuzz run pipeline` | 任意字节跑 analyze+compress+目标大小搜索；CI 每次 push 冒烟 60s |
@@ -197,10 +200,10 @@ Rust clippy `-D warnings` + 测试、两个 MSRV 检查、60s 模糊测试、依
 
 ### 测试约定
 
-- 前端测试在 `src/**/__tests__/*.spec.ts`，`lib/tauri` 一律 mock，只测状态转换。
+- 前端测试在 `frontend/src/**/__tests__/*.spec.ts`，`lib/tauri` 一律 mock，只测状态转换。
 - 引擎集成测试用 `tests.rs` 顶部的 fixture 生成器构造 PDF，不依赖外部文件。
 - 新增 Tauri 命令：改 `commands.rs` → `cargo test --workspace` 再生成 bindings → 前端经
-  `src/lib/tauri.ts` 封装调用，禁止组件直接 `invoke`。
+  `frontend/src/lib/tauri.ts` 封装调用，禁止组件直接 `invoke`。
 
 ## 5. 代码规范与约定
 
@@ -208,7 +211,7 @@ Rust clippy `-D warnings` + 测试、两个 MSRV 检查、60s 模糊测试、依
   `redundant_clone`/`too_many_arguments` 等为 deny。提交前本地跑一遍同款命令。
 - **TypeScript/Vue**：`pnpm run build` 内含 vue-tsc 类型检查；组件内 props down / emits up，
   业务状态只进 `usePdfCompressor`。
-- **i18n**：所有用户可见文案进 `src/locales/{en,zh-CN}.ts`，两份文件 key 必须一致；
+- **i18n**：所有用户可见文案进 `frontend/src/locales/{en,zh-CN}.ts`，两份文件 key 必须一致；
   后端文案用 code（如 `compress.warning.targetSizeMissed`）+ values 传参，前端
   `backendMessages.ts` 负责本地化与回退（en 缺失时回退 backend `fallback` 文本）。
 - **注释**：模块头双语（英/中）说明职责，函数注释只写“为什么”。
@@ -218,13 +221,13 @@ Rust clippy `-D warnings` + 测试、两个 MSRV 检查、60s 模糊测试、依
 ## 6. 构建与打包
 
 ```bash
-pnpm run build        # 前端生产包（dist/）
+pnpm run build        # 前端生产包（frontend/dist/）
 pnpm run tauri build  # 桌面安装包（Windows: NSIS）
 pnpm run tauri:build  # 安装包 + 便携版可执行文件（scripts/postbuild-portable.mjs）
 ```
 
-- Linux（Arch）：AUR 源码包在 `packaging/archlinux/`，PKGBUILD 走
-  `pnpm install --frozen-lockfile && pnpm run build` + `cargo build --release --locked`。
+- Linux（Arch）：AUR 源码包在 `packaging/archlinux/`，PKGBUILD 走与 deb/appimage
+  相同的 `tauri build --no-bundle` 管线（另编 headless CLI），不会与 bundle 目标漂移。
 - Release 流程见 `.github/workflows/release.yml`；产物命名与标识符见 README「Release metadata」。
 
 ## 7. 开发常见问题

@@ -27,7 +27,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Lint, format & type check (vp check)
-        run: pnpm exec vp check
+        run: pnpm run check
 
       - name: Unit tests
         run: pnpm test

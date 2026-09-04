@@ -4,7 +4,7 @@
   "version": "0.4.0",
   "identifier": "com.cosct.pdfcompressor",
   "build": {
-    "frontendDist": "../dist",
+    "frontendDist": "../frontend/dist",
     "devUrl": "http://localhost:5173",
     "beforeDevCommand": "pnpm run dev",
     "beforeBuildCommand": "pnpm run build"

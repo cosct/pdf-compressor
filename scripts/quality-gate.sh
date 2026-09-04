@@ -16,7 +16,7 @@ log "cargo test（workspace）"
 cargo test --workspace --locked
 
 log "前端格式化 + lint + 类型检查（vp check：oxfmt/oxlint/tsgo）"
-pnpm exec vp check
+pnpm run check
 
 log "前端单元测试（vp test）"
 pnpm test

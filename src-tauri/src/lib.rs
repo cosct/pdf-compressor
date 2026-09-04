@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
-/// Specta command registry — regenerates `src/lib/bindings.ts` via
+/// Specta command registry — regenerates `frontend/src/lib/bindings.ts` via
 /// `cargo test export_bindings` so the frontend always matches the backend.
 fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
     use tauri_specta::{collect_commands, Builder};
@@ -113,7 +113,7 @@ mod specta_export {
         specta_builder()
             .export(
                 specta_typescript::Typescript::default(),
-                "../src/lib/bindings.ts",
+                "../frontend/src/lib/bindings.ts",
             )
             .expect("failed to export typescript bindings");
     }

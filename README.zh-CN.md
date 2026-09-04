@@ -85,18 +85,18 @@ Rust 压缩引擎进行了针对性的性能改进：
 
 ### 主题系统架构
 
-主题系统实现为 Vue composable（`src/composables/useTheme.ts`）：
+主题系统实现为 Vue composable（`frontend/src/composables/useTheme.ts`）：
 
 - **响应式状态** — `themePreference`（ref）跟踪用户的选择：`'dark'`、`'light'` 或 `'system'`。`resolvedTheme`（computed）将 `'system'` 解析为实际的操作系统偏好。
 - **系统默认** — 首次启动未存储偏好时，主题默认为 `'system'`，即跟随操作系统的深色/浅色设置。
 - **DOM 同步** — watcher 在解析主题变化时，将 `data-theme` 属性和 `color-scheme` CSS 属性应用到 `<html>` 元素。
 - **系统偏好监听** — composable 监听 `prefers-color-scheme` 媒体查询变化，当模式设为"跟随系统"时，切换操作系统主题会立即更新界面。
-- **防闪烁** — `index.html` 中的同步 `<script>` 块在任何 CSS 或 Vue 代码加载之前，从 localStorage 读取存储的主题并应用 `data-theme` 属性。CSS `prefers-color-scheme` 媒体查询作为脚本执行前的额外回退。
+- **防闪烁** — `frontend/index.html` 中的同步 `<script>` 块在任何 CSS 或 Vue 代码加载之前，从 localStorage 读取存储的主题并应用 `data-theme` 属性。CSS `prefers-color-scheme` 媒体查询作为脚本执行前的额外回退。
 - **持久化** — 主题偏好保存在 localStorage 的 `pdf-compressor-theme` 键下。
 
 ### 预设持久化
 
-用户自定义的预设配置通过 `src/config/presets.ts` 和 Rust `commands.rs` 命令层持久化到磁盘：
+用户自定义的预设配置通过 `frontend/src/config/presets.ts` 和 Rust `commands.rs` 命令层持久化到磁盘：
 
 - **存储位置** — 后端优先写入安装目录；当安装目录不可写时（如 `Program Files`），回退到系统应用配置目录（如 `AppData/Roaming/pdf-compressor`）。
 - **原子写入** — 配置先写入 `.tmp` 临时文件再重命名，避免写入中断导致损坏。
@@ -150,7 +150,7 @@ Rust 压缩引擎进行了针对性的性能改进：
 2. 由应用分析每个文件并推荐预设。
 3. 查看所选文件，按需调整设置，导出优化副本。
 
-"先分析再压缩"的规则在 `src/composables/usePdfCompressor.ts` 中强制执行。压缩会等待每个队列文件完成分析后，才把该文件交给后端压缩器。
+"先分析再压缩"的规则在 `frontend/src/composables/usePdfCompressor.ts` 中强制执行。压缩会等待每个队列文件完成分析后，才把该文件交给后端压缩器。
 
 ## 项目架构
 
@@ -162,19 +162,19 @@ Vue UI -> Tauri bridge -> Rust commands -> PDF analysis/compression engine -> ou
 
 ### 前端架构
 
-- `src/main.ts` — Vue 入口；加载全局样式并挂载带 i18n 的应用
-- `src/App.vue` — 顶层应用外壳；双栏布局：上传面板（主区域）+ 侧栏（设置、活动）；将工作流状态映射为用户可见的状态文案
-- `src/composables/useTheme.ts` — 主题管理 composable（深色 / 浅色 / 跟随系统），持久化存储，DOM 同步，监听系统主题变化
-- `src/composables/usePdfCompressor.ts` — 工作流状态的单一事实来源；管理任务、设置、分析结果、压缩结果、加载状态和错误；将后端载荷规范化为前端类型；强制"先分析再压缩"；用工作线程池管理并发压缩
-- `src/composables/useErrorToasts.ts` — 错误通知状态管理：去重后的通知队列，由 `ErrorToastViewport` 呈现
-- `src/composables/backendMessages.ts` — 后端消息适配层：净化后端载荷，做运行时 tone/phase 校验并本地化
-- `src/lib/tauri.ts` — Vue 与 Tauri 命令之间的桥接层；检测原生命令是否可用；打开桌面文件/目录选择器；监听原生拖放事件；调用 `analyze_pdf`、`compress_pdf`、`cancel_compression` 和预设配置命令；窗口管理（最小化、最大化、关闭、拖动）
-- `src/lib/bindings.ts` — 由 tauri-specta 生成的类型化 IPC 层（命令与载荷类型；`export_bindings` 测试负责再生成）
-- `src/config/presets.ts` — 预设配置管理（加载、保存、清除），合并内置默认值与用户覆盖，缓存已加载配置
-- `src/config/preset-defaults.json` — 各压缩预设的内置默认值（质量、最大图片尺寸百分比）
-- `src/utils/compressionSettings.ts` — 图片质量、尺寸百分比和像素值的夹紧与规范化；基于参考边长把百分比转换为绝对像素值
-- `src/utils/format.ts` — 格式化工具（字节、百分比、毫秒、路径）
-- `src/i18n/index.ts` — 国际化初始化，支持 `en` 和 `zh-CN`，语言选择保存在 localStorage
+- `frontend/src/main.ts` — Vue 入口；加载全局样式并挂载带 i18n 的应用
+- `frontend/src/App.vue` — 顶层应用外壳；双栏布局：上传面板（主区域）+ 侧栏（设置、活动）；将工作流状态映射为用户可见的状态文案
+- `frontend/src/composables/useTheme.ts` — 主题管理 composable（深色 / 浅色 / 跟随系统），持久化存储，DOM 同步，监听系统主题变化
+- `frontend/src/composables/usePdfCompressor.ts` — 工作流状态的单一事实来源；管理任务、设置、分析结果、压缩结果、加载状态和错误；将后端载荷规范化为前端类型；强制"先分析再压缩"；用工作线程池管理并发压缩
+- `frontend/src/composables/useErrorToasts.ts` — 错误通知状态管理：去重后的通知队列，由 `ErrorToastViewport` 呈现
+- `frontend/src/composables/backendMessages.ts` — 后端消息适配层：净化后端载荷，做运行时 tone/phase 校验并本地化
+- `frontend/src/lib/tauri.ts` — Vue 与 Tauri 命令之间的桥接层；检测原生命令是否可用；打开桌面文件/目录选择器；监听原生拖放事件；调用 `analyze_pdf`、`compress_pdf`、`cancel_compression` 和预设配置命令；窗口管理（最小化、最大化、关闭、拖动）
+- `frontend/src/lib/bindings.ts` — 由 tauri-specta 生成的类型化 IPC 层（命令与载荷类型；`export_bindings` 测试负责再生成）
+- `frontend/src/config/presets.ts` — 预设配置管理（加载、保存、清除），合并内置默认值与用户覆盖，缓存已加载配置
+- `frontend/src/config/preset-defaults.json` — 各压缩预设的内置默认值（质量、最大图片尺寸百分比）
+- `frontend/src/utils/compressionSettings.ts` — 图片质量、尺寸百分比和像素值的夹紧与规范化；基于参考边长把百分比转换为绝对像素值
+- `frontend/src/utils/format.ts` — 格式化工具（字节、百分比、毫秒、路径）
+- `frontend/src/i18n/index.ts` — 国际化初始化，支持 `en` 和 `zh-CN`，语言选择保存在 localStorage
 
 ### PDF 引擎（`crates/pdf-core`）
 
@@ -198,41 +198,45 @@ Vue UI -> Tauri bridge -> Rust commands -> PDF analysis/compression engine -> ou
 
 ```text
 .
-├─ public/
-│  └─ splash.html                   # 应用初始化时显示的启动画面
-├─ src/
-│  ├─ main.ts                       # Vue 应用入口
-│  ├─ App.vue                       # 主外壳：双栏布局
-│  ├─ composables/
-│  │  ├─ usePdfCompressor.ts        # 工作流状态、命令调用、数据规范化
-│  │  ├─ useTheme.ts                # 深色/浅色/系统主题管理
-│  │  ├─ useErrorToasts.ts          # 去重错误通知队列
-│  │  ├─ backendMessages.ts         # 后端消息净化与本地化
-│  │  └─ __tests__/                 # 单元测试（vp test）
-│  ├─ lib/
-│  │  ├─ tauri.ts                   # 原生桥接、对话框、拖放、命令调用
-│  │  └─ bindings.ts                # tauri-specta 生成的类型化 IPC 层
-│  ├─ config/
-│  │  ├─ presets.ts                 # 预设配置管理、持久化、默认值合并
-│  │  └─ preset-defaults.json       # 各预设的内置默认值
-│  ├─ components/
-│  │  ├─ PdfUploadPanel.vue         # 队列上传与拖放界面（主视图）
-│  │  ├─ CompressionSettingsPanel.vue # 预设网格、滑块、开关
-│  │  ├─ QuickCompressPanel.vue       # 右键快速压缩配置档案编辑
-│  │  ├─ AppearanceSettingsPanel.vue  # 主题与语言（设置视图）
-│  │  ├─ ActivityPanel.vue          # 当前任务状态、压缩按钮、指标
-│  │  ├─ AppHeader.vue              # 品牌、设置导航、窗口控件
-│  │  └─ ErrorToastViewport.vue     # 浮动错误/警告通知
-│  ├─ i18n/
-│  │  └─ index.ts                   # 语言初始化与持久化
-│  ├─ locales/
-│  │  ├─ en.ts
-│  │  └─ zh-CN.ts
-│  ├─ utils/
-│  │  ├─ compressionSettings.ts     # 图片质量/尺寸夹紧与像素计算
-│  │  └─ format.ts                  # 格式化工具（字节、百分比、路径、毫秒）
-│  └─ types/
-│     └─ pdf.ts                     # 前端 PDF 工作流类型
+├─ frontend/
+│  ├─ index.html                    # Vite 入口文档
+│  ├─ vite.config.ts                # Vite + Vite+ 工具链配置（build/test/fmt/lint）
+│  ├─ tsconfig*.json                # TypeScript 项目引用
+│  ├─ public/
+│  │  └─ splash.html                # 应用初始化时显示的启动画面
+│  ├─ src/
+│  │  ├─ main.ts                    # Vue 应用入口
+│  │  ├─ App.vue                    # 主外壳：双栏布局
+│  │  ├─ composables/
+│  │  │  ├─ usePdfCompressor.ts     # 工作流状态、命令调用、数据规范化
+│  │  │  ├─ useTheme.ts             # 深色/浅色/系统主题管理
+│  │  │  ├─ useErrorToasts.ts       # 去重错误通知队列
+│  │  │  ├─ backendMessages.ts      # 后端消息净化与本地化
+│  │  │  └─ __tests__/              # 单元测试（vp test）
+│  │  ├─ lib/
+│  │  │  ├─ tauri.ts                # 原生桥接、对话框、拖放、命令调用
+│  │  │  └─ bindings.ts             # tauri-specta 生成的类型化 IPC 层
+│  │  ├─ config/
+│  │  │  ├─ presets.ts              # 预设配置管理、持久化、默认值合并
+│  │  │  └─ preset-defaults.json    # 各预设的内置默认值
+│  │  ├─ components/
+│  │  │  ├─ PdfUploadPanel.vue      # 队列上传与拖放界面（主视图）
+│  │  │  ├─ CompressionSettingsPanel.vue # 预设网格、滑块、开关
+│  │  │  ├─ QuickCompressPanel.vue  # 右键快速压缩配置档案编辑
+│  │  │  ├─ AppearanceSettingsPanel.vue # 主题与语言（设置视图）
+│  │  │  ├─ ActivityPanel.vue       # 当前任务状态、压缩按钮、指标
+│  │  │  ├─ AppHeader.vue           # 品牌、设置导航、窗口控件
+│  │  │  └─ ErrorToastViewport.vue  # 浮动错误/警告通知
+│  │  ├─ i18n/
+│  │  │  └─ index.ts                # 语言初始化与持久化
+│  │  ├─ locales/
+│  │  │  ├─ en.ts
+│  │  │  └─ zh-CN.ts
+│  │  ├─ utils/
+│  │  │  ├─ compressionSettings.ts # 图片质量/尺寸夹紧与像素计算
+│  │  │  └─ format.ts              # 格式化工具（字节、百分比、路径、毫秒）
+│  │  └─ types/
+│  │     └─ pdf.ts                  # 前端 PDF 工作流类型
 ├─ crates/
 │  └─ pdf-core/                     # 纯 Rust PDF 引擎 crate
 │     ├─ Cargo.toml
@@ -327,7 +331,7 @@ cargo test --workspace      # Rust 单元 + 管线集成测试
 cargo bench -p pdf-core     # 压缩基准测试（criterion）
 ```
 
-Rust 代码是一个 Cargo workspace：`crates/pdf-core` 是纯 PDF 引擎（分析器、压缩器、模型、`pdf-compressor-cli` 二进制、基准测试和 cargo-fuzz 目标），`src-tauri` 是桌面壳。Rust 测试套件中有一个 `export_bindings` 测试，负责重新生成 `src/lib/bindings.ts`（由 tauri-specta 产出的类型化 IPC 层）。每当 Tauri 命令签名发生变化，运行 `cargo test --workspace` 并把再生成后的绑定随改动一起提交。
+Rust 代码是一个 Cargo workspace：`crates/pdf-core` 是纯 PDF 引擎（分析器、压缩器、模型、`pdf-compressor-cli` 二进制、基准测试和 cargo-fuzz 目标），`src-tauri` 是桌面壳。Rust 测试套件中有一个 `export_bindings` 测试，负责重新生成 `frontend/src/lib/bindings.ts`（由 tauri-specta 产出的类型化 IPC 层）。每当 Tauri 命令签名发生变化，运行 `cargo test --workspace` 并把再生成后的绑定随改动一起提交。
 
 另有一个小型 CLI 可供 shell 使用和调试：
 
@@ -403,7 +407,7 @@ pnpm run tauri:build
 
 ### Linux 打包（Arch / AUR）
 
-针对基于 Arch 的发行版，通过 `packaging/archlinux/` 中的 AUR 源码包提供打包支持。`PKGBUILD` 会执行 `pnpm install --frozen-lockfile && pnpm run build`，用 `cargo build --release --locked` 构建发布二进制，并将其作为 `/usr/bin/pdf-compressor` 连同桌面入口和图标一起安装。用法见[安装](#安装)，发布流程见 `packaging/archlinux/README.md`。
+针对基于 Arch 的发行版，通过 `packaging/archlinux/` 中的 AUR 源码包提供打包支持。`PKGBUILD` 走与 deb/AppImage 相同的 `tauri build` 管线（`tauri build --no-bundle`，前端构建与 `custom-protocol` 内嵌行为完全一致），另补编 headless 的 `pdf-compressor-cli`，并将 GUI 安装为 `/usr/bin/pdf-compressor` 连同桌面入口和图标。用法见[安装](#安装)，发布流程见 `packaging/archlinux/README.md`。
 
 ## 运行时细节
 
@@ -424,7 +428,7 @@ pnpm run tauri:build
 
 ### 主题系统
 
-主题系统使用 CSS 自定义属性，深色和浅色各有一套完整的令牌集。主题切换即时生效，无需刷新页面。`<html>` 上的 `data-theme` 属性控制激活哪套令牌。首次启动时，主题默认跟随操作系统偏好（`system` 模式）。`index.html` 中的同步脚本在启动时防止主题闪烁，CSS `prefers-color-scheme` 媒体查询作为额外回退。
+主题系统使用 CSS 自定义属性，深色和浅色各有一套完整的令牌集。主题切换即时生效，无需刷新页面。`<html>` 上的 `data-theme` 属性控制激活哪套令牌。首次启动时，主题默认跟随操作系统偏好（`system` 模式）。`frontend/index.html` 中的同步脚本在启动时防止主题闪烁，CSS `prefers-color-scheme` 媒体查询作为额外回退。
 
 ## 输出行为
 
