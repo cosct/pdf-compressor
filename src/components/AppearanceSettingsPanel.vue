@@ -39,8 +39,13 @@ function chooseLocale(value: AppLocale) {
     <header class="panel-header">
       <span class="panel-header__icon" aria-hidden="true">
         <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-          <circle cx="9" cy="9" r="3.2" stroke="currentColor" stroke-width="1.4"/>
-          <path d="M9 1.8v1.6M9 14.6v1.6M1.8 9h1.6M14.6 9h1.6M3.9 3.9l1.1 1.1M13 13l1.1 1.1M14.1 3.9 13 5M5 13l-1.1 1.1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+          <circle cx="9" cy="9" r="3.2" stroke="currentColor" stroke-width="1.4" />
+          <path
+            d="M9 1.8v1.6M9 14.6v1.6M1.8 9h1.6M14.6 9h1.6M3.9 3.9l1.1 1.1M13 13l1.1 1.1M14.1 3.9 13 5M5 13l-1.1 1.1"
+            stroke="currentColor"
+            stroke-width="1.4"
+            stroke-linecap="round"
+          />
         </svg>
       </span>
       <h2>{{ t('appearance.title') }}</h2>

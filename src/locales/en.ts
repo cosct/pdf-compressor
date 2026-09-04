@@ -72,11 +72,13 @@ const en = {
     quality: 'Image quality',
     qualityHint: 'JPEG re-encode quality (1–100); lower means smaller files',
     maxEdge: 'Image size cap',
-    maxEdgeHint: 'Images with a longer edge are downscaled; the value is a percentage of the document\'s largest edge',
+    maxEdgeHint:
+      "Images with a longer edge are downscaled; the value is a percentage of the document's largest edge",
     optimizeImages: 'Optimize images',
     optimizeImagesHint: 'Re-encode document images to shrink them; off keeps images untouched',
     compressStreams: 'Compress streams',
-    compressStreamsHint: 'Apply lossless (Flate) compression to content streams and other compressible objects',
+    compressStreamsHint:
+      'Apply lossless (Flate) compression to content streams and other compressible objects',
     stripMetadata: 'Remove metadata',
     stripMetadataHint: 'Strip author/producer and other document information from the metadata',
     colorMode: 'Color mode',
@@ -159,9 +161,11 @@ const en = {
     notices: {
       backendNoteTitle: 'Processing note',
       restoreSkippedTitle: 'Queue restored',
-      restoreSkippedBody: '{count} file(s) from the last session could not be found and were skipped.',
+      restoreSkippedBody:
+        '{count} file(s) from the last session could not be found and were skipped.',
       scanPipelineTitle: 'Scanned-document mode',
-      scanPipelineBody: 'This file looks scan-heavy, so the scanned-document pipeline (forced image and stream optimization) was used.',
+      scanPipelineBody:
+        'This file looks scan-heavy, so the scanned-document pipeline (forced image and stream optimization) was used.',
     },
     errors: {
       backendFallback: 'The desktop service returned an unknown error.',

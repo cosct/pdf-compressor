@@ -48,7 +48,12 @@ function toneClass(tone: NoticeItem['tone']) {
         @click="emit('dismiss', item.id)"
       >
         <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-          <path d="M3 3l6 6M9 3 3 9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+          <path
+            d="M3 3l6 6M9 3 3 9"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+          />
         </svg>
       </button>
     </article>

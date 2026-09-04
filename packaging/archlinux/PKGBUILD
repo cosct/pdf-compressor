@@ -22,7 +22,7 @@ optdepends=(
 makedepends=(
   'cargo'
   'nodejs'
-  'npm'
+  'pnpm'
   'pkgconf'
 )
 source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz")
@@ -31,8 +31,8 @@ sha256sums=('SKIP')
 build() {
   cd "${pkgname}-${pkgver}"
 
-  npm ci
-  npm run build
+  pnpm install --frozen-lockfile
+  pnpm run build
 
   # custom-protocol embeds dist/ into the binary; without it the app is a
   # dev-server build that waits on vite at localhost:5173 and shows no window.

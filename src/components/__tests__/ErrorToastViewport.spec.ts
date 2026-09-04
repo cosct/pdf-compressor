@@ -4,7 +4,7 @@
  * 错误通知视口的组件测试：级别角色、关闭操作，以及驱动自动消失的悬停/聚焦暂停恢复事件。
  */
 import { mount } from '@vue/test-utils'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vite-plus/test'
 
 import ErrorToastViewport from '../ErrorToastViewport.vue'
 import { i18n } from '../../i18n'
@@ -29,10 +29,7 @@ function mountViewport(items: NoticeItem[]) {
 
 describe('ErrorToastViewport', () => {
   it('renders one card per item with tone class and aria role', () => {
-    const wrapper = mountViewport([
-      notice(),
-      notice({ id: 'toast-2', tone: 'success' }),
-    ])
+    const wrapper = mountViewport([notice(), notice({ id: 'toast-2', tone: 'success' })])
 
     const cards = wrapper.findAll('.toast-card')
     expect(cards).toHaveLength(2)

@@ -7,7 +7,7 @@ For contributors: setup, architecture, testing, conventions, and packaging.
 
 | 依赖 | 说明 |
 | --- | --- |
-| Node.js 22+ / npm | 前端工具链（Vite、Vitest、vue-tsc） |
+| Node.js 22+ / pnpm / Vite+ | 前端统一工具链（`vp` 管 dev/build/test/lint/fmt，vue-tsc 负责 .vue 类型检查） |
 | Rust 工具链 | MSRV：`crates/pdf-core` 为 1.88，`src-tauri` 为 1.93（CI 强制校验） |
 | Tauri 系统依赖 | Linux 需要 `webkit2gtk-4.1`、`gtk3`、`librsvg`、`patchelf`；其他平台见 Tauri 官方文档 |
 | cargo-fuzz（可选） | 模糊测试，需要 nightly 工具链 |
@@ -15,7 +15,7 @@ For contributors: setup, architecture, testing, conventions, and packaging.
 
 ```bash
 # 安装 JS 依赖
-npm install
+pnpm install
 
 # 安装可选的 Rust 工具（按需）
 cargo install cargo-fuzz cargo-mutants
@@ -24,10 +24,11 @@ cargo install cargo-fuzz cargo-mutants
 ## 2. 常用命令速查
 
 ```bash
-npm run dev                  # 仅启动前端（浏览器预览，无原生能力）
-npm run tauri dev            # 完整桌面应用开发模式（推荐日常使用）
-npm test                     # 前端单元测试（Vitest）
-npm run build                # 前端类型检查（vue-tsc）+ 生产构建
+pnpm run dev                  # 仅启动前端（浏览器预览，无原生能力）
+pnpm run tauri dev            # 完整桌面应用开发模式（推荐日常使用）
+pnpm exec vp check            # 前端格式化 + lint + 类型检查（oxfmt/oxlint/tsgo）
+pnpm test                     # 前端单元测试（vp test，Vitest 引擎）
+pnpm run build                # 前端类型检查（vue-tsc）+ 生产构建（vp build）
 
 cargo test --workspace       # Rust 单元 + 集成测试 + bindings 再生成
 cargo clippy --workspace --all-targets -- -D warnings   # CI 同款 lint
@@ -87,7 +88,7 @@ cargo run -p pdf-core --bin pdf-compressor-cli -- quick <file.pdf> --grayscale  
 
 | 层 | 命令 | 覆盖内容 |
 | --- | --- | --- |
-| 前端单元 | `npm test` | 队列/调度/取消（usePdfCompressor）、通知计时（useErrorToasts）、右键菜单键盘可达性、设置面板（预设/校验/应用到全部）、App 装配冒烟、en/zh-CN key 树一致性 |
+| 前端单元 | `pnpm test` | 队列/调度/取消（usePdfCompressor）、通知计时（useErrorToasts）、右键菜单键盘可达性、设置面板（预设/校验/应用到全部）、App 装配冒烟、en/zh-CN key 树一致性 |
 | 引擎单元 | `cargo test -p pdf-core --lib` | 设置夹紧与优先级、分析推荐公式、JPEG 头解析、worker 数量界、resize 行为、目标大小搜索调度数学（质量二分/边长收缩/边界重置） |
 | 引擎集成 | `cargo test -p pdf-core --lib`（`pdf/tests.rs`） | 真实 lopdf 构造的 PDF：往返保文本且缩减>50%、去重、SMask、灰度、目标大小、96 用例变异语料不 panic、真加密拒绝/owner-only 解锁、多图小流解除跳过、灰度强制重编码、不写更大输出、预估排除不可解码编码器 |
 | CLI 单元 | `cargo test -p pdf-core --bin pdf-compressor-cli` | `parse_size`/`flag_value`/`split_quick_inputs` 参数解析、quick 通知文案（en/zh） |
@@ -192,7 +193,7 @@ cargo run -p pdf-core --bin pdf-compressor-cli -- quick <file.pdf> --grayscale  
 
 CI（`.github/workflows/ci.yml`）在每次 push/PR 执行：前端测试+类型检查+构建、
 Rust clippy `-D warnings` + 测试、两个 MSRV 检查、60s 模糊测试、依赖审计
-（cargo audit + npm audit）。
+（cargo audit + pnpm audit）。
 
 ### 测试约定
 
@@ -205,32 +206,32 @@ Rust clippy `-D warnings` + 测试、两个 MSRV 检查、60s 模糊测试、依
 
 - **Rust**：workspace 级 clippy（`Cargo.toml [workspace.lints]`），CI 以 `-D warnings` 执行；
   `redundant_clone`/`too_many_arguments` 等为 deny。提交前本地跑一遍同款命令。
-- **TypeScript/Vue**：`npm run build` 内含 vue-tsc 类型检查；组件内 props down / emits up，
+- **TypeScript/Vue**：`pnpm run build` 内含 vue-tsc 类型检查；组件内 props down / emits up，
   业务状态只进 `usePdfCompressor`。
 - **i18n**：所有用户可见文案进 `src/locales/{en,zh-CN}.ts`，两份文件 key 必须一致；
   后端文案用 code（如 `compress.warning.targetSizeMissed`）+ values 传参，前端
   `backendMessages.ts` 负责本地化与回退（en 缺失时回退 backend `fallback` 文本）。
 - **注释**：模块头双语（英/中）说明职责，函数注释只写“为什么”。
-- **版本**：`package.json` 是唯一版本源，改版本后运行 `npm run sync-version`
+- **版本**：`package.json` 是唯一版本源，改版本后运行 `pnpm run sync-version`
   同步到 `tauri.conf.json` 与 `src-tauri/Cargo.toml`。
 
 ## 6. 构建与打包
 
 ```bash
-npm run build        # 前端生产包（dist/）
-npm run tauri build  # 桌面安装包（Windows: NSIS）
-npm run tauri:build  # 安装包 + 便携版可执行文件（scripts/postbuild-portable.mjs）
+pnpm run build        # 前端生产包（dist/）
+pnpm run tauri build  # 桌面安装包（Windows: NSIS）
+pnpm run tauri:build  # 安装包 + 便携版可执行文件（scripts/postbuild-portable.mjs）
 ```
 
-- Linux（Arch）：AUR 源码包在 `aur/pdf-compressor/`，PKGBUILD 走
-  `npm ci && npm run build` + `cargo build --release --locked`。
+- Linux（Arch）：AUR 源码包在 `packaging/archlinux/`，PKGBUILD 走
+  `pnpm install --frozen-lockfile && pnpm run build` + `cargo build --release --locked`。
 - Release 流程见 `.github/workflows/release.yml`；产物命名与标识符见 README「Release metadata」。
 
 ## 7. 开发常见问题
 
 - **浏览器预览里 Browse 按钮不可用 / 拖拽拿不到路径**：预期行为。原生能力检测用
   `hasNativeCommands()`（内部 `isTauri()`），浏览器模式自动降级；要验证原生交互请用
-  `npm run tauri dev`。
+  `pnpm run tauri dev`。
 - **改了命令签名后前端类型报错**：运行 `cargo test --workspace` 再生成 bindings 并提交。
 - **压缩后文件没变小**：先看分析结果 `documentKind`（text-native 压缩空间有限）、
   是否无内嵌图片、或图片过滤器不受支持（JPX/JBIG2/CCITT/Crypt 会跳过）。

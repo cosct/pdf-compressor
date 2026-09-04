@@ -33,13 +33,13 @@ PDF Compressor 是一个本地优先的桌面 PDF 压缩应用，后端使用 Ru
 
 ### Arch Linux（AUR）
 
-AUR 源码包文件位于 [`aur/pdf-compressor/`](aur/pdf-compressor/)。包发布到 AUR 后，可使用任意 AUR 助手安装：
+AUR 源码包文件位于 [`packaging/archlinux/`](packaging/archlinux/)。包发布到 AUR 后，可使用任意 AUR 助手安装：
 
 ```bash
 yay -S pdf-compressor      # 或：paru -S pdf-compressor
 ```
 
-若要基于提供的文件在本地构建，请参考 [`aur/pdf-compressor/README.md`](aur/pdf-compressor/README.md)，其中说明了如何替换源码校验和、重新生成 `.SRCINFO`，以及在发布归档之前创建本地源码 tarball 进行测试。
+若要基于提供的文件在本地构建，请参考 [`packaging/archlinux/README.md`](packaging/archlinux/README.md)，其中说明了如何替换源码校验和、重新生成 `.SRCINFO`，以及在发布归档之前创建本地源码 tarball 进行测试。
 
 日常从已提交代码树做本地构建，直接用辅助脚本 —— 它用 `git archive HEAD` 裁剪源码 tarball（保证包内容与提交内容完全一致），从发布模板派生 PKGBUILD，并把产物写入被 gitignore 的 `pdf-compressor-local/` 目录：
 
@@ -208,7 +208,7 @@ Vue UI -> Tauri bridge -> Rust commands -> PDF analysis/compression engine -> ou
 │  │  ├─ useTheme.ts                # 深色/浅色/系统主题管理
 │  │  ├─ useErrorToasts.ts          # 去重错误通知队列
 │  │  ├─ backendMessages.ts         # 后端消息净化与本地化
-│  │  └─ __tests__/                 # Vitest 单元测试
+│  │  └─ __tests__/                 # 单元测试（vp test）
 │  ├─ lib/
 │  │  ├─ tauri.ts                   # 原生桥接、对话框、拖放、命令调用
 │  │  └─ bindings.ts                # tauri-specta 生成的类型化 IPC 层
@@ -261,11 +261,16 @@ Vue UI -> Tauri bridge -> Rust commands -> PDF analysis/compression engine -> ou
 │     ├─ lib.rs                     # Tauri 构建入口、启动画面管理
 │     ├─ main.rs                    # 桌面程序入口
 │     └─ commands.rs                # 命令接口层、预设配置、任务注册
-├─ aur/
-│  └─ pdf-compressor/                # Arch Linux（AUR）源码包（PKGBUILD、.SRCINFO）
+├─ packaging/
+│  ├─ archlinux/                     # Arch Linux（AUR）源码包（PKGBUILD、.SRCINFO）
+│  ├─ pdf-compressor.desktop         # 桌面入口（由 PKGBUILD 安装）
+│  └─ servicemenus/                  # KDE Dolphin 右键菜单集成
+├─ docs/
+│  └─ DEVELOPMENT.md                 # 贡献者指南：环境、架构、测试、打包
 ├─ scripts/
-│  ├─ sync-version.mjs              # 版本号同步（package.json -> tauri.conf.json / Cargo.toml）
-│  └─ postbuild-portable.mjs        # 便携版可执行文件后处理
+│  ├─ sync-version.mjs               # 版本号同步（package.json -> tauri.conf.json / Cargo.toml）
+│  ├─ postbuild-portable.mjs         # 便携版可执行文件后处理
+│  └─ quality-gate.sh                # 本地完整质量门（对齐 CI）
 ├─ package.json                     # 前端脚本与 JS 依赖
 ├─ README.md
 └─ README.zh-CN.md
@@ -275,11 +280,11 @@ Vue UI -> Tauri bridge -> Rust commands -> PDF analysis/compression engine -> ou
 
 标准的 Vue + Tauri 桌面应用开发环境：
 
-- Node.js 和 npm
+- Node.js 和 pnpm
 - Rust 工具链（MSRV：`pdf-core` 1.88，桌面应用 1.93 — 由 CI 强制执行）
 - 对应操作系统所需的 Tauri 构建前置依赖
 
-在 Arch Linux 上，系统依赖为 `webkit2gtk-4.1` 和 `gtk3`（构建还需 `cargo`、`nodejs`、`npm` 和 `pkgconf`）；完整列表以 `aur/pdf-compressor/PKGBUILD` 为准。其他发行版需要安装等价的 WebKit2GTK 4.1 与 GTK 3 软件包。
+在 Arch Linux 上，系统依赖为 `webkit2gtk-4.1` 和 `gtk3`（构建还需 `cargo`、`nodejs`、`pnpm` 和 `pkgconf`）；完整列表以 `packaging/archlinux/PKGBUILD` 为准。其他发行版需要安装等价的 WebKit2GTK 4.1 与 GTK 3 软件包。
 
 ## 开发
 
@@ -288,13 +293,13 @@ Vue UI -> Tauri bridge -> Rust commands -> PDF analysis/compression engine -> ou
 ### 安装依赖
 
 ```bash
-npm install
+pnpm install
 ```
 
 ### 仅运行前端
 
 ```bash
-npm run dev
+pnpm run dev
 ```
 
 只启动 Vite 前端，适合 UI 开发、布局检查和一般前端工作。
@@ -309,7 +314,7 @@ npm run dev
 ### 运行完整桌面应用
 
 ```bash
-npm run tauri dev
+pnpm run tauri dev
 ```
 
 启动 Vue 开发服务器和 Tauri 桌面壳。验证原生文件浏览、拖放、后端分析、压缩输出和主题切换时使用此模式。
@@ -317,7 +322,7 @@ npm run tauri dev
 ### 测试
 
 ```bash
-npm test                    # 前端单元测试（Vitest）
+pnpm test                    # 前端单元测试（vp test）
 cargo test --workspace      # Rust 单元 + 管线集成测试
 cargo bench -p pdf-core     # 压缩基准测试（criterion）
 ```
@@ -360,7 +365,7 @@ cargo mutants               # 在 crates/pdf-core 下运行；报告输出到 mu
 `package.json` 是应用版本的单一事实来源。提升版本号后运行：
 
 ```bash
-npm run sync-version
+pnpm run sync-version
 ```
 
 它会把版本号同步到 `src-tauri/tauri.conf.json` 和 `src-tauri/Cargo.toml`。
@@ -370,19 +375,19 @@ npm run sync-version
 ### 构建前端产物
 
 ```bash
-npm run build
+pnpm run build
 ```
 
 ### 构建桌面发布产物
 
 ```bash
-npm run tauri build
+pnpm run tauri build
 ```
 
 这会生成 NSIS 安装包。若需要同时输出便携版（免安装）可执行文件：
 
 ```bash
-npm run tauri:build
+pnpm run tauri:build
 ```
 
 便携版输出路径：`target/release/bundle/PDF-Compressor-portable.exe`。
@@ -398,7 +403,7 @@ npm run tauri:build
 
 ### Linux 打包（Arch / AUR）
 
-针对基于 Arch 的发行版，通过 `aur/pdf-compressor/` 中的 AUR 源码包提供打包支持。`PKGBUILD` 会执行 `npm ci && npm run build`，用 `cargo build --release --locked` 构建发布二进制，并将其作为 `/usr/bin/pdf-compressor` 连同桌面入口和图标一起安装。用法见[安装](#安装)，发布流程见 `aur/pdf-compressor/README.md`。
+针对基于 Arch 的发行版，通过 `packaging/archlinux/` 中的 AUR 源码包提供打包支持。`PKGBUILD` 会执行 `pnpm install --frozen-lockfile && pnpm run build`，用 `cargo build --release --locked` 构建发布二进制，并将其作为 `/usr/bin/pdf-compressor` 连同桌面入口和图标一起安装。用法见[安装](#安装)，发布流程见 `packaging/archlinux/README.md`。
 
 ## 运行时细节
 
@@ -442,7 +447,7 @@ npm run tauri:build
 
 ### 浏览按钮不可用
 
-浏览器预览模式中的正常现象。运行 `npm run tauri dev` 以使用原生浏览。
+浏览器预览模式中的正常现象。运行 `pnpm run tauri dev` 以使用原生浏览。
 
 ### 压缩完成但文件没有变小
 

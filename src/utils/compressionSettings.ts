@@ -41,7 +41,9 @@ export function calculateMaxImageSizePx(
   maxImageSizePercent: number,
   referenceMaxImageEdgePx?: number | null,
 ): number {
-  const baseEdge = normalizeReferenceMaxImageEdgePx(referenceMaxImageEdgePx) ?? DEFAULT_REFERENCE_IMAGE_EDGE_PX
-  const calculated = Math.round((baseEdge * clampMaxImageSizePercent(maxImageSizePercent)) / 100 / 100) * 100
+  const baseEdge =
+    normalizeReferenceMaxImageEdgePx(referenceMaxImageEdgePx) ?? DEFAULT_REFERENCE_IMAGE_EDGE_PX
+  const calculated =
+    Math.round((baseEdge * clampMaxImageSizePercent(maxImageSizePercent)) / 100 / 100) * 100
   return clampMaxImageSizePx(calculated)
 }

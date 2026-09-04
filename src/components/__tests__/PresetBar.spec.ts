@@ -5,7 +5,7 @@
  * 主视图预设条组件测试：模式选择（预设与目标大小并列）、目标大小滑块/数值/
  * 单位控制、色彩模式与应用到全部门控。
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vite-plus/test'
 import { flushPromises, mount } from '@vue/test-utils'
 
 vi.mock('../../config/presets', () => {
@@ -150,9 +150,7 @@ describe('PresetBar modes', () => {
     expect((input.element as HTMLInputElement).value).toBe('1')
 
     await select.trigger('click')
-    const kb = wrapper
-      .findAll('.unit-select__option')
-      .find((option) => option.text() === 'KB')
+    const kb = wrapper.findAll('.unit-select__option').find((option) => option.text() === 'KB')
     expect(kb).toBeTruthy()
     await kb!.trigger('click')
     expect((input.element as HTMLInputElement).value).toBe('1024')

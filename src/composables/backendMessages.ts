@@ -43,11 +43,19 @@ function normalizeTone(value: string | undefined, fallback: NoticeTone): NoticeT
   return NOTICE_TONES.includes(value as NoticeTone) ? (value as NoticeTone) : fallback
 }
 
-export function createNotice(id: string, tone: NoticeTone, title: string, body: string): NoticeItem {
+export function createNotice(
+  id: string,
+  tone: NoticeTone,
+  title: string,
+  body: string,
+): NoticeItem {
   return { id, tone, title, body }
 }
 
-export function normalizeMessage(input: BackendNotice, fallbackLevel: NoticeTone = 'neutral'): BackendMessage {
+export function normalizeMessage(
+  input: BackendNotice,
+  fallbackLevel: NoticeTone = 'neutral',
+): BackendMessage {
   const values = input.values
     ? Object.fromEntries(
         Object.entries(input.values)
@@ -86,12 +94,15 @@ function localizeBackendMessage(message: BackendMessage, prefix: 'backend' | 'er
     : prefix === 'error'
       ? translate('app.alertTitle')
       : translate('composable.notices.backendNoteTitle')
-  const body = entry?.body ? formatTemplate(entry.body, values) : message.fallback ?? message.code
+  const body = entry?.body ? formatTemplate(entry.body, values) : (message.fallback ?? message.code)
 
   return createNotice(`${message.code}:${JSON.stringify(values)}`, message.level, title, body)
 }
 
-export function localizeNotices(notices: BackendNotice[], fallbackLevel?: NoticeTone): NoticeItem[] {
+export function localizeNotices(
+  notices: BackendNotice[],
+  fallbackLevel?: NoticeTone,
+): NoticeItem[] {
   return dedupeNotices(
     notices
       .map((item) => normalizeMessage(item, fallbackLevel))
@@ -107,7 +118,10 @@ function optional(value: number | null | undefined): number | undefined {
   return value ?? undefined
 }
 
-export function mapAnalysisSummary(response: AnalysisResponse, sourcePath: string): AnalysisSummary {
+export function mapAnalysisSummary(
+  response: AnalysisResponse,
+  sourcePath: string,
+): AnalysisSummary {
   return {
     sourcePath,
     fileName: fileNameFromPath(sourcePath),
@@ -207,11 +221,19 @@ export function isCancellationError(error: unknown): boolean {
 function normalizePreset(value: string): AnalysisSummary['recommendedPreset'] {
   const normalized = value.toLowerCase()
 
-  if (normalized.includes('max') || normalized.includes('aggressive') || normalized.includes('strong')) {
+  if (
+    normalized.includes('max') ||
+    normalized.includes('aggressive') ||
+    normalized.includes('strong')
+  ) {
     return 'maximum'
   }
 
-  if (normalized.includes('light') || normalized.includes('gentle') || normalized.includes('conservative')) {
+  if (
+    normalized.includes('light') ||
+    normalized.includes('gentle') ||
+    normalized.includes('conservative')
+  ) {
     return 'conservative'
   }
 

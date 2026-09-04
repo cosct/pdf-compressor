@@ -14,11 +14,7 @@ import { loadPresetProfiles } from '../config/presets'
 import { normalizeSettings } from '../composables/usePdfCompressor'
 import { clampMaxImageSizePercent } from '../utils/compressionSettings'
 import UnitSelect from './UnitSelect.vue'
-import type {
-  CompressionPreset,
-  CompressionSettings,
-  PresetProfileMap,
-} from '../types/pdf'
+import type { CompressionPreset, CompressionSettings, PresetProfileMap } from '../types/pdf'
 
 const props = withDefaults(
   defineProps<{
@@ -130,7 +126,7 @@ function selectMode(mode: ModeValue) {
     'update:settings',
     normalizeSettings({
       ...props.settings,
-      ...(defaults ?? {}),
+      ...defaults,
       preset: mode,
       targetFileSizeMb: null,
     }),
@@ -206,7 +202,11 @@ onMounted(async () => {
   <section class="preset-bar" :aria-label="t('settings.presetGroupLabel')">
     <div class="preset-bar__group">
       <span class="preset-bar__section-label">{{ t('settings.compressionMode') }}</span>
-      <div class="preset-bar__presets" role="radiogroup" :aria-label="t('settings.presetGroupLabel')">
+      <div
+        class="preset-bar__presets"
+        role="radiogroup"
+        :aria-label="t('settings.presetGroupLabel')"
+      >
         <button
           v-for="option in modeOptions"
           :key="option.value"
@@ -244,7 +244,10 @@ onMounted(async () => {
     </div>
 
     <div v-if="isTargetMode" class="preset-bar__target-controls">
-      <div class="preset-bar__target-entry" :class="{ 'preset-bar__target-entry--invalid': targetInvalid }">
+      <div
+        class="preset-bar__target-entry"
+        :class="{ 'preset-bar__target-entry--invalid': targetInvalid }"
+      >
         <input
           type="text"
           inputmode="decimal"

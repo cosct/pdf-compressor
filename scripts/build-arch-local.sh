@@ -5,7 +5,7 @@
 # The source tarball is cut with `git archive HEAD`, so the package always
 # contains exactly what is committed — no build artifacts, no nested copies
 # from a previous run. The PKGBUILD is generated from the release template
-# (aur/pdf-compressor/PKGBUILD) with the local source line and checksum
+# (packaging/archlinux/PKGBUILD) with the local source line and checksum
 # substituted, keeping a single source of truth.
 #
 # Usage: scripts/build-arch-local.sh [--install]
@@ -33,7 +33,7 @@ echo "==> source tarball: $tarball (sha256 $checksum)"
 sed \
   -e "s|source=(\"[^\"]*\")|source=(\"pdf-compressor-${version}.tar.gz\")|" \
   -e "s|sha256sums=('[^']*')|sha256sums=('${checksum}')|" \
-  "aur/pdf-compressor/PKGBUILD" > "$outdir/PKGBUILD"
+  "packaging/archlinux/PKGBUILD" > "$outdir/PKGBUILD"
 
 # makepkg unpacks and builds inside $outdir; the globs keep previous outputs
 # out of the way of a fresh verification.

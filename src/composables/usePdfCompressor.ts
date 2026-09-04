@@ -223,7 +223,14 @@ function readPersistedQueue(): PersistedQueueEntry[] {
 }
 
 export function usePdfCompressor() {
-  const { errorToasts, pushErrorToast, dismissErrorToast, pauseErrorToast, resumeErrorToast, reportError } = useErrorToasts()
+  const {
+    errorToasts,
+    pushErrorToast,
+    dismissErrorToast,
+    pauseErrorToast,
+    resumeErrorToast,
+    reportError,
+  } = useErrorToasts()
 
   const jobs = ref<PdfQueueJob[]>([])
   const selectedJobId = ref<string | null>(null)
@@ -240,8 +247,8 @@ export function usePdfCompressor() {
   const activeCompressionTaskIds = new Map<string, string>()
   const cancelledCompressionRuns = new Set<number>()
 
-  const selectedJob = computed(() =>
-    jobs.value.find((job) => job.id === selectedJobId.value) ?? null,
+  const selectedJob = computed(
+    () => jobs.value.find((job) => job.id === selectedJobId.value) ?? null,
   )
   const settings = computed(() => selectedJob.value?.settings ?? draftSettings.value)
   const sourceFileName = computed(() => selectedJob.value?.fileName ?? '')
@@ -253,9 +260,7 @@ export function usePdfCompressor() {
   const jobsPendingCompression = computed(() =>
     jobs.value.filter(
       (job) =>
-        isPdfPath(job.sourcePath) &&
-        job.status !== 'compressing' &&
-        job.status !== 'success',
+        isPdfPath(job.sourcePath) && job.status !== 'compressing' && job.status !== 'success',
     ),
   )
   const pendingQueueCount = computed(() => jobsPendingCompression.value.length)
@@ -270,9 +275,7 @@ export function usePdfCompressor() {
 
     return [selectedJob.value.id]
   })
-  const allCompressionTargetIds = computed(() =>
-    jobsPendingCompression.value.map((job) => job.id),
-  )
+  const allCompressionTargetIds = computed(() => jobsPendingCompression.value.map((job) => job.id))
   const canCompress = computed(
     () =>
       !compressionRunning.value &&
@@ -310,7 +313,10 @@ export function usePdfCompressor() {
   }
 
   function settingsMatch(left: CompressionSettings, right: CompressionSettings): boolean {
-    return JSON.stringify(comparableCompressionSettings(left)) === JSON.stringify(comparableCompressionSettings(right))
+    return (
+      JSON.stringify(comparableCompressionSettings(left)) ===
+      JSON.stringify(comparableCompressionSettings(right))
+    )
   }
 
   function applyRecommendedSettings(job: PdfQueueJob) {

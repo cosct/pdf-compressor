@@ -92,8 +92,21 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onDocumentPoin
       @click="toggle"
     >
       {{ props.modelValue }}
-      <svg class="unit-select__chevron" width="8" height="6" viewBox="0 0 8 6" fill="none" aria-hidden="true">
-        <path d="M1 1.5 4 4.5 7 1.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+      <svg
+        class="unit-select__chevron"
+        width="8"
+        height="6"
+        viewBox="0 0 8 6"
+        fill="none"
+        aria-hidden="true"
+      >
+        <path
+          d="M1 1.5 4 4.5 7 1.5"
+          stroke="currentColor"
+          stroke-width="1.3"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        />
       </svg>
     </button>
 

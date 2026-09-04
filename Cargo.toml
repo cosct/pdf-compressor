@@ -1,3 +1,6 @@
+# Cargo workspace 根：压缩引擎在 crates/pdf-core（可独立测试/模糊测试/基准），
+# Tauri 桌面壳在 src-tauri。全仓库共享根 Cargo.lock，构建/测试/clippy 统一走
+# 根 target/ 与 `cargo <cmd> --workspace`。
 [workspace]
 resolver = "2"
 members = ["crates/pdf-core", "src-tauri"]

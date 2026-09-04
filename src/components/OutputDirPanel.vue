@@ -34,7 +34,13 @@ const { t } = useI18n()
         class="fd-button fd-button--subtle output-dir__btn"
         type="button"
         :disabled="props.queueLocked || !props.nativeAvailable"
-        :title="props.queueLocked ? t('activity.outputLocked') : props.nativeAvailable ? undefined : t('activity.outputDirDesktopOnly')"
+        :title="
+          props.queueLocked
+            ? t('activity.outputLocked')
+            : props.nativeAvailable
+              ? undefined
+              : t('activity.outputDirDesktopOnly')
+        "
         @click="emit('select')"
       >
         {{ t('settings.outputDirBrowse') }}

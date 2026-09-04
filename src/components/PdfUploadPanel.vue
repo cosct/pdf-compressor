@@ -116,7 +116,10 @@ function readDroppedPaths(event: DragEvent): string[] {
   const files = Array.from(event.dataTransfer?.files ?? []) as FileWithPath[]
   const directPaths = files
     .filter(
-      (file) => file.name.toLowerCase().endsWith('.pdf') && typeof file.path === 'string' && file.path.trim(),
+      (file) =>
+        file.name.toLowerCase().endsWith('.pdf') &&
+        typeof file.path === 'string' &&
+        file.path.trim(),
     )
     .map((file) => file.path as string)
 
@@ -206,14 +209,18 @@ function openContextMenu(item: QueueVisualItem, x: number, y: number, trigger: H
     const menuEl = contextMenuRef.value
     if (menuEl && contextMenu.value) {
       const rect = menuEl.getBoundingClientRect()
-      const clampedX = Math.max(8, Math.min(contextMenu.value.x, window.innerWidth - rect.width - 8))
-      const clampedY = Math.max(8, Math.min(contextMenu.value.y, window.innerHeight - rect.height - 8))
+      const clampedX = Math.max(
+        8,
+        Math.min(contextMenu.value.x, window.innerWidth - rect.width - 8),
+      )
+      const clampedY = Math.max(
+        8,
+        Math.min(contextMenu.value.y, window.innerHeight - rect.height - 8),
+      )
       contextMenu.value = { ...contextMenu.value, x: clampedX, y: clampedY }
     }
 
-    contextMenuRef.value
-      ?.querySelector<HTMLElement>('[role="menuitem"]')
-      ?.focus()
+    contextMenuRef.value?.querySelector<HTMLElement>('[role="menuitem"]')?.focus()
   })
 }
 
@@ -348,14 +355,28 @@ onBeforeUnmount(() => {
   >
     <div class="panel-header">
       <div class="panel-header__left">
-        <svg class="panel-header__icon" width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-          <path d="M6 3a3 3 0 0 0-3 3v8a3 3 0 0 0 3 3h8a3 3 0 0 0 3-3V6a3 3 0 0 0-3-3H6Zm4 3.5a.5.5 0 0 1 .5.5v2.5H13a.5.5 0 0 1 0 1h-2.5V13a.5.5 0 0 1-1 0v-2.5H7a.5.5 0 0 1 0-1h2.5V7a.5.5 0 0 1 .5-.5Z" fill="var(--fd-accent)"/>
+        <svg
+          class="panel-header__icon"
+          width="20"
+          height="20"
+          viewBox="0 0 20 20"
+          fill="none"
+          aria-hidden="true"
+        >
+          <path
+            d="M6 3a3 3 0 0 0-3 3v8a3 3 0 0 0 3 3h8a3 3 0 0 0 3-3V6a3 3 0 0 0-3-3H6Zm4 3.5a.5.5 0 0 1 .5.5v2.5H13a.5.5 0 0 1 0 1h-2.5V13a.5.5 0 0 1-1 0v-2.5H7a.5.5 0 0 1 0-1h2.5V7a.5.5 0 0 1 .5-.5Z"
+            fill="var(--fd-accent)"
+          />
         </svg>
         <h2>{{ t('upload.eyebrow') }}</h2>
       </div>
       <div class="panel-header__right">
-        <span v-if="props.items.length" class="fd-badge">{{ t('queue.count', { count: props.items.length }, props.items.length) }}</span>
-        <span v-if="props.queueLocked" class="fd-badge fd-badge--accent">{{ t('upload.lockedTag') }}</span>
+        <span v-if="props.items.length" class="fd-badge">{{
+          t('queue.count', { count: props.items.length }, props.items.length)
+        }}</span>
+        <span v-if="props.queueLocked" class="fd-badge fd-badge--accent">{{
+          t('upload.lockedTag')
+        }}</span>
       </div>
     </div>
 
@@ -364,8 +385,24 @@ onBeforeUnmount(() => {
         <div class="dropzone__inner">
           <div class="dropzone__icon" aria-hidden="true">
             <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
-              <rect x="8" y="6" width="32" height="36" rx="4" stroke="currentColor" stroke-width="1.5" fill="none" opacity="0.45"/>
-              <path d="M24 32V18m0 0l-5 5m5-5l5 5" stroke="var(--fd-accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              <rect
+                x="8"
+                y="6"
+                width="32"
+                height="36"
+                rx="4"
+                stroke="currentColor"
+                stroke-width="1.5"
+                fill="none"
+                opacity="0.45"
+              />
+              <path
+                d="M24 32V18m0 0l-5 5m5-5l5 5"
+                stroke="var(--fd-accent)"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
             </svg>
           </div>
           <div class="dropzone__text">
@@ -380,7 +417,12 @@ onBeforeUnmount(() => {
               @click.stop="emit('browse')"
             >
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                <path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.879a1.5 1.5 0 0 1 1.06.44L8.56 4.56A1.5 1.5 0 0 0 9.621 5H12.5A1.5 1.5 0 0 1 14 6.5v5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5v-7Z" stroke="currentColor" stroke-width="1.2" fill="none"/>
+                <path
+                  d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.879a1.5 1.5 0 0 1 1.06.44L8.56 4.56A1.5 1.5 0 0 0 9.621 5H12.5A1.5 1.5 0 0 1 14 6.5v5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5v-7Z"
+                  stroke="currentColor"
+                  stroke-width="1.2"
+                  fill="none"
+                />
               </svg>
               {{ browseLabel }}
             </button>
@@ -392,7 +434,11 @@ onBeforeUnmount(() => {
         <strong>{{ dropFeedback }}</strong>
       </p>
 
-      <div v-if="props.items.length" class="queue-shell" :class="{ 'queue-shell--active': dragActive }">
+      <div
+        v-if="props.items.length"
+        class="queue-shell"
+        :class="{ 'queue-shell--active': dragActive }"
+      >
         <div class="queue-shell__header">
           <div class="queue-shell__heading">
             <strong>{{ t('upload.queueTitle') }}</strong>
@@ -405,7 +451,12 @@ onBeforeUnmount(() => {
             @click.stop="emit('browse')"
           >
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-              <path d="M6 2.5v7M2.5 6h7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+              <path
+                d="M6 2.5v7M2.5 6h7"
+                stroke="currentColor"
+                stroke-width="1.4"
+                stroke-linecap="round"
+              />
             </svg>
             {{ t('upload.addMore') }}
           </button>
@@ -427,17 +478,24 @@ onBeforeUnmount(() => {
             <div class="queue-item__row">
               <div class="queue-item__info">
                 <div class="queue-item__title-line">
-                  <span class="fd-badge fd-badge--sm" :class="`fd-badge--${statusTone(item.status)}`">
+                  <span
+                    class="fd-badge fd-badge--sm"
+                    :class="`fd-badge--${statusTone(item.status)}`"
+                  >
                     {{ statusLabel(item.status) }}
                   </span>
-                  <strong class="queue-item__name" :title="item.fileName">{{ item.fileName }}</strong>
+                  <strong class="queue-item__name" :title="item.fileName">{{
+                    item.fileName
+                  }}</strong>
                 </div>
                 <div class="queue-item__meta">
                   <span class="fd-badge fd-badge--sm">{{ item.presetLabel }}</span>
                   <span v-if="item.overrideLabel" class="fd-badge fd-badge--sm fd-badge--accent">
                     {{ item.overrideLabel }}
                   </span>
-                  <span v-for="entry in item.meta" :key="entry" class="queue-item__meta-text">{{ entry }}</span>
+                  <span v-for="entry in item.meta" :key="entry" class="queue-item__meta-text">{{
+                    entry
+                  }}</span>
                 </div>
                 <p class="queue-item__path" :title="item.path">{{ item.path }}</p>
               </div>
@@ -450,7 +508,12 @@ onBeforeUnmount(() => {
                 @click.stop="emit('delete', item.id)"
               >
                 <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-                  <path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                  <path
+                    d="M3 3l6 6M9 3l-6 6"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    stroke-linecap="round"
+                  />
                 </svg>
               </button>
             </div>
@@ -466,7 +529,9 @@ onBeforeUnmount(() => {
             >
               <span
                 class="fd-progress__bar"
-                :style="{ width: `${Math.max(item.progressPercent, item.status === 'success' ? 100 : 2)}%` }"
+                :style="{
+                  width: `${Math.max(item.progressPercent, item.status === 'success' ? 100 : 2)}%`,
+                }"
               ></span>
             </div>
           </article>
@@ -482,10 +547,20 @@ onBeforeUnmount(() => {
           @click.stop
           @keydown="handleMenuKeydown"
         >
-          <button class="queue-context-menu__item" type="button" role="menuitem" @click="openQueueItemResult">
+          <button
+            class="queue-context-menu__item"
+            type="button"
+            role="menuitem"
+            @click="openQueueItemResult"
+          >
             {{ t('queue.openCompressedFile') }}
           </button>
-          <button class="queue-context-menu__item" type="button" role="menuitem" @click="openQueueItemResultFolder">
+          <button
+            class="queue-context-menu__item"
+            type="button"
+            role="menuitem"
+            @click="openQueueItemResultFolder"
+          >
             {{ t('queue.openCompressedFolder') }}
           </button>
         </div>

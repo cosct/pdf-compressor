@@ -3,7 +3,7 @@
  * 在 package.json 中更新版本后运行此脚本，将版本同步到
  * src-tauri/tauri.conf.json 和 src-tauri/Cargo.toml。
  *
- * Usage: npm run sync-version
+ * Usage: pnpm run sync-version
  */
 import { readFileSync, writeFileSync } from 'node:fs'
 

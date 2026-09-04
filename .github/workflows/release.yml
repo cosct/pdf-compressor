@@ -25,10 +25,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
+          cache: pnpm
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -43,7 +45,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Install frontend dependencies
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - uses: tauri-apps/tauri-action@v0
         env:
@@ -69,5 +71,5 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           echo "sha256sums=('$(sha256sum source.tar.gz | cut -d" " -f1)')" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          echo "Paste the line above into aur/pdf-compressor/PKGBUILD before publishing."
+          echo "Paste the line above into packaging/archlinux/PKGBUILD before publishing."
           cat "$GITHUB_STEP_SUMMARY"

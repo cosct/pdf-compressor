@@ -5,7 +5,7 @@
  */
 import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vite-plus/test'
 
 import PdfUploadPanel from '../PdfUploadPanel.vue'
 import type { QueueVisualItem } from '../PdfUploadPanel.vue'

@@ -3,7 +3,7 @@
  * key tree so no translation silently falls back at runtime.
  * 语言包一致性测试 — en 与 zh-CN 的 key 树必须一致，避免运行时静默回退。
  */
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vite-plus/test'
 
 import en from '../../locales/en'
 import zhCN from '../../locales/zh-CN'

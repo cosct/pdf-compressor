@@ -6,7 +6,7 @@
  * queue-state transitions only, not backend behavior.
  * Tauri 桥接层完全 mock；只覆盖队列状态转换，不覆盖后端行为。
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vite-plus/test'
 
 import type { AnalysisResponse, CompressionResponse } from '../../lib/bindings'
 import type { CompressionSettings } from '../../types/pdf'
@@ -31,11 +31,7 @@ import {
   cancelCompression,
   existingPaths,
 } from '../../lib/tauri'
-import {
-  getCompressionConcurrency,
-  normalizeSettings,
-  usePdfCompressor,
-} from '../usePdfCompressor'
+import { getCompressionConcurrency, normalizeSettings, usePdfCompressor } from '../usePdfCompressor'
 import { localizeNotices } from '../backendMessages'
 
 function analysisResponse(overrides: Partial<AnalysisResponse> = {}): AnalysisResponse {
@@ -169,20 +165,22 @@ describe('normalizeSettings', () => {
     expect(normalized.maxImageSizePercent).toBeGreaterThanOrEqual(1)
     expect(normalized.outputDir).toBe('/tmp/out')
     expect(normalized.targetFileSizeMb).toBeLessThanOrEqual(2048)
-    expect(normalizeSettings({
-      preset: 'balanced',
-      imageQuality: 72,
-      maxImageSizePercent: 80,
-      referenceMaxImageEdgePx: 1234,
-      optimizeImages: true,
-      compressStreams: true,
-      stripMetadata: true,
-      grayscale: false,
-      bilevelCodec: 'jpeg',
-      subsetFonts: false,
-      outputDir: null,
-      targetFileSizeMb: 0,
-    }).targetFileSizeMb).toBeNull()
+    expect(
+      normalizeSettings({
+        preset: 'balanced',
+        imageQuality: 72,
+        maxImageSizePercent: 80,
+        referenceMaxImageEdgePx: 1234,
+        optimizeImages: true,
+        compressStreams: true,
+        stripMetadata: true,
+        grayscale: false,
+        bilevelCodec: 'jpeg',
+        subsetFonts: false,
+        outputDir: null,
+        targetFileSizeMb: 0,
+      }).targetFileSizeMb,
+    ).toBeNull()
   })
 
   it('coerces a missing grayscale field (legacy persisted queue) to false', () => {
@@ -354,9 +352,9 @@ describe('compressCurrentPdf', () => {
     expect(mockedCompressScanned).toHaveBeenCalledTimes(1)
     expect(mockedCompress).not.toHaveBeenCalled()
     expect(composable.jobs.value[0].status).toBe('success')
-    expect(
-      composable.errorToasts.value.some((toast) => toast.id.startsWith('scan:pipeline')),
-    ).toBe(true)
+    expect(composable.errorToasts.value.some((toast) => toast.id.startsWith('scan:pipeline'))).toBe(
+      true,
+    )
   })
 
   it('surfaces compression errors as job error and toast', async () => {

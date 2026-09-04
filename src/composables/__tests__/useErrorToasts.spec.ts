@@ -4,7 +4,7 @@
  * 错误提示状态的自动消失计时测试：分级超时、按文本长度延长、暂停/恢复行为。
  */
 import { effectScope } from 'vue'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test'
 
 import { useErrorToasts } from '../useErrorToasts'
 import type { NoticeItem } from '../../types/pdf'

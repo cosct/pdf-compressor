@@ -194,9 +194,7 @@ function handleTargetInput() {
 function applyProfile(profile: QuickProfilePayload) {
   const stored = profile.preset
   const resolved: PresetMode =
-    stored === 'conservative' || stored === 'maximum' || stored === 'custom'
-      ? stored
-      : 'balanced'
+    stored === 'conservative' || stored === 'maximum' || stored === 'custom' ? stored : 'balanced'
   lastPresetMode.value = resolved
 
   if (profile.targetSizeBytes != null) {
@@ -212,10 +210,7 @@ function applyProfile(profile: QuickProfilePayload) {
   // A saved profile carries the color mode it was saved with; an empty
   // profile falls back to the preset profile's own conversion settings.
   if (profile.grayscale != null || profile.bilevelCodec != null) {
-    colorMode.value = colorModeOf(
-      profile.grayscale ?? false,
-      profile.bilevelCodec ?? 'jpeg',
-    )
+    colorMode.value = colorModeOf(profile.grayscale ?? false, profile.bilevelCodec ?? 'jpeg')
   } else {
     syncColorModeFromPreset(resolved)
   }
@@ -253,8 +248,7 @@ function buildPayload(): QuickProfilePayload {
     ...presetParams(preset),
     grayscale: colorMode.value !== 'color',
     bilevelCodec: colorMode.value === 'bw' ? 'ccitt-g4' : 'jpeg',
-    targetSizeBytes:
-      mode.value === 'target' ? Math.round(targetMb.value * 1024 * 1024) : null,
+    targetSizeBytes: mode.value === 'target' ? Math.round(targetMb.value * 1024 * 1024) : null,
   }
 }
 
@@ -297,7 +291,12 @@ onMounted(load)
     <header class="panel-header">
       <span class="panel-header__icon" aria-hidden="true">
         <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-          <path d="M10.5 2 4.8 9.2h3.4L8 16l5.7-7.2h-3.4L10.5 2Z" stroke="var(--fd-accent)" stroke-width="1.4" stroke-linejoin="round"/>
+          <path
+            d="M10.5 2 4.8 9.2h3.4L8 16l5.7-7.2h-3.4L10.5 2Z"
+            stroke="var(--fd-accent)"
+            stroke-width="1.4"
+            stroke-linejoin="round"
+          />
         </svg>
       </span>
       <h2>{{ t('quick.title') }}</h2>

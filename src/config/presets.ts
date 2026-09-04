@@ -21,10 +21,7 @@ import type {
   PresetProfileMap,
   PresetUserConfig,
 } from '../types/pdf'
-import {
-  clampImageQuality,
-  clampMaxImageSizePercent,
-} from '../utils/compressionSettings'
+import { clampImageQuality, clampMaxImageSizePercent } from '../utils/compressionSettings'
 
 const CONFIG_VERSION = 1
 
@@ -64,12 +61,21 @@ function sanitizePresetProfile(
     maxImageSizePercent: clampMaxImageSizePercent(
       profile?.maxImageSizePercent ?? fallback.maxImageSizePercent,
     ),
-    optimizeImages: profile?.optimizeImages ?? fallback.optimizeImages ?? LEGACY_PROFILE_FALLBACK.optimizeImages,
-    compressStreams: profile?.compressStreams ?? fallback.compressStreams ?? LEGACY_PROFILE_FALLBACK.compressStreams,
-    stripMetadata: profile?.stripMetadata ?? fallback.stripMetadata ?? LEGACY_PROFILE_FALLBACK.stripMetadata,
+    optimizeImages:
+      profile?.optimizeImages ?? fallback.optimizeImages ?? LEGACY_PROFILE_FALLBACK.optimizeImages,
+    compressStreams:
+      profile?.compressStreams ??
+      fallback.compressStreams ??
+      LEGACY_PROFILE_FALLBACK.compressStreams,
+    stripMetadata:
+      profile?.stripMetadata ?? fallback.stripMetadata ?? LEGACY_PROFILE_FALLBACK.stripMetadata,
     grayscale: profile?.grayscale ?? fallback.grayscale ?? LEGACY_PROFILE_FALLBACK.grayscale,
-    bilevelCodec: profile?.bilevelCodec === 'ccitt-g4' ? 'ccitt-g4' : (fallback.bilevelCodec ?? LEGACY_PROFILE_FALLBACK.bilevelCodec),
-    subsetFonts: profile?.subsetFonts ?? fallback.subsetFonts ?? LEGACY_PROFILE_FALLBACK.subsetFonts,
+    bilevelCodec:
+      profile?.bilevelCodec === 'ccitt-g4'
+        ? 'ccitt-g4'
+        : (fallback.bilevelCodec ?? LEGACY_PROFILE_FALLBACK.bilevelCodec),
+    subsetFonts:
+      profile?.subsetFonts ?? fallback.subsetFonts ?? LEGACY_PROFILE_FALLBACK.subsetFonts,
   }
 }
 
@@ -108,9 +114,13 @@ function cloneUserPresetConfig(config: PresetUserConfig): PresetUserConfig {
   }
 }
 
-function sanitizeUserPresetConfig(input: Partial<PresetUserConfig> | null | undefined): PresetUserConfig {
+function sanitizeUserPresetConfig(
+  input: Partial<PresetUserConfig> | null | undefined,
+): PresetUserConfig {
   const config = createEmptyUserConfig()
-  config.version = Number.isFinite(input?.version) ? Math.max(1, Math.round(input?.version ?? 1)) : CONFIG_VERSION
+  config.version = Number.isFinite(input?.version)
+    ? Math.max(1, Math.round(input?.version ?? 1))
+    : CONFIG_VERSION
 
   for (const preset of PRESET_KEYS) {
     const profile = input?.presets?.[preset]
@@ -182,9 +192,7 @@ export async function hasUserPresetConfig(): Promise<boolean> {
   return PRESET_KEYS.some((preset) => Boolean(config.presets[preset]))
 }
 
-export function getPresetDefaults(
-  preset: CompressionPreset,
-): PresetDefaults {
+export function getPresetDefaults(preset: CompressionPreset): PresetDefaults {
   const profile = cachedUserPresetConfig?.presets[preset] ?? defaultPresetProfiles[preset]
   return { ...profile }
 }

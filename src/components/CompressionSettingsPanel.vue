@@ -54,8 +54,8 @@ const defaultPresetProfiles = getDefaultPresetProfiles()
 const presetProfiles = ref(getDefaultPresetProfiles())
 const hasCustomPresets = ref(false)
 const presetConfigBusy = ref(false)
-const displayMaxImagePercent = computed(
-  () => clampMaxImageSizePercent(props.settings.maxImageSizePercent),
+const displayMaxImagePercent = computed(() =>
+  clampMaxImageSizePercent(props.settings.maxImageSizePercent),
 )
 const canResetPresets = computed(() => {
   const defaults = defaultPresetProfiles[props.settings.preset]
@@ -139,11 +139,14 @@ async function resetToDefaults() {
     presetProfiles.value = defaults
     hasCustomPresets.value = false
 
-    emit('update:settings', normalizeWithAnalysis({
-      ...props.settings,
-      preset: nextPreset,
-      ...defaults[nextPreset],
-    }))
+    emit(
+      'update:settings',
+      normalizeWithAnalysis({
+        ...props.settings,
+        preset: nextPreset,
+        ...defaults[nextPreset],
+      }),
+    )
   } catch (error) {
     emit('preset-config-error', error)
   } finally {
@@ -167,20 +170,26 @@ function applyLocalPresetPercent(preset: CompressionPreset, percent: number) {
 
 function selectPreset(value: CompressionPreset) {
   const defaults = presetProfiles.value[value]
-  emit('update:settings', normalizeWithAnalysis({
-    ...props.settings,
-    ...defaults,
-    preset: value,
-  }))
+  emit(
+    'update:settings',
+    normalizeWithAnalysis({
+      ...props.settings,
+      ...defaults,
+      preset: value,
+    }),
+  )
 }
 
 function updateMaxImageSizePercent(percent: number) {
   const normalizedPercent = clampMaxImageSizePercent(percent)
   applyLocalPresetPercent(props.settings.preset, normalizedPercent)
-  emit('update:settings', normalizeWithAnalysis({
-    ...props.settings,
-    maxImageSizePercent: normalizedPercent,
-  }))
+  emit(
+    'update:settings',
+    normalizeWithAnalysis({
+      ...props.settings,
+      maxImageSizePercent: normalizedPercent,
+    }),
+  )
 }
 
 function updateSetting<K extends keyof CompressionSettings>(key: K, value: CompressionSettings[K]) {
@@ -196,7 +205,12 @@ const qualityInvalid = ref(false)
 function commitQuality(event: Event) {
   const raw = (event.target as HTMLInputElement).value.trim()
   const parsed = Number(raw)
-  if (raw !== '' && Number.isInteger(parsed) && parsed >= MIN_IMAGE_QUALITY && parsed <= MAX_IMAGE_QUALITY) {
+  if (
+    raw !== '' &&
+    Number.isInteger(parsed) &&
+    parsed >= MIN_IMAGE_QUALITY &&
+    parsed <= MAX_IMAGE_QUALITY
+  ) {
     qualityInvalid.value = false
     updateSetting('imageQuality', parsed)
     return
@@ -209,7 +223,12 @@ const percentInvalid = ref(false)
 function commitMaxImagePercent(event: Event) {
   const raw = (event.target as HTMLInputElement).value.trim()
   const parsed = Number(raw)
-  if (raw !== '' && Number.isInteger(parsed) && parsed >= MIN_IMAGE_SIZE_PERCENT && parsed <= MAX_IMAGE_SIZE_PERCENT) {
+  if (
+    raw !== '' &&
+    Number.isInteger(parsed) &&
+    parsed >= MIN_IMAGE_SIZE_PERCENT &&
+    parsed <= MAX_IMAGE_SIZE_PERCENT
+  ) {
     percentInvalid.value = false
     updateMaxImageSizePercent(parsed)
     return
@@ -280,10 +299,22 @@ function presetSnapshotLabel(preset: CompressionPreset): string {
   <section class="settings-dock">
     <div class="dock-head">
       <div class="panel-header">
-        <svg class="panel-header__icon" width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-          <path d="M3 6.5h5.5M12.5 6.5H17M3 13.5h2.5M9.5 13.5H17" stroke="var(--fd-text-tertiary)" stroke-width="1.4" stroke-linecap="round"/>
-          <circle cx="10" cy="6.5" r="2.3" stroke="var(--fd-accent)" stroke-width="1.4"/>
-          <circle cx="7" cy="13.5" r="2.3" stroke="var(--fd-accent)" stroke-width="1.4"/>
+        <svg
+          class="panel-header__icon"
+          width="20"
+          height="20"
+          viewBox="0 0 20 20"
+          fill="none"
+          aria-hidden="true"
+        >
+          <path
+            d="M3 6.5h5.5M12.5 6.5H17M3 13.5h2.5M9.5 13.5H17"
+            stroke="var(--fd-text-tertiary)"
+            stroke-width="1.4"
+            stroke-linecap="round"
+          />
+          <circle cx="10" cy="6.5" r="2.3" stroke="var(--fd-accent)" stroke-width="1.4" />
+          <circle cx="7" cy="13.5" r="2.3" stroke="var(--fd-accent)" stroke-width="1.4" />
         </svg>
         <div class="panel-header__copy">
           <h2>{{ t('settings.eyebrow') }}</h2>
@@ -415,8 +446,21 @@ function presetSnapshotLabel(preset: CompressionPreset): string {
         @click="toggleAdvanced"
       >
         <strong>{{ t('settings.advancedToggle') }}</strong>
-        <svg class="advanced-panel__chevron" width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-          <path d="M3 4.5l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        <svg
+          class="advanced-panel__chevron"
+          width="12"
+          height="12"
+          viewBox="0 0 12 12"
+          fill="none"
+          aria-hidden="true"
+        >
+          <path
+            d="M3 4.5l3 3 3-3"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
         </svg>
       </button>
 
@@ -428,7 +472,9 @@ function presetSnapshotLabel(preset: CompressionPreset): string {
                 type="checkbox"
                 :checked="props.settings.optimizeImages"
                 :disabled="props.disabled"
-                @change="updateSetting('optimizeImages', ($event.target as HTMLInputElement).checked)"
+                @change="
+                  updateSetting('optimizeImages', ($event.target as HTMLInputElement).checked)
+                "
               />
             </span>
             <span class="toggle-chip__label">{{ t('settings.optimizeImages') }}</span>
@@ -440,7 +486,9 @@ function presetSnapshotLabel(preset: CompressionPreset): string {
                 type="checkbox"
                 :checked="props.settings.compressStreams"
                 :disabled="props.disabled"
-                @change="updateSetting('compressStreams', ($event.target as HTMLInputElement).checked)"
+                @change="
+                  updateSetting('compressStreams', ($event.target as HTMLInputElement).checked)
+                "
               />
             </span>
             <span class="toggle-chip__label">{{ t('settings.compressStreams') }}</span>
@@ -452,7 +500,9 @@ function presetSnapshotLabel(preset: CompressionPreset): string {
                 type="checkbox"
                 :checked="props.settings.stripMetadata"
                 :disabled="props.disabled"
-                @change="updateSetting('stripMetadata', ($event.target as HTMLInputElement).checked)"
+                @change="
+                  updateSetting('stripMetadata', ($event.target as HTMLInputElement).checked)
+                "
               />
             </span>
             <span class="toggle-chip__label">{{ t('settings.stripMetadata') }}</span>

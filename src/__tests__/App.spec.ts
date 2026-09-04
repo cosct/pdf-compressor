@@ -3,7 +3,7 @@
  * Tauri bridge mocked and asserts the main panels render.
  * 应用壳装配冒烟测试 — mock Tauri 桥接后挂载真实组件树，断言主要面板渲染。
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vite-plus/test'
 import { mount } from '@vue/test-utils'
 
 vi.mock('../lib/tauri', () => ({

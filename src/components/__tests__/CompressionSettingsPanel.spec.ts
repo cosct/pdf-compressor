@@ -5,7 +5,7 @@
  * 设置面板组件测试：预设选择与保存预设通知。
  * （目标大小输入与「应用到全部」位于主视图的预设条，不在此面板。）
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vite-plus/test'
 import { mount } from '@vue/test-utils'
 
 vi.mock('../../config/presets', () => {
@@ -144,9 +144,7 @@ describe('CompressionSettingsPanel', () => {
 
   it('saving a preset notifies success; reset stays disabled without changes', async () => {
     const wrapper = mountPanel()
-    const saveButton = wrapper
-      .findAll('button')
-      .find((button) => button.text() === 'Save preset')
+    const saveButton = wrapper.findAll('button').find((button) => button.text() === 'Save preset')
 
     await saveButton!.trigger('click')
     await vi.waitFor(() => {

@@ -74,9 +74,7 @@ const statusCopy = computed(() => {
  * before the first compression run.
  */
 const savingsMetric = computed(() => {
-  const pct = formatPercent(
-    props.result?.savingsPercent ?? props.analysis?.estimatedSavingsPercent,
-  )
+  const pct = formatPercent(props.result?.savingsPercent ?? props.analysis?.estimatedSavingsPercent)
 
   if (props.result && (props.result.savedBytes ?? 0) > 0) {
     return `${pct} · ${formatBytes(props.result.savedBytes)}`
@@ -123,9 +121,7 @@ const reportHighlights = computed<string[]>(() => {
 
   const chips: string[] = []
   if ((result.savedBytes ?? 0) > 0) {
-    chips.push(
-      t('activity.report.savedValue', { size: formatBytes(result.savedBytes) }),
-    )
+    chips.push(t('activity.report.savedValue', { size: formatBytes(result.savedBytes) }))
   }
   chips.push(t('activity.report.elapsedValue', { time: formatDuration(result.elapsedMs) }))
 
@@ -149,8 +145,21 @@ const reportHighlights = computed<string[]>(() => {
   <section class="activity-panel" :data-state="props.workflowState">
     <div class="activity-head">
       <div class="panel-header">
-        <svg class="panel-header__icon" width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-          <path d="M3 10h2l2-5 3 10 2-5h5" stroke="var(--fd-accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        <svg
+          class="panel-header__icon"
+          width="20"
+          height="20"
+          viewBox="0 0 20 20"
+          fill="none"
+          aria-hidden="true"
+        >
+          <path
+            d="M3 10h2l2-5 3 10 2-5h5"
+            stroke="var(--fd-accent)"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
         </svg>
         <h2>{{ t('activity.eyebrow') }}</h2>
       </div>
@@ -158,13 +167,12 @@ const reportHighlights = computed<string[]>(() => {
            up its own line inside the status card; the recommended preset is
            marked on the main-view PresetBar options. -->
       <div class="activity-head__side">
-        <span
-          v-if="props.modeLabel || props.selectedPreset"
-          class="fd-badge fd-badge--accent"
-        >
+        <span v-if="props.modeLabel || props.selectedPreset" class="fd-badge fd-badge--accent">
           {{ props.modeLabel ?? t(`app.preset.${props.selectedPreset}`) }}
         </span>
-        <span v-if="props.queueLocked" class="fd-badge fd-badge--accent">{{ t('upload.lockedTag') }}</span>
+        <span v-if="props.queueLocked" class="fd-badge fd-badge--accent">{{
+          t('upload.lockedTag')
+        }}</span>
       </div>
     </div>
 
@@ -194,7 +202,9 @@ const reportHighlights = computed<string[]>(() => {
         >
           <span
             class="fd-progress__bar"
-            :style="{ width: `${Math.max(props.progressPercent ?? 0, props.workflowState === 'success' ? 100 : 2)}%` }"
+            :style="{
+              width: `${Math.max(props.progressPercent ?? 0, props.workflowState === 'success' ? 100 : 2)}%`,
+            }"
           ></span>
         </div>
 
@@ -236,8 +246,20 @@ const reportHighlights = computed<string[]>(() => {
             :disabled="props.primaryActionDisabled"
             @click="emit('primary-action')"
           >
-            <svg v-if="!props.primaryActionDisabled" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-              <path d="M4 8h8M8 4v8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            <svg
+              v-if="!props.primaryActionDisabled"
+              width="16"
+              height="16"
+              viewBox="0 0 16 16"
+              fill="none"
+              aria-hidden="true"
+            >
+              <path
+                d="M4 8h8M8 4v8"
+                stroke="currentColor"
+                stroke-width="1.5"
+                stroke-linecap="round"
+              />
             </svg>
             {{ props.primaryActionLabel }}
           </button>
@@ -548,5 +570,4 @@ const reportHighlights = computed<string[]>(() => {
     font-size: 17px;
   }
 }
-
 </style>

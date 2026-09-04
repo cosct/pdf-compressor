@@ -55,19 +55,21 @@ function applyThemeToDOM(theme: 'dark' | 'light') {
 }
 
 try {
-  window
-    .matchMedia('(prefers-color-scheme: dark)')
-    .addEventListener('change', (event) => {
-      systemDark.value = event.matches
-    })
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (event) => {
+    systemDark.value = event.matches
+  })
 } catch {
   // ignore — media query listeners unavailable
 }
 
 // Module-scoped watcher: independent of any component's effect scope.
-watch(resolvedTheme, (theme) => {
-  applyThemeToDOM(theme)
-}, { immediate: true })
+watch(
+  resolvedTheme,
+  (theme) => {
+    applyThemeToDOM(theme)
+  },
+  { immediate: true },
+)
 
 export function useTheme() {
   function setTheme(theme: Theme) {

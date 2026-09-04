@@ -35,8 +35,7 @@ export function useErrorToasts() {
 
   function autoDismissDelayMs(notice: NoticeItem): number {
     const base = AUTO_DISMISS_BASE_MS[notice.tone]
-    const lengthBonus =
-      Math.max(notice.title.length, notice.body.length) * AUTO_DISMISS_MS_PER_CHAR
+    const lengthBonus = Math.max(notice.title.length, notice.body.length) * AUTO_DISMISS_MS_PER_CHAR
     return Math.min(base + lengthBonus, AUTO_DISMISS_MAX_MS)
   }
 
@@ -60,9 +59,7 @@ export function useErrorToasts() {
   function pushErrorToast(notice: NoticeItem) {
     const duplicate = errorToasts.value.some(
       (item) =>
-        item.tone === notice.tone &&
-        item.title === notice.title &&
-        item.body === notice.body,
+        item.tone === notice.tone && item.title === notice.title && item.body === notice.body,
     )
     if (duplicate) {
       return
@@ -112,7 +109,7 @@ export function useErrorToasts() {
   }
 
   onScopeDispose(() => {
-    for (const id of [...timers.keys()]) {
+    for (const id of timers.keys()) {
       clearTimer(id)
     }
   })

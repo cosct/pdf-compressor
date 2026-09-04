@@ -115,14 +115,48 @@ onBeforeUnmount(() => {
 <template>
   <header class="app-header">
     <div class="titlebar">
-      <div class="titlebar__drag" @mousedown="handleTitlebarMouseDown" @dblclick="handleTitlebarDoubleClick">
+      <div
+        class="titlebar__drag"
+        @mousedown="handleTitlebarMouseDown"
+        @dblclick="handleTitlebarDoubleClick"
+      >
         <div class="titlebar__brand">
           <div class="titlebar__icon" aria-hidden="true">
-            <svg width="20" height="20" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <rect x="5" y="4" width="22" height="24" rx="6" stroke="currentColor" stroke-width="1.6"/>
-              <path d="M10 11.5h12M10 16h12M10 20.5h7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
-              <path d="M21 18.5l3 3-3 3" stroke="var(--fd-accent)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
-              <path d="M24 21.5h-8" stroke="var(--fd-accent)" stroke-width="1.8" stroke-linecap="round"/>
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 32 32"
+              fill="none"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <rect
+                x="5"
+                y="4"
+                width="22"
+                height="24"
+                rx="6"
+                stroke="currentColor"
+                stroke-width="1.6"
+              />
+              <path
+                d="M10 11.5h12M10 16h12M10 20.5h7"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+              />
+              <path
+                d="M21 18.5l3 3-3 3"
+                stroke="var(--fd-accent)"
+                stroke-width="1.8"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+              <path
+                d="M24 21.5h-8"
+                stroke="var(--fd-accent)"
+                stroke-width="1.8"
+                stroke-linecap="round"
+              />
             </svg>
           </div>
           <strong>{{ t('header.title') }}</strong>
@@ -138,15 +172,37 @@ onBeforeUnmount(() => {
           @click.stop="emit('toggle-settings')"
         >
           <span class="nav-button__icon" aria-hidden="true">
-            <svg v-if="props.view === 'settings'" width="13" height="13" viewBox="0 0 12 12" fill="none">
-              <path d="M7.5 2.5 4 6l3.5 3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+            <svg
+              v-if="props.view === 'settings'"
+              width="13"
+              height="13"
+              viewBox="0 0 12 12"
+              fill="none"
+            >
+              <path
+                d="M7.5 2.5 4 6l3.5 3.5"
+                stroke="currentColor"
+                stroke-width="1.3"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
             </svg>
             <svg v-else width="14" height="14" viewBox="0 0 20 20" fill="none">
-              <path d="M10 12.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z" stroke="currentColor" stroke-width="1.3"/>
-              <path d="M16.16 12.42a1.27 1.27 0 0 0 .25 1.4l.05.05a1.54 1.54 0 1 1-2.18 2.18l-.05-.05a1.27 1.27 0 0 0-1.4-.25 1.27 1.27 0 0 0-.77 1.16v.14a1.54 1.54 0 0 1-3.08 0v-.07a1.27 1.27 0 0 0-.83-1.16 1.27 1.27 0 0 0-1.4.25l-.05.05A1.54 1.54 0 1 1 4.52 14l.05-.05a1.27 1.27 0 0 0 .25-1.4 1.27 1.27 0 0 0-.25-1.4h-.14a1.54 1.54 0 0 1 0-3.08h.07a1.27 1.27 0 0 0 1.16-.83 1.27 1.27 0 0 0-.25-1.4L4.45 6.42A1.54 1.54 0 1 1 6.63 4.24l.05.05a1.27 1.27 0 0 0 1.4.25h.06a1.27 1.27 0 0 0 .77-1.16v-.14a1.54 1.54 0 0 1 3.08 0v.07a1.27 1.27 0 0 0 .77 1.16 1.27 1.27 0 0 0 1.4-.25l.05-.05a1.54 1.54 0 1 1 2.18 2.18l-.05.05a1.27 1.27 0 0 0-.25 1.4v.06a1.27 1.27 0 0 0 1.16.77h.14a1.54 1.54 0 0 1 0 3.08h-.07a1.27 1.27 0 0 0-1.16.77Z" stroke="currentColor" stroke-width="1.1"/>
+              <path
+                d="M10 12.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z"
+                stroke="currentColor"
+                stroke-width="1.3"
+              />
+              <path
+                d="M16.16 12.42a1.27 1.27 0 0 0 .25 1.4l.05.05a1.54 1.54 0 1 1-2.18 2.18l-.05-.05a1.27 1.27 0 0 0-1.4-.25 1.27 1.27 0 0 0-.77 1.16v.14a1.54 1.54 0 0 1-3.08 0v-.07a1.27 1.27 0 0 0-.83-1.16 1.27 1.27 0 0 0-1.4.25l-.05.05A1.54 1.54 0 1 1 4.52 14l.05-.05a1.27 1.27 0 0 0 .25-1.4 1.27 1.27 0 0 0-.25-1.4h-.14a1.54 1.54 0 0 1 0-3.08h.07a1.27 1.27 0 0 0 1.16-.83 1.27 1.27 0 0 0-.25-1.4L4.45 6.42A1.54 1.54 0 1 1 6.63 4.24l.05.05a1.27 1.27 0 0 0 1.4.25h.06a1.27 1.27 0 0 0 .77-1.16v-.14a1.54 1.54 0 0 1 3.08 0v.07a1.27 1.27 0 0 0 .77 1.16 1.27 1.27 0 0 0 1.4-.25l.05-.05a1.54 1.54 0 1 1 2.18 2.18l-.05.05a1.27 1.27 0 0 0-.25 1.4v.06a1.27 1.27 0 0 0 1.16.77h.14a1.54 1.54 0 0 1 0 3.08h-.07a1.27 1.27 0 0 0-1.16.77Z"
+                stroke="currentColor"
+                stroke-width="1.1"
+              />
             </svg>
           </span>
-          <span class="nav-button__label">{{ props.view === 'settings' ? t('header.back') : t('header.settings') }}</span>
+          <span class="nav-button__label">{{
+            props.view === 'settings' ? t('header.back') : t('header.settings')
+          }}</span>
         </button>
 
         <div v-if="props.nativeAvailable" class="window-controls">
@@ -158,7 +214,7 @@ onBeforeUnmount(() => {
             @click.stop="handleMinimizeClick"
           >
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-              <path d="M2 6h8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+              <path d="M2 6h8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
             </svg>
           </button>
 
@@ -169,12 +225,40 @@ onBeforeUnmount(() => {
             :aria-label="windowMaximized ? t('header.restore') : t('header.maximize')"
             @click.stop="handleToggleWindowState"
           >
-            <svg v-if="!windowMaximized" width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-              <rect x="2.5" y="2.5" width="7" height="7" rx="1" stroke="currentColor" stroke-width="1.2"/>
+            <svg
+              v-if="!windowMaximized"
+              width="12"
+              height="12"
+              viewBox="0 0 12 12"
+              fill="none"
+              aria-hidden="true"
+            >
+              <rect
+                x="2.5"
+                y="2.5"
+                width="7"
+                height="7"
+                rx="1"
+                stroke="currentColor"
+                stroke-width="1.2"
+              />
             </svg>
             <svg v-else width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-              <path d="M3.5 2.5h5a1 1 0 0 1 1 1v5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
-              <rect x="2.5" y="4.5" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.2"/>
+              <path
+                d="M3.5 2.5h5a1 1 0 0 1 1 1v5"
+                stroke="currentColor"
+                stroke-width="1.2"
+                stroke-linecap="round"
+              />
+              <rect
+                x="2.5"
+                y="4.5"
+                width="5"
+                height="5"
+                rx="1"
+                stroke="currentColor"
+                stroke-width="1.2"
+              />
             </svg>
           </button>
 
@@ -186,7 +270,12 @@ onBeforeUnmount(() => {
             @click.stop="handleCloseClick"
           >
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-              <path d="M3 3l6 6M9 3 3 9" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+              <path
+                d="M3 3l6 6M9 3 3 9"
+                stroke="currentColor"
+                stroke-width="1.4"
+                stroke-linecap="round"
+              />
             </svg>
           </button>
         </div>

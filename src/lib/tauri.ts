@@ -32,7 +32,9 @@ export function hasNativeCommands(): boolean {
 }
 
 /** Unwrap a tauri-specta Result-style payload, rethrowing the error payload. */
-async function unwrap<T>(result: Promise<{ status: 'ok'; data: T } | { status: 'error'; error: unknown }>): Promise<T> {
+async function unwrap<T>(
+  result: Promise<{ status: 'ok'; data: T } | { status: 'error'; error: unknown }>,
+): Promise<T> {
   const outcome = await result
   if (outcome.status === 'error') {
     throw outcome.error
@@ -428,9 +430,7 @@ export async function startDraggingAppWindow(): Promise<void> {
  * Listen for PDFs handed to an already-running instance via "Open with…"
  * (single-instance plugin forwards argv paths as the `open-pdf` event).
  */
-export async function listenForOpenPdf(
-  listener: (paths: string[]) => void,
-): Promise<() => void> {
+export async function listenForOpenPdf(listener: (paths: string[]) => void): Promise<() => void> {
   if (!hasNativeCommands()) {
     return () => {}
   }
@@ -438,7 +438,9 @@ export async function listenForOpenPdf(
   const { listen } = await import('@tauri-apps/api/event')
   return listen<{ paths: string[] }>('open-pdf', (event) => {
     const paths = Array.isArray(event.payload?.paths)
-      ? event.payload.paths.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+      ? event.payload.paths.filter(
+          (item): item is string => typeof item === 'string' && item.trim().length > 0,
+        )
       : []
     if (paths.length) {
       listener(paths)

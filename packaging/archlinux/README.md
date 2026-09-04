@@ -28,5 +28,5 @@ For a local test before the upstream release archive exists, create a matching s
 
 ```bash
 git archive --format=tar.gz --prefix=pdf-compressor-0.2.0/ -o pdf-compressor-0.2.0.tar.gz HEAD
-mv pdf-compressor-0.2.0.tar.gz aur/pdf-compressor/
+mv pdf-compressor-0.2.0.tar.gz packaging/archlinux/
 ```

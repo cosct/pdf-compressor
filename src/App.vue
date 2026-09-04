@@ -69,7 +69,9 @@ const activeModeLabel = computed(() =>
   settings.value.targetFileSizeMb != null ? t('settings.targetMode') : null,
 )
 const activeQueueCount = computed(() => jobs.value.filter((job) => job.sourcePath.trim()).length)
-const completedQueueCount = computed(() => jobs.value.filter((job) => job.status === 'success').length)
+const completedQueueCount = computed(
+  () => jobs.value.filter((job) => job.status === 'success').length,
+)
 const canApplySettingsToAll = computed(
   () => Boolean(selectedJobId.value) && activeQueueCount.value > 1 && !compressionLoading.value,
 )
@@ -161,12 +163,12 @@ const queueItems = computed(() =>
             ? t('settings.targetMode')
             : t(`app.preset.${job.settings.preset}`),
         detail:
-          job.error && job.status === 'error'
-            ? job.error.body
-            : t(`queue.detail.${job.status}`),
+          job.error && job.status === 'error' ? job.error.body : t(`queue.detail.${job.status}`),
         meta: [
           sizeMeta,
-          job.analysis?.pageCount ? t('queue.pageCount', { count: job.analysis.pageCount }, job.analysis.pageCount) : '',
+          job.analysis?.pageCount
+            ? t('queue.pageCount', { count: job.analysis.pageCount }, job.analysis.pageCount)
+            : '',
           job.result ? formatPercent(job.result.savingsPercent) : '',
         ].filter(Boolean),
         progressPercent: job.progress.percent,
@@ -189,12 +191,7 @@ function handlePresetSaved() {
 
 function handleQuickProfileSaved() {
   pushErrorToast(
-    createNotice(
-      'quick:saved',
-      'success',
-      t('quick.savedTitle'),
-      t('quick.savedBody'),
-    ),
+    createNotice('quick:saved', 'success', t('quick.savedTitle'), t('quick.savedBody')),
   )
 }
 

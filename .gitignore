@@ -22,8 +22,8 @@ mutants.out.old
 # Local security-scan / hook state
 .mimosa
 
-# The project locks dependencies with npm (package-lock.json)
-pnpm-lock.yaml
+# The project locks dependencies with pnpm (pnpm-lock.yaml)
+package-lock.json
 yarn.lock
 
 # Editor directories and files
