@@ -32,12 +32,15 @@ build() {
   cd "${pkgname}-${pkgver}"
 
   pnpm install --frozen-lockfile
-  pnpm run build
 
-  # custom-protocol embeds dist/ into the binary; without it the app is a
-  # dev-server build that waits on vite at localhost:5173 and shows no window.
-  cargo build --release --locked --features custom-protocol --manifest-path src-tauri/Cargo.toml
-  cargo build --release --locked --manifest-path crates/pdf-core/Cargo.toml --bin pdf-compressor-cli
+  # Same pipeline as the deb/appimage bundles: `tauri build` runs the frontend
+  # build (beforeBuildCommand) and compiles the release binary with the
+  # custom-protocol feature (dist/ embedded) — the steps are not duplicated
+  # here, so the bundle targets and this package cannot drift apart.
+  pnpm exec tauri build --no-bundle
+
+  # Headless CLI lives outside the Tauri shell.
+  cargo build --release --locked -p pdf-core --bin pdf-compressor-cli
 }
 
 package() {
