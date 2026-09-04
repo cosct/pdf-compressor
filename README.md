@@ -472,7 +472,7 @@ This produces the NSIS installer. To also output a portable (no-install) executa
 pnpm run tauri:build
 ```
 
-The portable copy is placed at `target/release/bundle/PDF-Compressor-portable.exe`.
+The portable copy is placed at `release/bundle/PDF-Compressor-portable.exe` inside the cargo target directory (`target/` by default; resolved via `cargo metadata` so a machine-wide shared `CARGO_TARGET_DIR` also works).
 
 The portable executable requires Windows 10 21H2+ or Windows 11 (WebView2 is pre-installed on these systems).
 
