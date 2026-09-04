@@ -355,6 +355,7 @@ Vue UI -> Tauri bridge -> Rust commands -> PDF analysis/compression engine -> ou
 ├─ scripts/
 │  ├─ sync-version.mjs               # Version sync (package.json -> tauri.conf.json / Cargo.toml)
 │  ├─ postbuild-portable.mjs         # Portable executable post-processing
+│  ├─ build-arch-bundle.sh           # Arch zst from a finished tauri build (bundle/archlinux/)
 │  └─ quality-gate.sh                # Full local quality gate (mirrors CI)
 ├─ package.json                      # Frontend scripts and JS dependencies
 ├─ README.md
@@ -490,6 +491,8 @@ Release metadata:
 ### Linux packaging (Arch / AUR)
 
 For Arch-based distributions, packaging is provided via the AUR source package in `packaging/archlinux/`. The `PKGBUILD` builds through the same `tauri build` pipeline as the deb/AppImage bundles (`tauri build --no-bundle`, so the frontend build and `custom-protocol` embedding are identical), plus the headless `pdf-compressor-cli`, and installs the GUI as `/usr/bin/pdf-compressor` along with a desktop entry and icons. See [Installation](#installation) for usage and `packaging/archlinux/README.md` for the publishing checklist.
+
+To get an Arch package next to the other bundles, run `pnpm run tauri:arch`: Tauri has no pacman bundle target (and no after-bundle hook), so the script chains `tauri build` with `scripts/build-arch-bundle.sh`, which packages the already-built release binaries via a no-build PKGBUILD and drops `pdf-compressor-<version>-1-x86_64.pkg.tar.zst` into `release/bundle/archlinux/` alongside the deb/AppImage output.
 
 ## Runtime Details
 

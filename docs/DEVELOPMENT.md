@@ -224,6 +224,7 @@ Rust clippy `-D warnings` + 测试、两个 MSRV 检查、60s 模糊测试、依
 pnpm run build        # 前端生产包（frontend/dist/）
 pnpm run tauri build  # 桌面安装包（Windows: NSIS）
 pnpm run tauri:build  # 安装包 + 便携版可执行文件（scripts/postbuild-portable.mjs）
+pnpm run tauri:arch   # 安装包 + Arch zst 包（release/bundle/archlinux/，scripts/build-arch-bundle.sh）
 ```
 
 - Linux（Arch）：AUR 源码包在 `packaging/archlinux/`，PKGBUILD 走与 deb/appimage

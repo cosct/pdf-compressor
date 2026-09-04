@@ -274,6 +274,7 @@ Vue UI -> Tauri bridge -> Rust commands -> PDF analysis/compression engine -> ou
 ├─ scripts/
 │  ├─ sync-version.mjs               # 版本号同步（package.json -> tauri.conf.json / Cargo.toml）
 │  ├─ postbuild-portable.mjs         # 便携版可执行文件后处理
+│  ├─ build-arch-bundle.sh           # 从完成的 tauri build 产 Arch zst（bundle/archlinux/）
 │  └─ quality-gate.sh                # 本地完整质量门（对齐 CI）
 ├─ package.json                     # 前端脚本与 JS 依赖
 ├─ README.md
@@ -408,6 +409,8 @@ pnpm run tauri:build
 ### Linux 打包（Arch / AUR）
 
 针对基于 Arch 的发行版，通过 `packaging/archlinux/` 中的 AUR 源码包提供打包支持。`PKGBUILD` 走与 deb/AppImage 相同的 `tauri build` 管线（`tauri build --no-bundle`，前端构建与 `custom-protocol` 内嵌行为完全一致），另补编 headless 的 `pdf-compressor-cli`，并将 GUI 安装为 `/usr/bin/pdf-compressor` 连同桌面入口和图标。用法见[安装](#安装)，发布流程见 `packaging/archlinux/README.md`。
+
+要在其他 bundle 旁边直接得到 Arch 包，运行 `pnpm run tauri:arch`：Tauri 没有 pacman bundle 目标（也没有 after-bundle 钩子），该脚本把 `tauri build` 与 `scripts/build-arch-bundle.sh` 串联，后者用一个免编译的 PKGBUILD 把已构建的 release 二进制打成 `pdf-compressor-<版本>-1-x86_64.pkg.tar.zst`，输出到 `release/bundle/archlinux/`（与 deb/AppImage 同级）。
 
 ## 运行时细节
 

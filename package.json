@@ -14,6 +14,7 @@
     "check": "vp -C frontend check",
     "tauri": "tauri",
     "tauri:build": "tauri build && node scripts/postbuild-portable.mjs",
+    "tauri:arch": "tauri build && bash scripts/build-arch-bundle.sh",
     "sync-version": "node scripts/sync-version.mjs",
     "gate": "bash scripts/quality-gate.sh"
   },
