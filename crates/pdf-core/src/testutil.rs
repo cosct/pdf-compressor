@@ -271,6 +271,64 @@ pub fn bilevel_scan_rgb_image(width: u32, height: u32, seed: u32) -> RgbImage {
     DynamicImage::ImageLuma8(bilevel_scan_image(width, height, seed)).to_rgb8()
 }
 
+// ---------------------------------------------------------------------------
+// JPX (JPEG 2000) input fixtures — committed codestreams under assets/
+// ---------------------------------------------------------------------------
+
+/// Fixture geometry shared by the committed codestreams and their reference
+/// planes. The RGB/gray planes are 256×192 (49,152 pixels — comfortably above
+/// the engine's trivial-image skip), the bilevel scan is 640×480.
+pub const JPX_PLANE_WIDTH: u32 = 256;
+pub const JPX_PLANE_HEIGHT: u32 = 192;
+pub const JPX_BILEVEL_WIDTH: u32 = 640;
+pub const JPX_BILEVEL_HEIGHT: u32 = 480;
+
+/// Lossless RGB J2K codestream (raw, no JP2 boxes) — the shape most PDF
+/// producers embed. Encodes exactly `fixture_rgb_image(256, 192)`.
+/// Regenerate with `scripts/make-jpx-fixtures.sh`.
+pub const JPX_RGB_J2K: &[u8] = include_bytes!("../assets/jpx-rgb.j2k");
+/// Lossless RGB JP2 file (signature box + codestream) — the shape scanner
+/// front-ends and image pipelines embed when they treat the stream as a
+/// standalone file.
+pub const JPX_RGB_JP2: &[u8] = include_bytes!("../assets/jpx-rgb.jp2");
+/// Lossless grayscale J2K codestream.
+pub const JPX_GRAY_J2K: &[u8] = include_bytes!("../assets/jpx-gray.j2k");
+/// Lossless bilevel J2K codestream — the "JPX scan of a text page" shape the
+/// G4 transcode path targets.
+pub const JPX_BILEVEL_J2K: &[u8] = include_bytes!("../assets/jpx-bilevel.j2k");
+
+/// Reference plane for the RGB JPX fixtures: the shared LCG-noise photograph
+/// pattern, so transcode fidelity can be measured with the same PSNR
+/// machinery as the JPEG quality gates.
+pub fn jpx_rgb_reference() -> RgbImage {
+    fixture_rgb_image(JPX_PLANE_WIDTH, JPX_PLANE_HEIGHT)
+}
+
+/// Reference plane for the grayscale JPX fixture.
+pub fn jpx_gray_reference() -> GrayImage {
+    let (width, height) = (JPX_PLANE_WIDTH, JPX_PLANE_HEIGHT);
+    let mut image = GrayImage::new(width, height);
+    for y in 0..height {
+        for x in 0..width {
+            image.put_pixel(x, y, Luma([((x * 7 + y * 13) & 0xFF) as u8]));
+        }
+    }
+    image
+}
+
+/// Reference plane for the bilevel JPX fixture: blocky deterministic pattern.
+pub fn jpx_bilevel_reference() -> GrayImage {
+    let (width, height) = (JPX_BILEVEL_WIDTH, JPX_BILEVEL_HEIGHT);
+    let mut image = GrayImage::new(width, height);
+    for y in 0..height {
+        for x in 0..width {
+            let white = ((x * x + y * y) / 32) % 2 == 0;
+            image.put_pixel(x, y, Luma([if white { 255 } else { 0 }]));
+        }
+    }
+    image
+}
+
 /// Encode a grayscale image as CCITT Group 4 (luma >= 128 → white). Used to
 /// build CCITT *input* fixtures; mirrors the engine's T.6 conventions
 /// (`BlackIs1: true`).

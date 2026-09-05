@@ -58,11 +58,14 @@ const MAX_INPUT_BYTES: u64 = 2 * 1024 * 1024 * 1024; // 2 GiB
 const MAX_IMAGE_SKIP_NOTICES: usize = 6;
 
 /// Guard against OOM on oversized inputs. Shared by analyze and compress.
+/// Carries its own error code (`error.inputTooLarge`) with humanized sizes so
+/// the UI can explain the ceiling before a run starts, not after an abort.
 pub(crate) fn ensure_input_size_supported(size_bytes: u64) -> Result<(), AppError> {
     if size_bytes > MAX_INPUT_BYTES {
-        return Err(AppError::PdfBuild(format!(
-            "Input file is too large to process safely ({size_bytes} bytes; the limit is {MAX_INPUT_BYTES} bytes)."
-        )));
+        return Err(AppError::InputTooLarge {
+            size_bytes,
+            limit_bytes: MAX_INPUT_BYTES,
+        });
     }
 
     Ok(())
@@ -1311,13 +1314,36 @@ fn remove_metadata(document: &mut Document) -> bool {
 /// divided by the largest single decoded-bitmap estimate.
 const IMAGE_DECODE_MEMORY_BUDGET_BYTES: u64 = 1024 * 1024 * 1024;
 
-/// Estimate the decoded size of a stream's bitmap. Pixel-count based (3 bytes
-/// per pixel worst case); falls back to a ~12:1 JPEG compression heuristic
-/// when the dictionary carries no usable dimensions.
+/// Estimate the decoded size of a stream's bitmap, so the worker pool can
+/// bound concurrently-held planes. Pixel-count based; falls back to a ~12:1
+/// JPEG compression heuristic when the dictionary carries no usable
+/// dimensions. JPX streams decode through OpenJPEG, which buffers 4 bytes per
+/// sample per component (`opj_image_t` data) before the assembled RGB plane —
+/// 19 bytes per pixel worst case (4 components); `DeviceCMYK` raw streams
+/// transiently hold the 4-channel source next to the converted plane.
 pub(crate) fn estimated_decoded_bitmap_bytes(stream: &Stream) -> u64 {
+    let bytes_per_pixel: u64 = if filter_names_contain(stream, b"JPXDecode") {
+        19
+    } else if matches!(stream.dict.get(b"ColorSpace"), Ok(Object::Name(name)) if name.as_slice() == b"DeviceCMYK")
+    {
+        7
+    } else {
+        3
+    };
     match pixel_count(stream) {
-        Some(pixels) => pixels.saturating_mul(3),
+        Some(pixels) => pixels.saturating_mul(bytes_per_pixel),
         None => (stream.content.len() as u64).saturating_mul(12),
+    }
+}
+
+/// Does the stream's `/Filter` chain (name or array form) contain `name`?
+fn filter_names_contain(stream: &Stream, name: &[u8]) -> bool {
+    match stream.dict.get(b"Filter") {
+        Ok(Object::Name(current)) => current.as_slice() == name,
+        Ok(Object::Array(items)) => items
+            .iter()
+            .any(|item| matches!(item, Object::Name(current) if current.as_slice() == name)),
+        _ => false,
     }
 }
 
@@ -1466,8 +1492,45 @@ mod tests {
     }
 
     #[test]
+    fn bitmap_estimates_scale_with_codec_memory() {
+        use lopdf::{dictionary, Stream};
+
+        // Same 2000×1500 geometry: a plain raw/JPEG stream costs ~9 MB
+        // (3 bytes/pixel), a DeviceCMYK raw plane ~21 MB (source + converted
+        // plane), a JPX codestream ~57 MB (OpenJPEG's 4-byte samples per
+        // component plus the assembled plane). The pool must shrink as the
+        // per-image worst case grows.
+        let jpeg_stream = Stream::new(
+            dictionary! { "Width" => 2000, "Height" => 1500, "Filter" => "DCTDecode" },
+            vec![0u8; 1024],
+        );
+        let cmyk_stream = Stream::new(
+            dictionary! { "Width" => 2000, "Height" => 1500, "ColorSpace" => "DeviceCMYK" },
+            vec![0u8; 1024],
+        );
+        let jpx_stream = Stream::new(
+            dictionary! { "Width" => 2000, "Height" => 1500, "Filter" => "JPXDecode" },
+            vec![0u8; 1024],
+        );
+        assert_eq!(estimated_decoded_bitmap_bytes(&jpeg_stream), 9_000_000);
+        assert_eq!(estimated_decoded_bitmap_bytes(&cmyk_stream), 21_000_000);
+        assert_eq!(estimated_decoded_bitmap_bytes(&jpx_stream), 57_000_000);
+    }
+
+    #[test]
+    fn jpx_estimates_shrink_the_worker_pool() {
+        // An 8000×8000 JPX page holds ~1.2 GB at 19 bytes/pixel — the pool
+        // drops to a single worker instead of decoding several in parallel.
+        let jpx_bitmap: u64 = 8000 * 8000 * 19;
+        assert_eq!(image_worker_count(64, jpx_bitmap), 1);
+    }
+
+    #[test]
     fn input_size_guard_rejects_oversized_files() {
         assert!(ensure_input_size_supported(1024).is_ok());
-        assert!(ensure_input_size_supported(3 * 1024 * 1024 * 1024).is_err());
+        assert!(matches!(
+            ensure_input_size_supported(3 * 1024 * 1024 * 1024),
+            Err(AppError::InputTooLarge { .. })
+        ));
     }
 }

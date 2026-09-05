@@ -280,6 +280,9 @@ const zhCN = {
     'error.invalidPdfPath': {
       body: '所选文件不是 PDF：{path}',
     },
+    'error.inputTooLarge': {
+      body: '文件大小为 {size}，超过了可安全处理的 {limit} 上限。',
+    },
     'error.encryptedPdf': {
       body: '该 PDF 使用了不受支持的安全处理器（DRM 加密），无法处理。',
     },

@@ -12,8 +12,10 @@ use super::encode::{optimize_image_stream, ImageOptimization, ImageSearchCache, 
 use super::settings::CompressionSettings;
 use crate::error::AppError;
 
-/// Total budget for all cached color planes during a target-size search.
-/// Above it, the largest cached bitmaps are evicted and re-decode next round.
+/// Total budget for everything the search caches across images — decoded
+/// color planes, alpha planes, and memoized alpha/G4 products. Above it,
+/// caches are evicted (color planes first, products second) and re-derived
+/// next round; the re-decode cost is the price of a bounded memory ceiling.
 const BITMAP_CACHE_TOTAL_BUDGET_BYTES: u64 = 768 * 1024 * 1024;
 
 /// One image object tracked across probe rounds: the moved-out original
@@ -184,20 +186,29 @@ pub(crate) fn materialize_image_entry(
     Ok(())
 }
 
-/// Drop the largest cached bitmaps until the total stays under the budget.
-/// Evicted images simply re-decode on the next probe round.
+/// Keep the search's cached bytes under the budget, in two stages: first the
+/// largest color planes are evicted (they dominate the total; evicted images
+/// simply re-decode next round), then — if the products alone still exceed
+/// the budget — the alpha/G4 memoizations go as well. The sticky undecodable
+/// memos are plain strings and never evicted.
 pub(crate) fn enforce_bitmap_cache_budget(entries: &mut [ImageSearchEntry]) {
     let mut sized: Vec<(usize, u64)> = entries
         .iter()
         .enumerate()
-        .filter_map(|(index, entry)| entry.cache.cached_bitmap_bytes().map(|bytes| (index, bytes)))
+        .filter_map(|(index, entry)| {
+            entry
+                .cache
+                .cached_bitmap_bytes()
+                .map(|bytes| (index, bytes))
+        })
         .collect();
 
-    let mut total: u64 = sized.iter().map(|(_, size)| *size).sum();
+    let mut total: u64 = entries.iter().map(|entry| entry.cache.cached_bytes()).sum();
     if total <= BITMAP_CACHE_TOTAL_BUDGET_BYTES {
         return;
     }
 
+    // Stage 1: color planes, largest first.
     sized.sort_unstable_by_key(|&(_, size)| std::cmp::Reverse(size));
     for (index, size) in sized {
         if total <= BITMAP_CACHE_TOTAL_BUDGET_BYTES {
@@ -205,5 +216,25 @@ pub(crate) fn enforce_bitmap_cache_budget(entries: &mut [ImageSearchEntry]) {
         }
         total = total.saturating_sub(size);
         entries[index].cache.drop_bitmap();
+    }
+    if total <= BITMAP_CACHE_TOTAL_BUDGET_BYTES {
+        return;
+    }
+
+    // Stage 2: alpha and G4 products, largest contributor first.
+    let mut product_sized: Vec<(usize, u64)> = entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| (index, entry.cache.cached_bytes()))
+        .collect();
+    product_sized.sort_unstable_by_key(|&(_, size)| std::cmp::Reverse(size));
+    for (index, _) in product_sized {
+        if total <= BITMAP_CACHE_TOTAL_BUDGET_BYTES {
+            break;
+        }
+        let before = entries[index].cache.cached_bytes();
+        entries[index].cache.drop_products();
+        let after = entries[index].cache.cached_bytes();
+        total = total.saturating_sub(before - after);
     }
 }

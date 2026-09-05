@@ -36,11 +36,13 @@ build() {
   # Same pipeline as the deb/appimage bundles: `tauri build` runs the frontend
   # build (beforeBuildCommand) and compiles the release binary with the
   # custom-protocol feature (dist/ embedded) — the steps are not duplicated
-  # here, so the bundle targets and this package cannot drift apart.
-  pnpm exec tauri build --no-bundle
+  # here, so the bundle targets and this package cannot drift apart. The jpx
+  # feature pulls in vendored OpenJPEG via the cc crate (statically linked,
+  # no system openjpeg dependency).
+  pnpm exec tauri build --no-bundle --features jpx
 
   # Headless CLI lives outside the Tauri shell.
-  cargo build --release --locked -p pdf-core --bin pdf-compressor-cli
+  cargo build --release --locked -p pdf-core --bin pdf-compressor-cli --features jpx
 }
 
 package() {

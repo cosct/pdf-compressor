@@ -13,13 +13,26 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+lopdf = "0.44"
 
+# The `jpx` feature pulls in the vendored OpenJPEG C code — exactly the
+# unsafe surface the fuzz targets must hammer. cargo-fuzz propagates the
+# sanitizer flags to `cc` builds via CFLAGS, so the C decode path is
+# instrumented and leak/overflow-checked like the Rust code.
 [dependencies.pdf-core]
 path = ".."
+features = ["jpx"]
 
 [[bin]]
 name = "pipeline"
 path = "fuzz_targets/pipeline.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "jpx"
+path = "fuzz_targets/jpx.rs"
 test = false
 doc = false
 bench = false

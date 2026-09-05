@@ -2,6 +2,22 @@
 
 本项目的所有显著变更都记录在此文件中。格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。日期为提交日期。
 
+## [未发布]
+
+### 新增
+
+- **JPX（JPEG 2000）输入解码**（feature `jpx`，默认关闭以保持默认构建纯 Rust；桌面 release 安装包与 AUR 包开启）：PDF 内嵌的 JPEG 2000 图片（J2K 裸码流与 JP2 容器两种形态）现可解码转码为 JPEG/G4 压缩；1/3/4 分量分别按灰度/RGB/CMYK 处理。实现经 `jpeg2k`（OpenJPEG 安全封装）——vendored OpenJPEG 用 `cc` 静态编译链接，**无需 cmake、无需在安装包携带运行时动态库**，三平台打包风险由此消除（2026-09 spike 结论）。unsafe C 面配专职 fuzz target（`cargo +nightly fuzz run jpx`，CI 45s 冒烟）；形状门禁照 CCITT 模式在 `stream_filter_info` 收口，分析器预估自动跟随
+- **CMYK 图片支持**：ICC N=4、`DeviceCMYK`、CMYK 基 Indexed 的图片经油墨减色转换（`(1-cmy)×(1-k)`）转为 RGB 后走既有 JPEG 管线；重建流声明 `DeviceRGB`（CMYK profile 不随行）；带 `/Decode` 映射数组的 CMYK 保持跳过（防静默偏色）。保真度由 PSNR 门禁钉住（梯度夹具实测 ≈46dB）
+- **2GiB 输入上限的友好提示**：专用错误码 `error.inputTooLarge`（GUI 双语文案就位），携带人性化体积（如 "2.1 GB"）而非原始字节数
+- **内存护栏**：目标大小搜索的缓存预算核算扩展到 alpha/G4 产物（原先只算彩色平面），超限两级淘汰；多图大文档搜索的进程内存峰值测试护栏（Linux，实测 ≈390MB / 上限 2GB）；worker 池按编解码真实内存占用估算并发数（JPX 19 字节/像素、CMYK 7 字节/像素）
+- 字体子集化 CFF/Type1C 路线调研结论：现有依赖 typst `subsetter` 0.2 即支持 CFF 轮廓并转 CID 键控，无需新依赖、无许可障碍（详见开发文档备忘录；实现进 0.6.0 尾部或 0.7.0）
+
+### 变更
+
+- 分析器"不支持的编解码"通知文案更新（CCITT/JPX 的可解码形状不再点名）
+- 质量门禁基线解码器覆盖 JPX 输入流（`PDF_COMPRESSOR_QUALITY_CORPUS` 语料中的 JPEG 2000 文件纳入 PSNR 基线）
+- 测试新增 JPX 集成路径：J2K/JP2 转码一致性（逐字节）、双级 JPX 转 G4、字典不一致与 flate 混合链保持原样、目标大小搜索覆盖；夹具码流 committed 于 `crates/pdf-core/assets/`（`scripts/make-jpx-fixtures.sh` 再生）
+
 ## [0.5.0] - 2026-09-05
 
 ### 新增

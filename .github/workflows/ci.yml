@@ -58,6 +58,12 @@ jobs:
       - name: Tests
         run: cargo test --workspace
 
+      - name: Clippy with the jpx feature
+        run: cargo clippy -p pdf-core --all-targets --features jpx -- -D warnings
+
+      - name: Tests with the jpx feature
+        run: cargo test -p pdf-core --features jpx
+
   msrv:
     name: MSRV check (${{ matrix.crate }})
     runs-on: ubuntu-latest
@@ -122,7 +128,11 @@ jobs:
 
       - name: Fuzz the PDF pipeline
         working-directory: crates/pdf-core
-        run: cargo +nightly fuzz run pipeline -- -max_total_time=60 -rss_limit_mb=2560 -timeout=10
+        run: cargo +nightly fuzz run pipeline -- -max_total_time=45 -rss_limit_mb=2560 -timeout=10
+
+      - name: Fuzz the JPX decode path
+        working-directory: crates/pdf-core
+        run: cargo +nightly fuzz run jpx -- -max_total_time=45 -rss_limit_mb=2560 -timeout=10
 
   audit:
     name: Dependency audit

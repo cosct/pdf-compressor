@@ -99,7 +99,8 @@ cargo run -p pdf-core --bin pdf-compressor-cli -- quick <file.pdf> --grayscale  
 | 前端单元 + lint/类型 | `pnpm test` / `pnpm run check` |
 | 引擎单元 + 集成 + CLI + 桌面壳 + bindings 再生成 | `cargo test --workspace` |
 | 基准 | `cargo bench -p pdf-core` |
-| 模糊测试 | `cd crates/pdf-core && cargo +nightly fuzz run pipeline` |
+| 模糊测试 | `cd crates/pdf-core && cargo +nightly fuzz run pipeline`（JPX 解码路径另有 `jpx` target） |
+| JPX feature 配置的测试/clippy | `cargo test -p pdf-core --features jpx` / `cargo clippy -p pdf-core --features jpx -- -D warnings`（CI 有独立步骤） |
 | 变异测试 | `cd crates/pdf-core && cargo mutants` |
 | PSNR 质量门禁 | `cargo test -p pdf-core --lib preset_quality` |
 | 真实语料快照 | `PDF_COMPRESSOR_QUALITY_CORPUS=<dir> cargo test -p pdf-core --lib real_corpus` |
@@ -188,13 +189,34 @@ cargo run -p pdf-core --bin pdf-compressor-cli -- quick <file.pdf> --grayscale  
   `ImageTask`/`ImageSearchEntry` 携带。别名表取全部资源字典的并集，同名不同值
   视为歧义弃用。重建流时若通道数匹配则**保留原 ICC 数组**（profile 不丢），
   Indexed 输出声明基色空间；灰度/G4 转换导致通道数变化时回退 Device 名。
-  CMYK（N=4）、CMYK 基 Indexed、JPX 保持跳过。
-- **JPX（JPEG2000）解码未接入**（刻意保持默认构建纯 Rust）：候选路线按优先级——
-  ① `jpeg2k` crate（支持链接系统 OpenJPEG，避免 vendored 源码构建）；② 自写
-  系统 libopenjp2 的最小 FFI（pkg-config + ~150 行 unsafe，需配 fuzz）；
-  ③ `openjpeg-sys`（vendored cmake 构建，最重）。无论哪条都需要 unsafe C 解码
-  路径配合 cargo-fuzz 强化后再开 feature `jpx`（默认关）。解码后走既有
-  JPEG/G4 重编码管线，DecodeParms/JPXColorSpace 处理可参考 CCITT 的形状门禁。
+- **CMYK（0.6.0 起支持）**：ICC N=4、`DeviceCMYK` 名、CMYK 基 Indexed 统一经
+  `DecodeColorSpace::Cmyk` 解析，解码时用共享的油墨减色转换（`colorspace::
+  cmyk_to_rgb`，`(1-cmy)×(1-k)`，u16 定点舍入）转成 RGB 平面后走既有 JPEG 管线。
+  重建流声明 `DeviceRGB`——**CMYK 的 ICC/profile 永不随行**（通道数已不符，
+  `rebuild_color_space` 对 Cmyk 恒 None，Indexed 的 CMYK 基同理）。带 `/Decode`
+  映射数组的 CMYK（名字路径与解析路径都查）保持 skip：映射会重释采样值，朴素
+  转换会静默偏色。PDF 原始/JPX 的 CMYK 采样不反转（0=无墨），与 DCT 流内
+  Adobe 约定的反相 CMYK 不同——后者由 JPEG 解码器先归一。印刷级色彩保真需要
+  真 CMS（读 ICC profile 做意图转换），超出重编码压缩的范围，属已知取舍；
+  保真度由 PSNR 门禁钉住（`CMYK_TRANSCODE_PSNR_FLOOR_DB`，梯度夹具实测 ≈46dB）。
+- **JPX（JPEG 2000）解码**（`jpx.rs`，feature `jpx` **默认关**，保持默认构建纯
+  Rust；桌面 release 与 AUR 包开启，src-tauri 经 `--features jpx` 转发）：走
+  `jpeg2k` crate（0.10，MIT/Apache）→ `openjpeg-sys` 1.0.x（BSD-2）——**vendored
+  OpenJPEG 用纯 `cc` crate 编译并静态链接**，无 cmake、无运行时 libopenjp2 需要随
+  安装包分发（2026-09 spike 结论；workspace 的 flate2/zlib-ng 本就依赖 cc，构建
+  前提不变）。三路线评估中的“链接系统库”因此弃用——静态链接彻底消解了
+  Windows/macOS 打包风险。门禁收口照 CCITT 模式：`jpx_input_shape` 只看流字典
+  （尺寸 1..=65535、无 DecodeParms/Decode、单元素过滤链），分析器经
+  `stream_filter_info::jpx_decodable` 自动跟随；解码侧再校验码流尺寸与字典一致、
+  分量无子采样/无 alpha/精度 ≤16。分量数决定色彩：1→灰、3→RGB、4→CMYK（走
+  上面的减色转换）；码流自带的 MCT 已被 OpenJPEG 逆变换，按 `opj_decompress`
+  的口径对待。`/DecodeParms`（规范未定义）与 `/Decode` 数组保持 skip。
+  **fuzz 强化**：`fuzz_targets/jpx.rs` 把任意字节包成最小合法 PDF 的 JPXDecode
+  流并填充到小流跳过阈值之上，确保每次迭代都真正进入 C 解码（通用 pipeline
+  target 无法从随机字节演化出带 JPX 流的合法 PDF）；CI 各跑 45s。夹具码流
+  committed 在 `assets/jpx-*.j2k/.jp2`（`scripts/make-jpx-fixtures.sh` 再生，
+  lossless，与 testutil 的参考平面逐像素一致）。worker 池内存估计对 JPX 按
+  19 字节/像素（OpenJPEG 每分量 4 字节采样 + 组装平面）计。
 - **线性化（Fast Web View）暂缓**：lopdf 0.44 的 `SaveOptions::linearize` 是**空壳**——
   `save_with_options` 完全忽略该标志（writer 无任何 hint 表/首页分区逻辑，仅
   `object_stream.rs` 里有个“已是线性化文档”的读取侧判断）。自研需按 PDF 32000
@@ -211,6 +233,15 @@ cargo run -p pdf-core --bin pdf-compressor-cli -- quick <file.pdf> --grayscale  
   简单 TrueType）共享 → **整轮放弃**。共享同一 FontFile2 的多个候选 Type0 字体
   取字形并集、子集化一次。测试字体 `assets/test-font.ttf` 由 pyftsubset
   生成（77 字形），gid 常量见 `testutil.rs`；勿手改。
+  **CFF/Type1C 调研结论（2026-09，生态可用，进 0.6.0 尾部或 0.7.0）**：
+  无需引入新依赖——typst `subsetter` 0.2.x 的 README 即声明支持 "TrueType or
+  CFF outlines for embedding in PDFs"，且 SID 键控字体会被转成 CID 键控
+  （identity GID→CID），与现有 Type0/CID 写入路径天然契合（typst 自家的 PDF
+  输出即此用法）。实现路线：扩展 `fonts.rs` 认得 FontFile3（/Type1C、
+  /CIDFontType0C、/OpenType）→ `subsetter::subset` → 从输出的 OpenType 包装里
+  抽 `CFF ` 表作为 FontFile3 流体（裸 CFF 即合法 Type1C 字体程序）。字形收集、
+  共享合并、保守放弃等机制全部复用；许可无障碍（MIT/Apache，已在依赖树内）。
+  老 PFB Type1（FontFile）视收益另议。无 JBIG2 式阻断项。
 
 CI（`.github/workflows/ci.yml`）在每次 push/PR 执行：前端测试+类型检查+构建、
 Rust clippy `-D warnings` + 测试、两个 MSRV 检查、60s 模糊测试、依赖审计
@@ -279,7 +310,8 @@ release overlay 而非主配置）。
   `pnpm run tauri dev`。
 - **改了命令签名后前端类型报错**：运行 `cargo test --workspace` 再生成 bindings 并提交。
 - **压缩后文件没变小**：先看分析结果 `documentKind`（text-native 压缩空间有限）、
-  是否无内嵌图片、或图片过滤器不受支持（JPX/JBIG2/CCITT/Crypt 会跳过）。
+  是否无内嵌图片、或图片过滤器不受支持（JBIG2/Crypt 恒跳过；JPX 与 CCITT 仅在
+  feature 开启且形状可解码时处理——默认构建里 JPX 跳过，release/AUR 包已开启）。
 - **目标大小模式未达标**：引擎最多尝试 12 轮（`MAX_ATTEMPTS`），产出“当前可达的最小结果”并返回
   `compress.warning.targetSizeMissed` 提示；前端以警告 toast + 状态卡 notes 呈现。
 - **`cargo bench` 名字冲突**：基准每轮使用独立临时目录，避免 100 次重名上限。

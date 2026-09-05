@@ -20,6 +20,11 @@ pub enum AppError {
     #[error("The selected file is not a PDF: {0}")]
     InvalidPdfPath(PathBuf),
 
+    #[error(
+        "The selected file is too large to process safely ({size_bytes} bytes; the limit is {limit_bytes} bytes)"
+    )]
+    InputTooLarge { size_bytes: u64, limit_bytes: u64 },
+
     #[error("The PDF is DRM-encrypted with an unsupported security handler; it cannot be processed")]
     Encrypted,
 
@@ -73,6 +78,21 @@ impl From<AppError> for AppErrorPayload {
                 values: BTreeMap::from([("path".to_string(), path.to_string_lossy().to_string())]),
                 fallback: format!("The selected file is not a PDF: {}", path.to_string_lossy()),
             },
+            AppError::InputTooLarge {
+                size_bytes,
+                limit_bytes,
+            } => Self {
+                code: "error.inputTooLarge".to_string(),
+                values: BTreeMap::from([
+                    ("size".to_string(), humanized_size(size_bytes)),
+                    ("limit".to_string(), humanized_size(limit_bytes)),
+                ]),
+                fallback: format!(
+                    "The selected file is {} and exceeds the {} processing limit.",
+                    humanized_size(size_bytes),
+                    humanized_size(limit_bytes)
+                ),
+            },
             AppError::Encrypted => Self {
                 code: "error.encryptedPdf".to_string(),
                 values: BTreeMap::new(),
@@ -122,5 +142,52 @@ impl From<AppError> for AppErrorPayload {
                 fallback: format!("Failed to build the output PDF: {detail}"),
             },
         }
+    }
+}
+
+/// Human-friendly byte size for error messages: one decimal below 10, none
+/// above (`2.1 GB`, `768 MB`, `512 KB`, `42 B`).
+pub(crate) fn humanized_size(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else if value < 10.0 {
+        format!("{value:.1} {}", UNITS[unit])
+    } else {
+        format!("{value:.0} {}", UNITS[unit])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn humanized_sizes_use_familiar_units() {
+        assert_eq!(humanized_size(42), "42 B");
+        assert_eq!(humanized_size(512 * 1024), "512 KB");
+        assert_eq!(humanized_size(3 * 1024 * 1024 * 1024 / 2), "1.5 GB");
+        assert_eq!(
+            humanized_size(2 * 1024_u64.pow(3)),
+            "2.0 GB",
+            "the 2 GiB limit reads naturally"
+        );
+    }
+
+    #[test]
+    fn oversized_input_payload_carries_humanized_values() {
+        let payload = AppErrorPayload::from(AppError::InputTooLarge {
+            size_bytes: 2_700_000_000,
+            limit_bytes: 2 * 1024 * 1024 * 1024,
+        });
+        assert_eq!(payload.code, "error.inputTooLarge");
+        assert_eq!(payload.values.get("limit").map(String::as_str), Some("2.0 GB"));
+        assert!(payload.fallback.contains("2.0 GB"));
     }
 }

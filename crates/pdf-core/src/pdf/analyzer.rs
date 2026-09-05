@@ -258,8 +258,9 @@ where
                 "analysis.warning.unsupportedImageCodecs",
                 "warning",
                 format!(
-                    "{} images use codecs (JBIG2, JPX, CCITT) that this version cannot \
-                     re-encode; they are preserved as-is and excluded from the estimate.",
+                    "{} images use codecs (JBIG2, or CCITT/JPX variants outside the \
+                     supported decode shapes) that this version cannot re-encode; they are \
+                     preserved as-is and excluded from the estimate.",
                     image_stats.unsupported_codec_count
                 ),
             )

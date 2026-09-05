@@ -32,12 +32,23 @@ ccitt = ["dep:fax"]
 # `subsetter` (MSRV 1.85, default features depend only on rustc-hash).
 # Default-on; the code path only runs when the `subset_fonts` setting is on.
 subset-fonts = ["dep:subsetter"]
+# JPX (JPEG 2000) decoding via the `jpeg2k` safe wrapper over `openjpeg-sys`,
+# which compiles vendored OpenJPEG with the plain `cc` crate and links it
+# statically — no cmake, no runtime libopenjp2 to ship. Default OFF: the C
+# decode path takes this build out of pure-Rust territory (see
+# docs/DEVELOPMENT.md "JPX 接入"). The unsafe surface is confined to the
+# vendored FFI; the fuzz target builds with this feature enabled.
+jpx = ["dep:jpeg2k"]
 
 [dependencies]
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 lopdf = "0.44"
 fax = { version = "0.3", optional = true }
 subsetter = { version = "0.2", optional = true }
+# No-default-features: we assemble planes from `components()` ourselves
+# (the crate's `get_pixels` rejects CMYK and hides subsampling) and never
+# touch its file I/O.
+jpeg2k = { version = "0.10", default-features = false, features = ["openjpeg-sys"], optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tempfile = "3"

@@ -1496,6 +1496,8 @@ enum ColorSpaceFixture {
     /// Image dict carries the plain name `/CS0`; the page resources map
     /// `/CS0` to an `[/ICCBased …]` array with the given `/N`.
     AliasIcc { n: i64 },
+    /// Image dict carries a plain device name (`DeviceGray`, `DeviceCMYK`, …).
+    DirectName { name: Object },
 }
 
 /// One page with a single flate-compressed raw image using the given color
@@ -1518,12 +1520,25 @@ fn build_color_space_pdf(
         "BaseFont" => "Helvetica",
     });
 
-    // Palette for indexed fixtures: a smooth RGB ramp.
+    // Palette for indexed fixtures: a smooth ramp, 4 channels per entry for
+    // a CMYK base and 3 for everything else.
+    let indexed_channels: usize = match &fixture {
+        ColorSpaceFixture::DirectIndexed {
+            base: Object::Name(name),
+            ..
+        } if name.as_slice() == b"DeviceCMYK" => 4,
+        ColorSpaceFixture::DirectIndexed { .. } => 3,
+        _ => 3,
+    };
     let palette: Vec<u8> = match &fixture {
         ColorSpaceFixture::DirectIndexed { hival, .. } => (0..=*hival as u8)
             .flat_map(|index| {
                 let ramp = (index as u32 * 255 / 255) as u8;
-                vec![ramp, 255 - ramp, (ramp / 2) + 64]
+                if indexed_channels == 4 {
+                    vec![ramp, 255 - ramp, (ramp / 2) + 64, (255 - ramp) / 2]
+                } else {
+                    vec![ramp, 255 - ramp, (ramp / 2) + 64]
+                }
             })
             .collect(),
         _ => Vec::new(),
@@ -1553,6 +1568,7 @@ fn build_color_space_pdf(
             Object::Integer(hival),
             Object::String(palette, StringFormat::Literal),
         ]),
+        ColorSpaceFixture::DirectName { name } => name,
     };
 
     let mut image_stream = Stream::new(
@@ -1672,21 +1688,31 @@ fn icc_rgb_raw_image_recompresses_and_keeps_profile() {
 }
 
 #[test]
-fn icc_cmyk_raw_image_is_skipped() {
-    // CMYK plane: 4 channels of gradient.
-    let mut pixels = Vec::with_capacity(2000 * 1500 * 4);
-    for y in 0..1500u32 {
-        for x in 0..2000u32 {
-            pixels.push((x % 256) as u8);
-            pixels.push((y % 256) as u8);
-            pixels.push(((x + y) % 256) as u8);
-            pixels.push(64);
+fn icc_cmyk_raw_image_transcodes_to_rgb() {
+    // CMYK plane: 4 channels of gradient, with the RGB reference computed
+    // through the same ink-subtraction conversion the engine applies. Sized
+    // below every preset's edge so the transcode never resizes.
+    let (width, height) = (1200u32, 900u32);
+    let mut pixels = Vec::with_capacity((width * height * 4) as usize);
+    let mut reference = image::RgbImage::new(width, height);
+    for y in 0..height {
+        for x in 0..width {
+            let cmyk = [
+                (x % 256) as u8,
+                (y % 256) as u8,
+                ((x + y) % 256) as u8,
+                64,
+            ];
+            let [red, green, blue] =
+                super::colorspace::cmyk_to_rgb(cmyk[0], cmyk[1], cmyk[2], cmyk[3]);
+            reference.put_pixel(x, y, image::Rgb([red, green, blue]));
+            pixels.extend_from_slice(&cmyk);
         }
     }
     let bytes = build_color_space_pdf(
         ColorSpaceFixture::DirectIcc { n: 4 },
-        2000,
-        1500,
+        width,
+        height,
         8,
         pixels,
     );
@@ -1700,15 +1726,149 @@ fn icc_cmyk_raw_image_is_skipped() {
         |_| {},
     )
     .expect("compression must succeed");
-    assert_eq!(response.images_recompressed, 0, "CMYK ICC must stay untouched");
+    assert!(response.images_recompressed >= 1, "CMYK ICC must transcode");
 
     let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
     let image = sole_image_stream(&reloaded);
-    assert_eq!(
-        image.dict.get(b"BitsPerComponent").ok(),
-        Some(&Object::Integer(8)),
-        "raw plane must be untouched"
+    assert!(
+        matches!(image.dict.get(b"Filter"), Ok(Object::Name(name)) if name.as_slice() == b"DCTDecode"),
+        "CMYK plane must be re-encoded as JPEG, got {:?}",
+        image.dict.get(b"Filter")
     );
+    // The plane comes back as RGB, so the CMYK profile must NOT ride along —
+    // the dict declares the plane-derived device space instead.
+    assert!(
+        matches!(image.dict.get(b"ColorSpace"), Ok(Object::Name(cs)) if cs.as_slice() == b"DeviceRGB"),
+        "output must declare DeviceRGB, got {:?}",
+        image.dict.get(b"ColorSpace")
+    );
+
+    let decoded = image::load_from_memory(&image.content).expect("output JPEG must decode");
+    let psnr = luma_psnr_db(&decoded, &DynamicImage::ImageRgb8(reference))
+        .expect("dimensions must match");
+    assert!(
+        psnr >= CMYK_TRANSCODE_PSNR_FLOOR_DB,
+        "CMYK transcode fidelity {psnr:.2} dB fell below the floor"
+    );
+}
+
+/// PSNR floor for the CMYK → RGB ink-subtraction + JPEG transcode at the
+/// maximum preset (measured ≈46 dB on the gradient fixtures; floor pinned
+/// with ~5 dB headroom).
+const CMYK_TRANSCODE_PSNR_FLOOR_DB: f64 = 40.0;
+
+#[test]
+fn device_cmyk_raw_image_transcodes_to_rgb() {
+    let (width, height) = (1200u32, 900u32);
+    let mut pixels = Vec::with_capacity((width * height * 4) as usize);
+    let mut reference = image::RgbImage::new(width, height);
+    for y in 0..height {
+        for x in 0..width {
+            let cmyk = [
+                ((x * 255 / width) as u8),
+                ((y * 255 / height) as u8),
+                (((x + y) % 256) as u8),
+                ((x / 8) % 256) as u8,
+            ];
+            let [red, green, blue] =
+                super::colorspace::cmyk_to_rgb(cmyk[0], cmyk[1], cmyk[2], cmyk[3]);
+            reference.put_pixel(x, y, image::Rgb([red, green, blue]));
+            pixels.extend_from_slice(&cmyk);
+        }
+    }
+    let bytes = build_color_space_pdf(
+        ColorSpaceFixture::DirectName {
+            name: Object::Name(b"DeviceCMYK".to_vec()),
+        },
+        width,
+        height,
+        8,
+        pixels,
+    );
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_fixture(dir.path(), "device-cmyk.pdf", &bytes);
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(), None,
+        maximum_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+    assert!(response.images_recompressed >= 1, "DeviceCMYK must transcode");
+
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+    let image = sole_image_stream(&reloaded);
+    assert!(
+        matches!(image.dict.get(b"Filter"), Ok(Object::Name(name)) if name.as_slice() == b"DCTDecode"),
+        "DeviceCMYK plane must be re-encoded as JPEG"
+    );
+    assert!(
+        matches!(image.dict.get(b"ColorSpace"), Ok(Object::Name(cs)) if cs.as_slice() == b"DeviceRGB"),
+        "output must declare DeviceRGB, got {:?}",
+        image.dict.get(b"ColorSpace")
+    );
+
+    let decoded = image::load_from_memory(&image.content).expect("output JPEG must decode");
+    let psnr = luma_psnr_db(&decoded, &DynamicImage::ImageRgb8(reference))
+        .expect("dimensions must match");
+    assert!(
+        psnr >= CMYK_TRANSCODE_PSNR_FLOOR_DB,
+        "DeviceCMYK transcode fidelity {psnr:.2} dB fell below the floor"
+    );
+}
+
+#[test]
+fn cmyk_with_decode_array_stays_untouched() {
+    // A /Decode mapping reinterprets samples before rendering; the naive
+    // ink-subtraction conversion would misread it, so the image must skip.
+    let (width, height) = (1600u32, 1200u32);
+    let pixels = vec![96u8; (width * height * 4) as usize];
+    let bytes = build_color_space_pdf(
+        ColorSpaceFixture::DirectName {
+            name: Object::Name(b"DeviceCMYK".to_vec()),
+        },
+        width,
+        height,
+        8,
+        pixels,
+    );
+    let mut doc = Document::load_mem(&bytes).expect("fixture loads");
+    for object in doc.objects.values_mut() {
+        if let Object::Stream(stream) = object {
+            if matches!(stream.dict.get(b"Subtype"), Ok(Object::Name(name)) if name.as_slice() == b"Image")
+            {
+                stream.dict.set(
+                    "Decode",
+                    Object::Array(vec![
+                        1.into(), 0.into(), 1.into(), 0.into(), 1.into(), 0.into(), 1.into(), 0.into(),
+                    ]),
+                );
+            }
+        }
+    }
+    let mut with_decode = Vec::new();
+    doc.save_modern(&mut with_decode).expect("save decode fixture");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_fixture(dir.path(), "cmyk-decode.pdf", &with_decode);
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(), None,
+        maximum_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+    assert_eq!(response.images_recompressed, 0, "/Decode-carrying CMYK must skip");
+
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+    let image = sole_image_stream(&reloaded);
+    assert!(
+        matches!(image.dict.get(b"ColorSpace"), Ok(Object::Name(cs)) if cs.as_slice() == b"DeviceCMYK"),
+        "the CMYK stream must survive untouched"
+    );
+    assert!(image.dict.get(b"Decode").is_ok(), "the /Decode array must survive");
 }
 
 #[test]
@@ -1796,6 +1956,72 @@ fn indexed_4bit_image_expands_palette() {
     assert!(
         matches!(image.dict.get(b"ColorSpace"), Ok(Object::Name(cs)) if cs.as_slice() == b"DeviceGray"),
         "gray base space must be declared"
+    );
+}
+
+#[test]
+fn indexed_cmyk_image_expands_palette_and_converts() {
+    // 8-bit noise indices into a 256-entry CMYK palette; the expansion must
+    // go through the ink-subtraction conversion, like every other CMYK path.
+    // (Noise keeps the flate-compressed stream above the small-stream skip.)
+    let (width, height) = (1200u32, 900u32);
+    let mut state: u32 = FIXTURE_SEED;
+    let mut indices = Vec::with_capacity((width * height) as usize);
+    for _ in 0..width * height {
+        state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        indices.push(((state >> 24) & 0xFF) as u8);
+    }
+    let bytes = build_color_space_pdf(
+        ColorSpaceFixture::DirectIndexed {
+            base: Object::Name(b"DeviceCMYK".to_vec()),
+            hival: 255,
+        },
+        width,
+        height,
+        8,
+        indices.clone(),
+    );
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_fixture(dir.path(), "indexed-cmyk.pdf", &bytes);
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(), None,
+        maximum_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+    assert!(response.images_recompressed >= 1, "CMYK-indexed image must transcode");
+
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+    let image = sole_image_stream(&reloaded);
+    assert!(
+        matches!(image.dict.get(b"Filter"), Ok(Object::Name(name)) if name.as_slice() == b"DCTDecode"),
+        "palette image must be re-encoded as flat JPEG"
+    );
+    assert!(
+        matches!(image.dict.get(b"ColorSpace"), Ok(Object::Name(cs)) if cs.as_slice() == b"DeviceRGB"),
+        "the converted plane declares the base-free RGB space, got {:?}",
+        image.dict.get(b"ColorSpace")
+    );
+
+    // Pixel fidelity: decode the output and compare against the palette
+    // expansion + conversion computed here.
+    let mut reference = image::RgbImage::new(width, height);
+    for (index, pixel) in indices.into_iter().zip(reference.pixels_mut()) {
+        let [red, green, blue] =
+            super::colorspace::cmyk_to_rgb(index, 255 - index, (index / 2) + 64, (255 - index) / 2);
+        *pixel = image::Rgb([red, green, blue]);
+    }
+    let decoded = image::load_from_memory(&image.content).expect("output JPEG must decode");
+    let psnr = luma_psnr_db(&decoded, &DynamicImage::ImageRgb8(reference))
+        .expect("dimensions must match");
+    // Random palette indices decode to per-pixel color noise — the JPEG
+    // worst case — so this conversion-correctness test carries its own
+    // (measured 21.2 dB, ~1 dB headroom) floor instead of the shared one.
+    assert!(
+        psnr >= 20.0,
+        "indexed CMYK transcode fidelity {psnr:.2} dB fell below the floor"
     );
 }
 
@@ -2586,6 +2812,356 @@ fn compress_never_writes_a_larger_output() {
 }
 
 // ---------------------------------------------------------------------------
+// JPX (JPEG 2000) input — the feature-gated C decode path
+// ---------------------------------------------------------------------------
+
+/// Build a one-page PDF whose single embedded image is a JPXDecode stream
+/// carrying the given codestream bytes. `filter` defaults to the plain
+/// `/JPXDecode` name; tests pass an array to exercise mixed chains.
+#[cfg(feature = "jpx")]
+fn build_jpx_pdf_bytes_ext(codestream: &[u8], width: u32, height: u32, filter: Object) -> Vec<u8> {
+    let mut doc = Document::with_version("1.5");
+    let info_id = doc.add_object(dictionary! {
+        "Producer" => Object::string_literal("pdf-compressor test fixture"),
+    });
+    let pages_id = doc.new_object_id();
+    let font_id = doc.add_object(dictionary! {
+        "Type" => "Font",
+        "Subtype" => "Type1",
+        "BaseFont" => "Helvetica",
+    });
+
+    let image_id = doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Image",
+            "Width" => width as i64,
+            "Height" => height as i64,
+            "ColorSpace" => "DeviceRGB",
+            "BitsPerComponent" => 8,
+            "Filter" => filter,
+        },
+        codestream.to_vec(),
+    ));
+    let resources_id = doc.add_object(dictionary! {
+        "Font" => dictionary! { "F1" => font_id },
+        "XObject" => dictionary! { "Im0" => image_id },
+    });
+    let content = format!("q 400 0 0 300 72 400 cm /Im0 Do Q\nBT /F1 24 Tf 72 720 Td ({FIXTURE_TEXT}) Tj ET\n");
+    let content_id = doc.add_object(Stream::new(dictionary! {}, content.into_bytes()));
+    let page_id = doc.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => pages_id,
+        "Contents" => content_id,
+        "Resources" => resources_id,
+        "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+    });
+    doc.objects.insert(
+        pages_id,
+        Object::Dictionary(dictionary! {
+            "Type" => "Pages",
+            "Kids" => vec![Object::Reference(page_id)],
+            "Count" => 1,
+        }),
+    );
+    let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+    doc.trailer.set("Root", catalog_id);
+    doc.trailer.set("Info", info_id);
+
+    let mut bytes = Vec::new();
+    doc.save_modern(&mut bytes)
+        .expect("failed to save JPX fixture PDF");
+    bytes
+}
+
+#[cfg(feature = "jpx")]
+fn build_jpx_pdf_bytes(codestream: &[u8], width: u32, height: u32) -> Vec<u8> {
+    build_jpx_pdf_bytes_ext(codestream, width, height, Object::Name(b"JPXDecode".to_vec()))
+}
+
+/// PSNR floor for the JPX → JPEG transcode at the maximum preset, measured
+/// with ~2 dB headroom against the observed value (same pinning discipline
+/// as the preset quality gates).
+#[cfg(feature = "jpx")]
+const JPX_TRANSCODE_PSNR_FLOOR_DB: f64 = 22.0;
+
+#[cfg(feature = "jpx")]
+#[test]
+fn jpx_rgb_codestream_transcodes_to_jpeg() {
+    use crate::testutil::{jpx_rgb_reference, JPX_PLANE_HEIGHT, JPX_PLANE_WIDTH, JPX_RGB_J2K};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_fixture(
+        dir.path(),
+        "jpx-rgb.pdf",
+        &build_jpx_pdf_bytes(JPX_RGB_J2K, JPX_PLANE_WIDTH, JPX_PLANE_HEIGHT),
+    );
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(),
+        None,
+        maximum_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("JPX compression must succeed");
+    assert!(
+        response.images_recompressed >= 1,
+        "the JPX image must be actionable, notices: {:?}",
+        response.notices
+    );
+
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+    let stream = sole_image_stream(&reloaded);
+    assert!(
+        matches!(stream.dict.get(b"Filter"), Ok(Object::Name(name)) if name.as_slice() == b"DCTDecode"),
+        "JPX must transcode to JPEG, got {:?}",
+        stream.dict.get(b"Filter")
+    );
+    assert!(
+        matches!(stream.dict.get(b"ColorSpace"), Ok(Object::Name(cs)) if cs.as_slice() == b"DeviceRGB"),
+        "the plane-derived space must be declared, got {:?}",
+        stream.dict.get(b"ColorSpace")
+    );
+    assert_eq!(
+        stream.dict.get(b"Width").ok(),
+        Some(&Object::Integer(i64::from(JPX_PLANE_WIDTH)))
+    );
+    assert_eq!(
+        stream.dict.get(b"Height").ok(),
+        Some(&Object::Integer(i64::from(JPX_PLANE_HEIGHT)))
+    );
+
+    let decoded = image::load_from_memory(&stream.content).expect("output JPEG must decode");
+    let reference =
+        DynamicImage::ImageRgb8(jpx_rgb_reference());
+    let psnr = luma_psnr_db(&decoded, &reference)
+        .expect("dimensions must match the fixture");
+    assert!(
+        psnr >= JPX_TRANSCODE_PSNR_FLOOR_DB,
+        "JPX transcode fidelity {psnr:.2} dB fell below the floor"
+    );
+
+    assert!(
+        extracted_text(Path::new(&response.output_path)).contains(FIXTURE_TEXT),
+        "text must survive the rewrite"
+    );
+}
+
+#[cfg(feature = "jpx")]
+#[test]
+fn jpx_jp2_container_transcodes_identically_to_raw_codestream() {
+    use crate::testutil::{JPX_PLANE_HEIGHT, JPX_PLANE_WIDTH, JPX_RGB_J2K, JPX_RGB_JP2};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let raw_path = write_fixture(
+        dir.path(),
+        "jpx-raw.pdf",
+        &build_jpx_pdf_bytes(JPX_RGB_J2K, JPX_PLANE_WIDTH, JPX_PLANE_HEIGHT),
+    );
+    let container_path = write_fixture(
+        dir.path(),
+        "jpx-jp2.pdf",
+        &build_jpx_pdf_bytes(JPX_RGB_JP2, JPX_PLANE_WIDTH, JPX_PLANE_HEIGHT),
+    );
+
+    let mut outputs = Vec::new();
+    for path in [&raw_path, &container_path] {
+        let response = compress_pdf_with_progress(
+            path.to_str().unwrap(),
+            None,
+            maximum_settings(),
+            noop_cancel_flag(),
+            |_| {},
+        )
+        .expect("compression must succeed");
+        assert!(response.images_recompressed >= 1);
+        outputs.push(response.output_path);
+    }
+
+    // The two committed fixtures are pixel-identical after decode, and the
+    // encoder is a pure function of the plane, so the outputs must match
+    // byte for byte.
+    let raw_doc = Document::load(&outputs[0]).expect("reload raw output");
+    let raw_image = sole_image_stream(&raw_doc);
+    let container_doc = Document::load(&outputs[1]).expect("reload container output");
+    let container_image = sole_image_stream(&container_doc);
+    assert!(
+        matches!(raw_image.dict.get(b"Filter"), Ok(Object::Name(name)) if name.as_slice() == b"DCTDecode"),
+        "the raw codestream must have transcoded, got {:?}",
+        raw_image.dict.get(b"Filter")
+    );
+    assert_eq!(
+        raw_image.content, container_image.content,
+        "JP2 container and raw codestream must produce identical JPEG bytes"
+    );
+}
+
+#[cfg(all(feature = "jpx", feature = "ccitt"))]
+#[test]
+fn jpx_bilevel_scan_transcodes_to_g4() {
+    use crate::testutil::{JPX_BILEVEL_HEIGHT, JPX_BILEVEL_J2K, JPX_BILEVEL_WIDTH};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_fixture(
+        dir.path(),
+        "jpx-bilevel.pdf",
+        &build_jpx_pdf_bytes(JPX_BILEVEL_J2K, JPX_BILEVEL_WIDTH, JPX_BILEVEL_HEIGHT),
+    );
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(),
+        None,
+        g4_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+    assert!(response.images_recompressed >= 1, "bilevel JPX must transcode");
+
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+    let stream = sole_image_stream(&reloaded);
+    assert!(
+        matches!(stream.dict.get(b"Filter"), Ok(Object::Name(name)) if name.as_slice() == b"CCITTFaxDecode"),
+        "near-bilevel JPX must transcode to G4, got {:?}",
+        stream.dict.get(b"Filter")
+    );
+    // The rewritten payload must still be a decodable G4 stream.
+    let mut rows = 0u32;
+    let decoded = fax::decoder::decode_g4(
+        stream.content.iter().copied(),
+        JPX_BILEVEL_WIDTH,
+        Some(JPX_BILEVEL_HEIGHT),
+        |_| rows += 1,
+    );
+    assert!(decoded.is_some(), "output G4 payload must decode");
+    assert_eq!(rows, JPX_BILEVEL_HEIGHT);
+}
+
+#[cfg(feature = "jpx")]
+#[test]
+fn jpx_stream_with_mismatched_dictionary_stays_untouched() {
+    use crate::testutil::{JPX_PLANE_HEIGHT, JPX_PLANE_WIDTH, JPX_RGB_J2K};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    // The dictionary declares dimensions the codestream does not carry: the
+    // shape gate passes but decode refuses the mismatch — a skip, never a
+    // wrong-size rewrite.
+    let path = write_fixture(
+        dir.path(),
+        "jpx-mismatch.pdf",
+        &build_jpx_pdf_bytes(
+            JPX_RGB_J2K,
+            JPX_PLANE_WIDTH + 64,
+            JPX_PLANE_HEIGHT,
+        ),
+    );
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(),
+        None,
+        maximum_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+    assert_eq!(response.images_recompressed, 0, "mismatched dims must skip");
+    assert!(response.images_skipped >= 1);
+
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+    let stream = sole_image_stream(&reloaded);
+    assert!(
+        matches!(stream.dict.get(b"Filter"), Ok(Object::Name(name)) if name.as_slice() == b"JPXDecode"),
+        "the JPX stream must survive untouched"
+    );
+    assert_eq!(stream.content, JPX_RGB_J2K, "payload must be byte-identical");
+}
+
+#[cfg(feature = "jpx")]
+#[test]
+fn jpx_flate_mixed_chain_stays_untouched() {
+    use crate::testutil::{JPX_PLANE_HEIGHT, JPX_PLANE_WIDTH, JPX_RGB_J2K};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let filter = Object::Array(vec![
+        Object::Name(b"FlateDecode".to_vec()),
+        Object::Name(b"JPXDecode".to_vec()),
+    ]);
+    let path = write_fixture(
+        dir.path(),
+        "jpx-mixed.pdf",
+        &build_jpx_pdf_bytes_ext(
+            // Flate-compress the codestream so the chain is honest.
+            &flate2_compress(JPX_RGB_J2K),
+            JPX_PLANE_WIDTH,
+            JPX_PLANE_HEIGHT,
+            filter,
+        ),
+    );
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(),
+        None,
+        maximum_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+    assert_eq!(response.images_recompressed, 0, "mixed chains must skip");
+
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+    let stream = sole_image_stream(&reloaded);
+    assert!(
+        matches!(stream.dict.get(b"Filter"), Ok(Object::Array(_))),
+        "the mixed filter chain must survive untouched"
+    );
+}
+
+#[cfg(feature = "jpx")]
+fn flate2_compress(data: &[u8]) -> Vec<u8> {
+    use std::io::Write as _;
+    let mut encoder =
+        flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(data).expect("flate compress");
+    encoder.finish().expect("flate finish")
+}
+
+#[cfg(feature = "jpx")]
+#[test]
+fn jpx_target_size_search_covers_the_new_codec() {
+    use crate::testutil::{JPX_PLANE_HEIGHT, JPX_PLANE_WIDTH, JPX_RGB_J2K};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_fixture(
+        dir.path(),
+        "jpx-target.pdf",
+        &build_jpx_pdf_bytes(JPX_RGB_J2K, JPX_PLANE_WIDTH, JPX_PLANE_HEIGHT),
+    );
+
+    let response = compress_pdf_to_target_size(
+        path.to_str().unwrap(),
+        None,
+        48 * 1024,
+        maximum_settings(),
+        noop_cancel_flag(),
+        &mut |_| {},
+    )
+    .expect("target-size search must succeed on JPX input");
+    assert!(
+        (response.compressed_size_bytes as i64 - 48 * 1024).abs() < 16 * 1024,
+        "search must land near the target, got {}",
+        response.compressed_size_bytes
+    );
+
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+    let stream = sole_image_stream(&reloaded);
+    assert!(
+        matches!(stream.dict.get(b"Filter"), Ok(Object::Name(name)) if name.as_slice() == b"DCTDecode"),
+        "the search must materialize a JPEG transcode"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Analyzer estimate honesty (unsupported codecs excluded)
 // ---------------------------------------------------------------------------
 
@@ -2594,8 +3170,10 @@ fn analysis_estimate_excludes_undecodable_codecs() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = fresh_fixture(dir.path());
 
-    // Relabel the fixture image as JPXDecode — a codec with no safe
-    // re-encode path — so nothing image-based is actionable anymore.
+    // Relabel the fixture image as JBIG2Decode — a codec with no safe
+    // re-encode path in any build configuration — so nothing image-based is
+    // actionable anymore. (JPX and CCITT are decodable in their feature
+    // builds and cannot anchor this test.)
     let mut document = Document::load(&path).expect("load fixture");
     for object in document.objects.values_mut() {
         if let Object::Stream(stream) = object {
@@ -2606,7 +3184,7 @@ fn analysis_estimate_excludes_undecodable_codecs() {
                 .and_then(|value| value.as_name().ok())
                 == Some(b"Image".as_slice())
             {
-                stream.dict.set("Filter", Object::Name(b"JPXDecode".to_vec()));
+                stream.dict.set("Filter", Object::Name(b"JBIG2Decode".to_vec()));
             }
         }
     }
@@ -3110,6 +3688,115 @@ fn target_size_search_produces_reproducible_output() {
 }
 
 // ---------------------------------------------------------------------------
+// Memory-peak guardrail (multi-image target-size search)
+// ---------------------------------------------------------------------------
+
+/// Read the process's peak resident set (`VmHWM`, kB) from procfs.
+#[cfg(target_os = "linux")]
+fn peak_resident_bytes() -> Option<u64> {
+    let status = fs::read_to_string("/proc/self/status").ok()?;
+    let line = status.lines().find(|line| line.starts_with("VmHWM:"))?;
+    let kb: u64 = line
+        .split_whitespace()
+        .nth(1)?
+        .parse()
+        .ok()?;
+    Some(kb * 1024)
+}
+
+/// The decoded-bitmap cache is the dominant memory cost of a target-size
+/// search over an image-heavy document. This guardrail pins the *peak
+/// process RSS growth* of such a run: a regression that stops evicting (or
+/// double-caches planes per round) blows straight through the ceiling, while
+/// normal jitter from the parallel test harness stays far below it.
+/// Measured ≈390 MB locally; ceiling pinned with ~5× headroom.
+#[cfg(target_os = "linux")]
+#[test]
+fn multi_image_target_search_memory_peak_stays_bounded() {
+    const GROWTH_CEILING_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+    let Some(before) = peak_resident_bytes() else {
+        // procfs unavailable — nothing to assert.
+        return;
+    };
+
+    // Ten distinct photographic pages: enough decoded planes that an
+    // eviction failure would accumulate hundreds of MB per probe round.
+    let mut doc = Document::with_version("1.5");
+    let pages_id = doc.new_object_id();
+    let mut kids = Vec::new();
+    for index in 0..10u32 {
+        let jpeg = encode_jpeg(
+            crate::testutil::deterministic_rgb_image(1400, 1050, FIXTURE_SEED + index),
+            92,
+        );
+        let image_id = doc.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject",
+                "Subtype" => "Image",
+                "Width" => 1400,
+                "Height" => 1050,
+                "ColorSpace" => "DeviceRGB",
+                "BitsPerComponent" => 8,
+                "Filter" => "DCTDecode",
+            },
+            jpeg,
+        ));
+        let content_id = doc.add_object(Stream::new(
+            dictionary! {},
+            format!("q 500 0 0 375 72 400 cm /Im{index} Do Q\n").into_bytes(),
+        ));
+        let page_id = doc.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "Contents" => content_id,
+            "Resources" => dictionary! {
+                "XObject" => dictionary! { format!("Im{index}") => image_id },
+            },
+            "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+        });
+        kids.push(Object::Reference(page_id));
+    }
+    doc.objects.insert(
+        pages_id,
+        Object::Dictionary(dictionary! {
+            "Type" => "Pages",
+            "Kids" => kids,
+            "Count" => 10,
+        }),
+    );
+    let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+    doc.trailer.set("Root", catalog_id);
+    let mut bytes = Vec::new();
+    doc.save_modern(&mut bytes).expect("save multi-image fixture");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_fixture(dir.path(), "multi-image.pdf", &bytes);
+    let target = (bytes.len() as u64 / 3).max(120 * 1024);
+
+    let response = compress_pdf_to_target_size(
+        path.to_str().unwrap(),
+        None,
+        target,
+        maximum_settings(),
+        noop_cancel_flag(),
+        &mut |_| {},
+    )
+    .expect("target-size search must succeed");
+
+    // Sanity: the search actually had image work to do.
+    assert!(response.images_recompressed >= 10);
+
+    let after = peak_resident_bytes().expect("VmHWM must be readable after the run");
+    assert!(
+        after.saturating_sub(before) <= GROWTH_CEILING_BYTES,
+        "search memory peak grew by {} (ceiling {}); the bitmap cache eviction is likely broken",
+        crate::error::humanized_size(after.saturating_sub(before)),
+        crate::error::humanized_size(GROWTH_CEILING_BYTES),
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Quality-regression gates (PSNR)
 // ---------------------------------------------------------------------------
 
@@ -3314,7 +4001,10 @@ fn real_corpus_quality_snapshot() {
     }
 }
 
-/// Decode every DCTDecode image plane of a document, in object order.
+/// Decode every decodable image plane of a document, in object order:
+/// DCTDecode streams via the `image` crate, JPXDecode streams through the
+/// engine decoder when the feature is compiled in (so corpus JPX files join
+/// the PSNR baseline instead of silently passing through).
 fn decoded_image_planes(document: &Document) -> Vec<DynamicImage> {
     document
         .objects
@@ -3324,6 +4014,12 @@ fn decoded_image_planes(document: &Document) -> Vec<DynamicImage> {
                 if matches!(stream.dict.get(b"Filter"), Ok(Object::Name(name)) if name.as_slice() == b"DCTDecode") =>
             {
                 image::load_from_memory(&stream.content).ok()
+            }
+            #[cfg(feature = "jpx")]
+            Object::Stream(stream)
+                if matches!(stream.dict.get(b"Filter"), Ok(Object::Name(name)) if name.as_slice() == b"JPXDecode") =>
+            {
+                super::jpx::decode_jpx_stream(stream).ok()
             }
             _ => None,
         })

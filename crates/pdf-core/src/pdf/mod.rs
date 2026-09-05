@@ -7,6 +7,8 @@ mod compressor;
 mod encode;
 #[cfg(feature = "subset-fonts")]
 mod fonts;
+#[cfg(feature = "jpx")]
+mod jpx;
 mod resources;
 mod search;
 mod settings;

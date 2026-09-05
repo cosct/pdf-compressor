@@ -221,8 +221,50 @@ impl ImageSearchCache {
             .map(|bitmap| bitmap.as_bytes().len() as u64)
     }
 
+    /// Total cached bytes across every memoized plane and product — the
+    /// accounting the document-level budget evicts against. Alpha planes are
+    /// 1 byte per pixel; product entries hold their encoded stream bytes.
+    pub(super) fn cached_bytes(&self) -> u64 {
+        let bitmap = self
+            .bitmap
+            .as_ref()
+            .map_or(0, |plane| plane.as_bytes().len() as u64);
+        let smask_gray = self
+            .smask_gray
+            .as_ref()
+            .map_or(0, |plane| {
+                plane
+                    .as_ref()
+                    .map_or(0, |gray| gray.as_raw().len() as u64)
+            });
+        let smask_product = self
+            .smask_product
+            .as_ref()
+            .map_or(0, |(_, stream)| stream.content.len() as u64);
+        #[cfg(feature = "ccitt")]
+        let bilevel_product = self
+            .bilevel_product
+            .as_ref()
+            .map_or(0, |(_, bytes)| bytes.len() as u64);
+        #[cfg(not(feature = "ccitt"))]
+        let bilevel_product = 0;
+        bitmap + smask_gray + smask_product + bilevel_product
+    }
+
     pub(super) fn drop_bitmap(&mut self) {
         self.bitmap = None;
+    }
+
+    /// Second-stage eviction: drop the alpha and G4 products (quality-only
+    /// round memoization) while keeping the sticky failure memo. Evicted
+    /// entries re-derive their products on the next probe round.
+    pub(super) fn drop_products(&mut self) {
+        self.smask_gray = None;
+        self.smask_product = None;
+        #[cfg(feature = "ccitt")]
+        {
+            self.bilevel_product = None;
+        }
     }
 
     fn store_bitmap(&mut self, plane: DynamicImage) {
@@ -328,7 +370,7 @@ pub(super) fn optimize_image_stream(
 
     let filter_info = stream_filter_info(stream);
 
-    // --- Skip: unsupported filters (JBIG2, JPX, CCITT, Crypt) ---
+    // --- Skip: unsupported filters (JBIG2, non-decodable CCITT/JPX, Crypt) ---
     if filter_info.has_unsupported_filter {
         return Ok(ImageOptimization::Skipped {
             reason: "unsupported image filter for safe recompression".into(),
@@ -432,6 +474,17 @@ pub(super) fn optimize_image_stream(
                 {
                     // Unreachable: non-decodable CCITT was skipped above.
                     Err("CCITT support is not compiled in".to_string())
+                }
+            } else if filter_info.has_jpx {
+                #[cfg(feature = "jpx")]
+                {
+                    super::jpx::decode_jpx_stream(stream)
+                        .map_err(|e| format!("failed to decode JPX image stream: {e}"))
+                }
+                #[cfg(not(feature = "jpx"))]
+                {
+                    // Unreachable: non-decodable JPX was skipped above.
+                    Err("JPX support is not compiled in".to_string())
                 }
             } else {
                 decode_raw_image_stream(stream, color_space)
@@ -736,9 +789,9 @@ fn raw_recompression_skip_reason(
     if filter_info.has_jpeg {
         return None;
     }
-    // CCITT streams go through their own decoder; the raw-plane checks below
-    // (bit depth, name color space) do not apply to them.
-    if filter_info.has_ccitt {
+    // CCITT and JPX streams go through their own decoders; the raw-plane
+    // checks below (bit depth, name color space) do not apply to them.
+    if filter_info.has_ccitt || filter_info.has_jpx {
         return None;
     }
 
@@ -747,9 +800,17 @@ fn raw_recompression_skip_reason(
     // Resolved shapes (ICC-based, indexed, aliases) carry their own rules:
     // indexed pixels are 4/8-bit palette indices, ICC planes stay 8-bit.
     if let Some(info) = color_space {
+        if info.decode == DecodeColorSpace::Cmyk && stream.dict.get(b"Decode").is_ok() {
+            return Some(
+                "CMYK image carries a /Decode mapping that the RGB conversion would misread"
+                    .into(),
+            );
+        }
         let supported_depth = match info.decode {
             DecodeColorSpace::Indexed { .. } => bits_per_component == 4 || bits_per_component == 8,
-            DecodeColorSpace::Gray | DecodeColorSpace::Rgb => bits_per_component == 8,
+            DecodeColorSpace::Gray | DecodeColorSpace::Rgb | DecodeColorSpace::Cmyk => {
+                bits_per_component == 8
+            }
         };
         return (!supported_depth).then(|| {
             format!("resolved color space needs unsupported bit depth: {bits_per_component}")
@@ -762,13 +823,17 @@ fn raw_recompression_skip_reason(
         ));
     }
 
-    // Only name-valued DeviceGray/DeviceRGB color spaces are safely decodable.
+    // Only name-valued device color spaces are safely decodable.
     // An absent ColorSpace defaults to DeviceRGB per the PDF spec; anything
     // else (arrays such as [/ICCBased …] or [/Indexed …]) is skipped because
     // the raw bytes would be misinterpreted.
     match stream.dict.get(b"ColorSpace") {
         Ok(Object::Name(name)) => match name.as_slice() {
             b"DeviceGray" | b"DeviceRGB" => None,
+            // A /Decode mapping reinterprets the samples before rendering;
+            // feeding remapped CMYK through the ink-subtraction conversion
+            // would shift colors silently.
+            b"DeviceCMYK" if stream.dict.get(b"Decode").is_err() => None,
             other => Some(format!(
                 "raw image uses unsupported color space for safe recompression: {}",
                 String::from_utf8_lossy(other)
@@ -895,12 +960,13 @@ fn decode_raw_image_stream(
                 .ok_or_else(|| {
                     AppError::PdfBuild("RGB image bytes did not match the declared dimensions.".into())
                 }),
+            DecodeColorSpace::Cmyk => cmyk_bytes_to_rgb_image(width, height, decoded),
             DecodeColorSpace::Indexed {
                 base_channels,
                 palette,
             } => {
                 let channels = usize::from(*base_channels);
-                if channels != 1 && channels != 3 {
+                if !matches!(channels, 1 | 3 | 4) {
                     return Err(AppError::PdfBuild(
                         "Indexed image uses an unsupported base color space.".into(),
                     ));
@@ -922,9 +988,11 @@ fn decode_raw_image_stream(
                 if channels == 1 {
                     image::GrayImage::from_raw(width, height, pixels)
                         .map(DynamicImage::ImageLuma8)
-                } else {
+                } else if channels == 3 {
                     image::RgbImage::from_raw(width, height, pixels)
                         .map(DynamicImage::ImageRgb8)
+                } else {
+                    cmyk_bytes_to_rgb_image(width, height, pixels).ok()
                 }
                 .ok_or_else(|| {
                     AppError::PdfBuild(
@@ -951,10 +1019,35 @@ fn decode_raw_image_stream(
             .ok_or_else(|| {
                 AppError::PdfBuild("RGB image bytes did not match the declared dimensions.".into())
             }),
+        "DeviceCMYK" => cmyk_bytes_to_rgb_image(width, height, decoded),
         other => Err(AppError::PdfBuild(format!(
             "Unsupported color space for recompression: {other}"
         ))),
     }
+}
+
+/// Convert interleaved 8-bit CMYK bytes into an RGB plane via the shared
+/// ink-subtraction conversion (see `colorspace::cmyk_to_rgb`). A length that
+/// is not an exact `width × height × 4` fails the `from_raw` shape check,
+/// matching the gray/RGB paths' dimension strictness.
+fn cmyk_bytes_to_rgb_image(
+    width: u32,
+    height: u32,
+    decoded: Vec<u8>,
+) -> Result<DynamicImage, AppError> {
+    let mut pixels = Vec::with_capacity(decoded.len() / 4 * 3);
+    for sample in decoded.chunks_exact(4) {
+        let [red, green, blue] =
+            super::colorspace::cmyk_to_rgb(sample[0], sample[1], sample[2], sample[3]);
+        pixels.extend_from_slice(&[red, green, blue]);
+    }
+    image::RgbImage::from_raw(width, height, pixels)
+        .map(DynamicImage::ImageRgb8)
+        .ok_or_else(|| {
+            AppError::PdfBuild(
+                "CMYK image bytes did not match the declared dimensions.".into(),
+            )
+        })
 }
 
 /// Encode a `DynamicImage` as JPEG into a `Vec<u8>`.
@@ -1459,6 +1552,7 @@ fn jpeg_dimensions_from_header(data: &[u8]) -> Option<(u32, u32)> {
 struct StreamFilterInfo {
     has_jpeg: bool,
     has_ccitt: bool,
+    has_jpx: bool,
     has_unsupported_filter: bool,
 }
 
@@ -1481,7 +1575,8 @@ fn stream_filter_info(stream: &Stream) -> StreamFilterInfo {
         match name.as_slice() {
             b"DCTDecode" => info.has_jpeg = true,
             b"CCITTFaxDecode" => info.has_ccitt = true,
-            b"JPXDecode" | b"JBIG2Decode" | b"Crypt" => info.has_unsupported_filter = true,
+            b"JPXDecode" => info.has_jpx = true,
+            b"JBIG2Decode" | b"Crypt" => info.has_unsupported_filter = true,
             _ => {}
         }
     }
@@ -1497,6 +1592,19 @@ fn stream_filter_info(stream: &Stream) -> StreamFilterInfo {
     #[cfg(not(feature = "ccitt"))]
     let ccitt_decodable = false;
     if info.has_ccitt && !ccitt_decodable {
+        info.has_unsupported_filter = true;
+    }
+
+    // JPX input is decodable when the feature is compiled in and the stream
+    // dictionary passes the shape gate (plain dimensions, no DecodeParms /
+    // Decode arrays; single-element filter chain). Without the feature every
+    // JPX stream stays unsupported, keeping the default build pure Rust.
+    #[cfg(feature = "jpx")]
+    let jpx_decodable =
+        info.has_jpx && names.len() == 1 && super::jpx::jpx_input_shape(stream).is_some();
+    #[cfg(not(feature = "jpx"))]
+    let jpx_decodable = false;
+    if info.has_jpx && !jpx_decodable {
         info.has_unsupported_filter = true;
     }
 

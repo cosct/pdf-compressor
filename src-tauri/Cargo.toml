@@ -21,6 +21,10 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 # dev server. `tauri build` enables this implicitly; plain `cargo build`
 # (AUR PKGBUILD, local Arch script) must pass --features custom-protocol.
 custom-protocol = ["tauri/custom-protocol"]
+# JPEG 2000 decode support (vendored OpenJPEG, statically linked — no
+# runtime library and no cmake needed). Off by default so local dev builds
+# stay pure Rust; release artifacts and the AUR package enable it.
+jpx = ["pdf-core/jpx"]
 
 [build-dependencies]
 tauri-build = { version = "2.5.6", features = [] }

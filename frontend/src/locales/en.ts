@@ -284,6 +284,9 @@ const en = {
     'error.invalidPdfPath': {
       body: 'The selected file is not a PDF: {path}',
     },
+    'error.inputTooLarge': {
+      body: 'This file is {size}, which exceeds the {limit} limit for safe processing.',
+    },
     'error.encryptedPdf': {
       body: 'This PDF uses DRM encryption with an unsupported security handler; it cannot be processed.',
     },
