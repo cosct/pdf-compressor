@@ -2,7 +2,7 @@
 
 本项目的所有显著变更都记录在此文件中。格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。日期为提交日期。
 
-## [未发布]
+## [0.5.0] - 2026-09-05
 
 ### 新增
 
@@ -80,7 +80,8 @@
 
 - 首个版本：纯 Rust 分析引擎（文本/扫描件分类、预估与预设推荐）、选择性压缩管线（JPEG 重编码 + 下采样）、Tauri 桌面壳
 
-[未发布]: https://github.com/cosct/pdf-compressor/compare/v0.4.0...HEAD
+[未发布]: https://github.com/cosct/pdf-compressor/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/cosct/pdf-compressor/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/cosct/pdf-compressor/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/cosct/pdf-compressor/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/cosct/pdf-compressor/compare/v0.1.0...v0.2.0
