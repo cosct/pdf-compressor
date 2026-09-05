@@ -15,12 +15,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # The `--config` overlays bundle the headless CLI next to the app
+          # (resources) and — on Windows — wire the Explorer context-menu
+          # registry entries into the NSIS installer. Local `tauri build` runs
+          # stay lean: they do not require the CLI binary to be present.
           - os: windows-latest
-            args: ''
+            args: '--config src-tauri/tauri.release.windows.conf.json'
           - os: macos-latest
-            args: '--target universal-apple-darwin'
+            args: '--target universal-apple-darwin --config src-tauri/tauri.release.conf.json'
           - os: ubuntu-22.04
-            args: ''
+            args: '--config src-tauri/tauri.release.conf.json'
 
     steps:
       - uses: actions/checkout@v4
@@ -47,9 +51,36 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
+      # The headless CLI rides along as a bundle resource — it backs the
+      # file-manager context menus (Windows registry entries, macOS Quick
+      # Action) and the deb/appimage installs. On macOS both slices of the
+      # universal binary are lipo'd together to match the app.
+      - name: Build the bundled CLI into src-tauri/binaries
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            rustup target add aarch64-apple-darwin x86_64-apple-darwin
+            cargo build --release --locked -p pdf-core --bin pdf-compressor-cli --target aarch64-apple-darwin
+            cargo build --release --locked -p pdf-core --bin pdf-compressor-cli --target x86_64-apple-darwin
+            mkdir -p src-tauri/binaries
+            lipo -create \
+              target/aarch64-apple-darwin/release/pdf-compressor-cli \
+              target/x86_64-apple-darwin/release/pdf-compressor-cli \
+              -output src-tauri/binaries/pdf-compressor-cli
+          else
+            cargo build --release --locked -p pdf-core --bin pdf-compressor-cli
+            mkdir -p src-tauri/binaries
+            cp target/release/pdf-compressor-cli* src-tauri/binaries/
+          fi
+          ls -l src-tauri/binaries/
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Update signing key — the public half lives in tauri.conf.json;
+          # this secret holds the private half (minisign format).
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'PDF Compressor ${{ github.ref_name }}'

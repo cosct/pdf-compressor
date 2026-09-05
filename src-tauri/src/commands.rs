@@ -315,6 +315,7 @@ pub fn reveal_path_in_folder(
 pub async fn analyze_pdf(
     path: Option<String>,
     input_path: Option<String>,
+    password: Option<String>,
     on_progress: Channel<ProgressUpdate>,
 ) -> Result<AnalysisResponse, AppErrorPayload> {
     let requested_path = input_path.or(path).ok_or_else(|| {
@@ -324,7 +325,7 @@ pub async fn analyze_pdf(
     })?;
 
     tauri::async_runtime::spawn_blocking(move || {
-        analyze_pdf_with_progress(&requested_path, |update| {
+        analyze_pdf_with_progress(&requested_path, password.as_deref(), |update| {
             let _ = on_progress.send(update);
         })
     })
@@ -341,6 +342,7 @@ pub async fn analyze_pdf(
 struct CompressionJob {
     requested_path: String,
     task_id: String,
+    password: Option<String>,
     target_size_bytes: Option<u32>,
     settings: CompressionSettings,
     task_label: &'static str,
@@ -358,6 +360,7 @@ async fn run_compression(
     let CompressionJob {
         requested_path,
         task_id,
+        password,
         target_size_bytes,
         settings,
         task_label,
@@ -373,12 +376,19 @@ async fn run_compression(
         match target_size_bytes {
             Some(target) => compress_pdf_to_target_size(
                 &requested_path,
+                password.as_deref(),
                 u64::from(target),
                 settings,
                 cancel_flag,
                 &mut progress,
             ),
-            None => compress_pdf_with_progress(&requested_path, settings, cancel_flag, progress),
+            None => compress_pdf_with_progress(
+                &requested_path,
+                password.as_deref(),
+                settings,
+                cancel_flag,
+                progress,
+            ),
         }
     })
     .await;
@@ -435,6 +445,7 @@ pub async fn compress_pdf(
         CompressionJob {
             requested_path,
             task_id,
+            password: request.password.filter(|value| !value.is_empty()),
             target_size_bytes,
             settings: merged_settings,
             task_label: "compress",
@@ -487,6 +498,7 @@ pub async fn compress_scanned_pdf(
         CompressionJob {
             requested_path,
             task_id,
+            password: request.password.filter(|value| !value.is_empty()),
             target_size_bytes,
             settings: merged_settings,
             task_label: "scanned compress",

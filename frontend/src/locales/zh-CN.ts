@@ -46,6 +46,33 @@ const zhCN = {
     savedBody: '右键压缩现在使用这组参数。',
     note: '仅作用于本机的右键压缩动作。',
   },
+  password: {
+    title: '需要密码',
+    requiredHint: '该 PDF 设置了打开密码，输入密码后继续。',
+    wrongPasswordHint: '刚才的密码未能解锁该文件，请重试。',
+    placeholder: '打开密码',
+    submit: '解锁',
+    cancel: '取消',
+  },
+  updater: {
+    title: '软件更新',
+    checkForUpdates: '检查更新',
+    checking: '正在检查…',
+    upToDateTitle: '已是最新版本',
+    upToDateBody: '当前已运行最新版本（{version}）。',
+    availableTitle: '发现新版本',
+    availableBody: '新版本 {version} 可用，是否立即下载并安装？',
+    downloadAndInstall: '下载并安装',
+    downloading: '正在下载…（{contentLength}）',
+    installing: '正在安装…',
+    installedTitle: '更新已安装',
+    installedBody: '重启应用以完成更新。',
+    restartNow: '立即重启',
+    later: '稍后',
+    failedTitle: '检查更新失败',
+    failedBody: '更新检查未完成：{detail}',
+    unavailableBody: '当前构建未配置更新通道。',
+  },
   intake: {
     browse: '选择文件',
     browseDisabledPreview: '选择文件（仅桌面版）',
@@ -254,7 +281,13 @@ const zhCN = {
       body: '所选文件不是 PDF：{path}',
     },
     'error.encryptedPdf': {
-      body: '该 PDF 带有密码保护或 DRM 加密，暂不支持处理加密文档。',
+      body: '该 PDF 使用了不受支持的安全处理器（DRM 加密），无法处理。',
+    },
+    'error.passwordRequired': {
+      body: '该 PDF 需要输入打开密码才能处理。',
+    },
+    'error.wrongPassword': {
+      body: '输入的密码未能解锁该 PDF。',
     },
     'error.image': {
       body: '图片处理失败：{detail}',

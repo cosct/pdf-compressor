@@ -40,6 +40,10 @@ pub struct CompressPdfRequest {
     pub path: Option<String>,
     pub input_path: Option<String>,
     pub task_id: Option<String>,
+    /// Open password for encrypted PDFs. `None`/absent for plain files; a
+    /// wrong password fails with `error.wrongPassword`.
+    #[serde(default)]
+    pub password: Option<String>,
     pub settings: Option<CompressionSettingsPayload>,
     pub preset: Option<String>,
     pub image_quality: Option<u8>,
@@ -61,6 +65,10 @@ pub struct CompressScannedPdfRequest {
     pub path: Option<String>,
     pub input_path: Option<String>,
     pub task_id: Option<String>,
+    /// Open password for encrypted PDFs — same semantics as
+    /// `CompressPdfRequest.password`.
+    #[serde(default)]
+    pub password: Option<String>,
     pub settings: Option<CompressionSettingsPayload>,
     pub preset: Option<String>,
     pub image_quality: Option<u8>,

@@ -65,23 +65,59 @@ pub(crate) fn validate_input_path(path: &str) -> Result<std::path::PathBuf, AppE
     Ok(candidate)
 }
 
-/// Guard against encrypted documents, with a supported escape hatch.
+/// Load a document, supplying the open password when one was given. A failed
+/// load of a user-password file does not error here — lopdf returns a
+/// structural document with an unparsed object graph, which
+/// [`ensure_not_encrypted`] then classifies (missing vs wrong password vs
+/// unsupported DRM handler).
+pub(crate) fn load_document(
+    input_path: &std::path::Path,
+    password: Option<&str>,
+) -> Result<Document, AppError> {
+    let password = password.filter(|value| !value.is_empty());
+    let loaded = match &password {
+        Some(password) => Document::load_with_password(input_path, password),
+        None => Document::load(input_path),
+    };
+    // lopdf fails the load outright on a wrong password (unlike the no-password
+    // path, which returns an unparsed shell document).
+    if matches!(loaded, Err(lopdf::Error::InvalidPassword)) {
+        return Err(AppError::WrongPassword);
+    }
+    loaded.map_err(|e| AppError::PdfBuild(format!("Failed to load PDF: {e}")))
+}
+
+/// Guard against encrypted documents, with supported escape hatches.
 ///
 /// lopdf transparently decrypts owner-password-only files with the empty user
 /// password during `Document::load`, strips `/Encrypt` from the trailer, and
 /// records the unlock in `Document::encryption_state`. Files that need a real
 /// password — or use DRM handlers like EBX — fail authentication, leave the
-/// object graph unparsed, and are rejected here: re-saving one without its
-/// `/Encrypt` dictionary would emit a corrupt shell document (a real
-/// data-loss hazard reported as "success").
+/// object graph unparsed, and are classified here: with no password supplied
+/// that is `PasswordRequired`; after a failed password attempt it is
+/// `WrongPassword` (or `Encrypted` for handlers no password can satisfy).
+/// Re-saving an unauthenticated document without its `/Encrypt` dictionary
+/// would emit a corrupt shell (a real data-loss hazard reported as "success").
 ///
-/// Returns `true` when the input was encrypted and unlocked with the empty
-/// user password; the caller reports it so users know the output is plain.
-/// 拒绝需要真实密码的加密文档；空用户密码可解锁的（仅 owner 密码）放行并告知。
-pub(crate) fn ensure_not_encrypted(document: &mut Document) -> Result<bool, AppError> {
+/// Returns `true` when the input was encrypted and unlocked with the empty user
+/// password; the caller reports it so users know the output is plain.
+/// 拒绝无法解锁的加密文档；空用户密码可解锁的（仅 owner 密码）放行并告知，
+/// 提供了密码的按密码加载，失败则区分缺密码/密码错误。
+pub(crate) fn ensure_not_encrypted(
+    document: &mut Document,
+    password_attempted: bool,
+) -> Result<bool, AppError> {
     if document.trailer.has(b"Encrypt") {
         if document.get_pages().is_empty() {
-            return Err(AppError::Encrypted);
+            return Err(if password_attempted {
+                // A password was tried and the object graph still did not
+                // parse: either the password is wrong or the handler is
+                // unsupported DRM. Report the actionable case; DRM files are
+                // rare enough that a wrong-password message is still honest.
+                AppError::WrongPassword
+            } else {
+                AppError::PasswordRequired
+            });
         }
         // Defensive: an /Encrypt that survived a parsed load (lopdf normally
         // strips it after a successful empty-password decrypt).

@@ -68,6 +68,7 @@ struct ImageStreamRecord {
 
 pub fn analyze_pdf_with_progress<F>(
     path: &str,
+    password: Option<&str>,
     mut report_progress: F,
 ) -> Result<AnalysisResponse, AppError>
 where
@@ -79,9 +80,11 @@ where
     let file_size_bytes = fs::metadata(&input_path)?.len();
     ensure_input_size_supported(file_size_bytes)?;
 
-    let mut document = Document::load(&input_path)
+    let password_attempted = password.is_some_and(|value| !value.is_empty());
+    let mut document = super::load_document(&input_path, password)
         .map_err(|error| AppError::PdfBuild(format!("Failed to inspect PDF structure: {error}")))?;
-    let decrypted_with_empty_password = super::ensure_not_encrypted(&mut document)?;
+    let decrypted_with_empty_password =
+        super::ensure_not_encrypted(&mut document, password_attempted)?;
 
     report_progress(ProgressUpdate::new("analyzing", 20.0));
 

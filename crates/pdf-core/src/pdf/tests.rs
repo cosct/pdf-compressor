@@ -18,9 +18,10 @@ use super::compressor::compress_pdf_with_progress;
 use super::settings::{BilevelCodec, CompressionSettings, CompressionSettingsOverrides};
 use super::target_size::compress_pdf_to_target_size;
 use crate::error::AppError;
+use crate::models::CompressionResponse;
 use crate::testutil::{
-    bilevel_scan_image, bilevel_scan_rgb_image, encode_ccitt_g4, encode_jpeg, fixture_rgb_image,
-    FIXTURE_SEED,
+    bilevel_scan_image, bilevel_scan_rgb_image, encode_ccitt_g3_1d, encode_ccitt_g4, encode_jpeg,
+    fixture_rgb_image, luma_psnr_db, FIXTURE_SEED,
 };
 
 const FIXTURE_TEXT: &str = "Pipeline integration fixture";
@@ -130,6 +131,27 @@ fn build_pdf_bytes(jpeg: Vec<u8>, width: u32, height: u32) -> Vec<u8> {
 /// Build a one-page PDF whose single embedded image is a CCITT fax stream
 /// with the given `K` parameter (G4 transcode fixtures).
 fn build_ccitt_pdf_bytes(g4: Vec<u8>, width: u32, height: u32, k: i64) -> Vec<u8> {
+    build_ccitt_pdf_bytes_with_parms(
+        g4,
+        width,
+        height,
+        dictionary! {
+            "K" => k,
+            "Columns" => width as i64,
+            "Rows" => height as i64,
+            "BlackIs1" => true,
+        },
+    )
+}
+
+/// `build_ccitt_pdf_bytes` with caller-supplied `/DecodeParms` (G3 fixtures
+/// vary `EndOfLine` / `EncodedByteAlign`).
+fn build_ccitt_pdf_bytes_with_parms(
+    g4: Vec<u8>,
+    width: u32,
+    height: u32,
+    parms: lopdf::Dictionary,
+) -> Vec<u8> {
     let mut doc = Document::with_version("1.5");
     let info_id = doc.add_object(dictionary! {
         "Producer" => Object::string_literal("pdf-compressor test fixture"),
@@ -150,12 +172,7 @@ fn build_ccitt_pdf_bytes(g4: Vec<u8>, width: u32, height: u32, k: i64) -> Vec<u8
             "ColorSpace" => "DeviceGray",
             "BitsPerComponent" => 1,
             "Filter" => "CCITTFaxDecode",
-            "DecodeParms" => dictionary! {
-                "K" => k,
-                "Columns" => width as i64,
-                "Rows" => height as i64,
-                "BlackIs1" => true,
-            },
+            "DecodeParms" => parms,
         },
         g4,
     ));
@@ -238,7 +255,7 @@ fn analyze_reports_expected_signals() {
     let path = fresh_fixture(dir.path());
 
     let response =
-        analyze_pdf_with_progress(path.to_str().unwrap(), |_| {}).expect("analysis must succeed");
+        analyze_pdf_with_progress(path.to_str().unwrap(), None, |_| {}).expect("analysis must succeed");
 
     assert_eq!(response.page_count, 1);
     assert_eq!(response.image_object_count, 1);
@@ -275,25 +292,25 @@ fn encrypt_fixture(path: &Path, owner_password: &str, user_password: &str) {
 }
 
 #[test]
-fn encrypted_document_is_rejected_not_corrupted() {
+fn encrypted_document_without_password_reports_password_required() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = fresh_fixture(dir.path());
     // A real user password: lopdf's empty-password auto-decrypt on load fails,
-    // the object graph stays unparsed, and the guard must refuse the file.
+    // the object graph stays unparsed, and the guard must ask for a password.
     encrypt_fixture(&path, "owner", "user");
 
     for label in ["analyze", "compress", "target-size"] {
         let result = match label {
-            "analyze" => analyze_pdf_with_progress(path.to_str().unwrap(), |_| {}).map(|_| ()),
+            "analyze" => analyze_pdf_with_progress(path.to_str().unwrap(), None, |_| {}).map(|_| ()),
             "compress" => compress_pdf_with_progress(
-                path.to_str().unwrap(),
+                path.to_str().unwrap(), None,
                 maximum_settings(),
                 noop_cancel_flag(),
                 |_| {},
             )
             .map(|_| ()),
             _ => compress_pdf_to_target_size(
-                path.to_str().unwrap(),
+                path.to_str().unwrap(), None,
                 100_000,
                 maximum_settings(),
                 noop_cancel_flag(),
@@ -302,8 +319,8 @@ fn encrypted_document_is_rejected_not_corrupted() {
             .map(|_| ()),
         };
         match result {
-            Err(AppError::Encrypted) => {}
-            other => panic!("{label} must reject encrypted input, got {other:?}"),
+            Err(AppError::PasswordRequired) => {}
+            other => panic!("{label} must report a missing password, got {other:?}"),
         }
     }
 
@@ -322,13 +339,76 @@ fn encrypted_document_is_rejected_not_corrupted() {
 }
 
 #[test]
+fn encrypted_document_with_wrong_password_reports_wrong_password() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = fresh_fixture(dir.path());
+    encrypt_fixture(&path, "owner", "user");
+
+    let result = compress_pdf_with_progress(
+        path.to_str().unwrap(),
+        Some("not-the-password"),
+        maximum_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    );
+    match result {
+        Err(AppError::WrongPassword) => {}
+        other => panic!("a wrong password must be reported, got {other:?}"),
+    }
+}
+
+#[test]
+fn encrypted_document_with_password_compresses_to_plain_output() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = fresh_fixture(dir.path());
+    encrypt_fixture(&path, "owner", "open-secret");
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(),
+        Some("open-secret"),
+        maximum_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("the correct password must unlock the file");
+
+    assert!(response.output_was_smaller, "image fixture must shrink");
+    let output = Document::load(&response.output_path).expect("reload output");
+    assert_eq!(output.get_pages().len(), 1);
+    assert!(
+        !output.trailer.has(b"Encrypt"),
+        "output must be written without encryption"
+    );
+    assert!(
+        extracted_text(Path::new(&response.output_path)).contains(FIXTURE_TEXT),
+        "text must survive the encrypted round-trip"
+    );
+
+    // The same flow must work through the target-size search and analysis.
+    let target = compress_pdf_to_target_size(
+        path.to_str().unwrap(),
+        Some("open-secret"),
+        300 * 1024,
+        maximum_settings(),
+        noop_cancel_flag(),
+        &mut |_| {},
+    )
+    .expect("target-size search must honor the password");
+    assert!(target.compressed_size_bytes > 0.0);
+
+    let analysis = analyze_pdf_with_progress(path.to_str().unwrap(), Some("open-secret"), |_| {})
+        .expect("analysis must honor the password");
+    assert_eq!(analysis.page_count, 1);
+}
+
+#[test]
 fn owner_password_only_document_unlocks_and_compresses() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = fresh_fixture(dir.path());
     // Empty user password (owner-password-only): readable without a password.
     encrypt_fixture(&path, "owner-secret", "");
 
-    let analysis = analyze_pdf_with_progress(path.to_str().unwrap(), |_| {})
+    let analysis = analyze_pdf_with_progress(path.to_str().unwrap(), None, |_| {})
         .expect("owner-password-only PDF must analyze");
     assert_eq!(analysis.page_count, 1);
     assert!(analysis.notices.iter().any(|notice| {
@@ -336,7 +416,7 @@ fn owner_password_only_document_unlocks_and_compresses() {
     }));
 
     let response = compress_pdf_with_progress(
-        path.to_str().unwrap(),
+        path.to_str().unwrap(), None,
         maximum_settings(),
         noop_cancel_flag(),
         |_| {},
@@ -363,7 +443,7 @@ fn compress_round_trip_preserves_text_and_shrinks() {
     let original_text = extracted_text(&path);
 
     let response = compress_pdf_with_progress(
-        path.to_str().unwrap(),
+        path.to_str().unwrap(), None,
         maximum_settings(),
         noop_cancel_flag(),
         |_| {},
@@ -405,7 +485,7 @@ fn compress_survives_broken_image_stream() {
     );
 
     let response = compress_pdf_with_progress(
-        path.to_str().unwrap(),
+        path.to_str().unwrap(), None,
         maximum_settings(),
         noop_cancel_flag(),
         |_| {},
@@ -443,7 +523,7 @@ fn mutated_corpus_never_panics() {
         }
 
         let _ = compress_pdf_with_progress(
-            path.to_str().unwrap(),
+            path.to_str().unwrap(), None,
             maximum_settings(),
             noop_cancel_flag(),
             |_| {},
@@ -469,7 +549,7 @@ fn compress_dedupes_identical_images() {
     let path = write_fixture(dir.path(), "dedupe.pdf", &bytes);
 
     let response = compress_pdf_with_progress(
-        path.to_str().unwrap(),
+        path.to_str().unwrap(), None,
         maximum_settings(),
         noop_cancel_flag(),
         |_| {},
@@ -533,7 +613,7 @@ fn compress_dedupes_identical_content_streams() {
     let path = write_fixture(dir.path(), "content-dedupe.pdf", &bytes);
 
     let response = compress_pdf_with_progress(
-        path.to_str().unwrap(),
+        path.to_str().unwrap(), None,
         maximum_settings(),
         noop_cancel_flag(),
         |_| {},
@@ -570,7 +650,7 @@ fn dedupe_rewrites_references_without_leaving_stubs() {
     let path = write_fixture(dir.path(), "stub-check.pdf", &bytes);
 
     let response = compress_pdf_with_progress(
-        path.to_str().unwrap(),
+        path.to_str().unwrap(), None,
         maximum_settings(),
         noop_cancel_flag(),
         |_| {},
@@ -611,7 +691,7 @@ fn identical_images_with_shared_smask_merge() {
     let path = write_fixture(dir.path(), "smask-dedupe.pdf", &bytes);
 
     let response = compress_pdf_with_progress(
-        path.to_str().unwrap(),
+        path.to_str().unwrap(), None,
         maximum_settings(),
         noop_cancel_flag(),
         |_| {},
@@ -765,7 +845,7 @@ fn removes_unused_font_and_xobject_entries() {
     let path = write_fixture(dir.path(), "unused-resources.pdf", &build_unused_resources_pdf(false));
 
     let response = compress_pdf_with_progress(
-        path.to_str().unwrap(),
+        path.to_str().unwrap(), None,
         maximum_settings(),
         noop_cancel_flag(),
         |_| {},
@@ -811,7 +891,7 @@ fn keeps_resources_when_annotation_appearance_present() {
     let path = write_fixture(dir.path(), "annotated.pdf", &build_unused_resources_pdf(true));
 
     let response = compress_pdf_with_progress(
-        path.to_str().unwrap(),
+        path.to_str().unwrap(), None,
         maximum_settings(),
         noop_cancel_flag(),
         |_| {},
@@ -988,7 +1068,7 @@ fn unsafe_sibling_vetoes_shared_resources_cleanup() {
     );
 
     let response = compress_pdf_with_progress(
-        path.to_str().unwrap(),
+        path.to_str().unwrap(), None,
         maximum_settings(),
         noop_cancel_flag(),
         |_| {},
@@ -1018,7 +1098,7 @@ fn all_safe_siblings_still_clean_shared_resources() {
     );
 
     let response = compress_pdf_with_progress(
-        path.to_str().unwrap(),
+        path.to_str().unwrap(), None,
         maximum_settings(),
         noop_cancel_flag(),
         |_| {},
@@ -1060,7 +1140,7 @@ fn subsets_cid_truetype_font_to_used_glyphs() {
     let path = write_fixture(dir.path(), "type0.pdf", &build_type0_pdf_bytes());
 
     let response = compress_pdf_with_progress(
-        path.to_str().unwrap(),
+        path.to_str().unwrap(), None,
         subset_settings(),
         noop_cancel_flag(),
         |_| {},
@@ -1203,7 +1283,7 @@ fn subset_fonts_off_keeps_font_program_unchanged() {
         },
     );
     let response = compress_pdf_with_progress(
-        path.to_str().unwrap(),
+        path.to_str().unwrap(), None,
         settings,
         noop_cancel_flag(),
         |_| {},
@@ -1263,7 +1343,7 @@ fn assert_subsetting_aborted(dir: &Path, name: &str, bytes: &[u8]) {
 
     let path = write_fixture(dir, name, bytes);
     let response = compress_pdf_with_progress(
-        path.to_str().unwrap(),
+        path.to_str().unwrap(), None,
         subset_settings(),
         noop_cancel_flag(),
         |_| {},
@@ -1558,7 +1638,7 @@ fn icc_rgb_raw_image_recompresses_and_keeps_profile() {
     let path = write_fixture(dir.path(), "icc-rgb.pdf", &bytes);
 
     let response = compress_pdf_with_progress(
-        path.to_str().unwrap(),
+        path.to_str().unwrap(), None,
         maximum_settings(),
         noop_cancel_flag(),
         |_| {},
@@ -1614,7 +1694,7 @@ fn icc_cmyk_raw_image_is_skipped() {
     let path = write_fixture(dir.path(), "icc-cmyk.pdf", &bytes);
 
     let response = compress_pdf_with_progress(
-        path.to_str().unwrap(),
+        path.to_str().unwrap(), None,
         maximum_settings(),
         noop_cancel_flag(),
         |_| {},
@@ -1654,7 +1734,7 @@ fn indexed_8bit_image_expands_palette() {
     let path = write_fixture(dir.path(), "indexed-8.pdf", &bytes);
 
     let response = compress_pdf_with_progress(
-        path.to_str().unwrap(),
+        path.to_str().unwrap(), None,
         maximum_settings(),
         noop_cancel_flag(),
         |_| {},
@@ -1703,7 +1783,7 @@ fn indexed_4bit_image_expands_palette() {
     let path = write_fixture(dir.path(), "indexed-4.pdf", &bytes);
 
     let response = compress_pdf_with_progress(
-        path.to_str().unwrap(),
+        path.to_str().unwrap(), None,
         maximum_settings(),
         noop_cancel_flag(),
         |_| {},
@@ -1733,7 +1813,7 @@ fn color_space_alias_resolves_through_resources() {
     let path = write_fixture(dir.path(), "alias-icc.pdf", &bytes);
 
     let response = compress_pdf_with_progress(
-        path.to_str().unwrap(),
+        path.to_str().unwrap(), None,
         maximum_settings(),
         noop_cancel_flag(),
         |_| {},
@@ -1827,7 +1907,7 @@ fn compress_rewrites_smask_alpha() {
     let path = write_fixture(dir.path(), "smask.pdf", &bytes);
 
     let response = compress_pdf_with_progress(
-        path.to_str().unwrap(),
+        path.to_str().unwrap(), None,
         maximum_settings(),
         noop_cancel_flag(),
         |_| {},
@@ -1874,7 +1954,7 @@ fn grayscale_mode_rewrites_color_images_as_device_gray() {
     );
 
     let response =
-        compress_pdf_with_progress(path.to_str().unwrap(), settings, noop_cancel_flag(), |_| {})
+        compress_pdf_with_progress(path.to_str().unwrap(), None, settings, noop_cancel_flag(), |_| {})
             .expect("compression must succeed");
     assert!(
         response.images_recompressed >= 1,
@@ -1953,7 +2033,7 @@ fn bilevel_mode_rewrites_near_bilevel_jpegs_as_ccitt_g4() {
     );
 
     let response = compress_pdf_with_progress(
-        path.to_str().unwrap(),
+        path.to_str().unwrap(), None,
         g4_settings(),
         noop_cancel_flag(),
         |_| {},
@@ -2000,7 +2080,7 @@ fn bilevel_mode_keeps_continuous_tone_images_on_jpeg() {
     let path = fresh_fixture(dir.path());
 
     let response = compress_pdf_with_progress(
-        path.to_str().unwrap(),
+        path.to_str().unwrap(), None,
         g4_settings(),
         noop_cancel_flag(),
         |_| {},
@@ -2029,7 +2109,7 @@ fn ccitt_g4_input_transcodes_when_resize_needed() {
     );
 
     let response = compress_pdf_with_progress(
-        path.to_str().unwrap(),
+        path.to_str().unwrap(), None,
         g4_settings(),
         noop_cancel_flag(),
         |_| {},
@@ -2089,7 +2169,7 @@ fn ccitt_stream_with_negative_dimensions_is_skipped() {
     let path = write_fixture(dir.path(), "ccitt-negative.pdf", &corrupted);
 
     let response = compress_pdf_with_progress(
-        path.to_str().unwrap(),
+        path.to_str().unwrap(), None,
         g4_settings(),
         noop_cancel_flag(),
         |_| {},
@@ -2104,9 +2184,12 @@ fn ccitt_stream_with_negative_dimensions_is_skipped() {
 }
 
 #[test]
-fn ccitt_g3_input_is_skipped_unchanged() {
+fn ccitt_g3_input_with_undecodable_payload_stays_skipped() {
     let dir = tempfile::tempdir().expect("tempdir");
     let image = bilevel_scan_image(1600, 1200, FIXTURE_SEED);
+    // K = 0 declares one-dimensional coding but the payload is G4-coded —
+    // the plain reader fails mid-stream and the image must stay untouched
+    // (decode failures are skips, never fatal).
     let g4_bytes = encode_ccitt_g4(&image);
     let path = write_fixture(
         dir.path(),
@@ -2115,7 +2198,7 @@ fn ccitt_g3_input_is_skipped_unchanged() {
     );
 
     let response = compress_pdf_with_progress(
-        path.to_str().unwrap(),
+        path.to_str().unwrap(), None,
         g4_settings(),
         noop_cancel_flag(),
         |_| {},
@@ -2123,7 +2206,7 @@ fn ccitt_g3_input_is_skipped_unchanged() {
     .expect("compression must succeed");
     assert_eq!(
         response.images_recompressed, 0,
-        "Group 3 input is not decodable and must stay untouched"
+        "an undecodable G3 payload must stay untouched"
     );
     assert!(response.images_skipped >= 1);
 
@@ -2151,7 +2234,7 @@ fn target_size_mode_with_bilevel_g4() {
     let target = original * 40 / 100;
 
     let response = compress_pdf_to_target_size(
-        path.to_str().unwrap(),
+        path.to_str().unwrap(), None,
         target,
         g4_settings(),
         noop_cancel_flag(),
@@ -2188,7 +2271,7 @@ fn target_size_mode_meets_budget() {
 
     let mut progress = |_| {};
     let response = compress_pdf_to_target_size(
-        path.to_str().unwrap(),
+        path.to_str().unwrap(), None,
         target,
         maximum_settings(),
         noop_cancel_flag(),
@@ -2221,7 +2304,7 @@ fn target_size_mode_spends_a_generous_budget_on_quality() {
 
     let mut progress = |_| {};
     let response = compress_pdf_to_target_size(
-        path.to_str().unwrap(),
+        path.to_str().unwrap(), None,
         target,
         maximum_settings(),
         noop_cancel_flag(),
@@ -2259,7 +2342,7 @@ fn target_size_mode_reports_best_effort() {
     // still produce a valid best-effort output with a warning.
     let mut progress = |_| {};
     let response = compress_pdf_to_target_size(
-        path.to_str().unwrap(),
+        path.to_str().unwrap(), None,
         2_000,
         maximum_settings(),
         noop_cancel_flag(),
@@ -2376,7 +2459,7 @@ fn image_heavy_documents_recompress_small_streams() {
     }
 
     let response = compress_pdf_with_progress(
-        path.to_str().unwrap(),
+        path.to_str().unwrap(), None,
         balanced_settings(),
         noop_cancel_flag(),
         |_| {},
@@ -2395,7 +2478,7 @@ fn small_document_keeps_skipping_small_streams() {
     let path = build_many_small_image_pdf(dir.path(), 4);
 
     let response = compress_pdf_with_progress(
-        path.to_str().unwrap(),
+        path.to_str().unwrap(), None,
         balanced_settings(),
         noop_cancel_flag(),
         |_| {},
@@ -2421,7 +2504,7 @@ fn grayscale_mode_forces_small_image_recompression() {
     );
 
     let response = compress_pdf_with_progress(
-        path.to_str().unwrap(),
+        path.to_str().unwrap(), None,
         settings,
         noop_cancel_flag(),
         |_| {},
@@ -2529,7 +2612,7 @@ fn analysis_estimate_excludes_undecodable_codecs() {
     }
     document.save(&path).expect("save relabeled fixture");
 
-    let analysis = analyze_pdf_with_progress(path.to_str().unwrap(), |_| {})
+    let analysis = analyze_pdf_with_progress(path.to_str().unwrap(), None, |_| {})
         .expect("analysis must succeed");
     assert!(analysis
         .notices
@@ -2542,4 +2625,707 @@ fn analysis_estimate_excludes_undecodable_codecs() {
         "estimate must exclude undecodable image bytes, got {}",
         analysis.estimated_savings_percent
     );
+}
+
+// ---------------------------------------------------------------------------
+// Group 3 (one-dimensional) CCITT input
+// ---------------------------------------------------------------------------
+
+/// Compress a G3-encoded fixture at the given parms and return the reloaded
+/// output document plus the response. The encoder flags must match the
+/// declared `/DecodeParms`.
+fn compress_g3_fixture(
+    dir: &Path,
+    name: &str,
+    image: &image::GrayImage,
+    parms: lopdf::Dictionary,
+    byte_align: bool,
+    with_eol: bool,
+) -> (CompressionResponse, Document) {
+    let (width, height) = image.dimensions();
+    let g3 = encode_ccitt_g3_1d(image, byte_align, with_eol);
+    let path = write_fixture(
+        dir,
+        name,
+        &build_ccitt_pdf_bytes_with_parms(g3, width, height, parms),
+    );
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(),
+        None,
+        g4_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("G3 compression must succeed");
+    assert!(
+        response.images_recompressed >= 1,
+        "the G3 image must be actionable, notices: {:?}",
+        response.notices
+    );
+    let reloaded = Document::load(&response.output_path).expect("reload output");
+    (response, reloaded)
+}
+
+#[test]
+fn ccitt_g3_plain_input_transcodes() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let image = bilevel_scan_image(1728, 1200, FIXTURE_SEED);
+    let (response, reloaded) = compress_g3_fixture(
+        dir.path(),
+        "g3-plain.pdf",
+        &image,
+        dictionary! {
+            "K" => 0,
+            "Columns" => 1728,
+            "Rows" => 1200,
+            "BlackIs1" => true,
+        },
+        false,
+        false,
+    );
+
+    assert!(response.output_was_smaller, "G3 → G4 must shrink");
+    let stream = image_streams(&reloaded)[0];
+    assert!(
+        matches!(stream.dict.get(b"Filter"), Ok(Object::Name(name)) if name.as_slice() == b"CCITTFaxDecode"),
+        "decoded G3 input must be re-encoded as G4, got {:?}",
+        stream.dict.get(b"Filter")
+    );
+    match stream.dict.get(b"DecodeParms") {
+        Ok(Object::Dictionary(parms)) => {
+            assert_eq!(parms.get(b"K").ok(), Some(&Object::Integer(-1)));
+        }
+        other => panic!("rewritten stream must carry DecodeParms, got {other:?}"),
+    }
+    assert!(
+        extracted_text(Path::new(&response.output_path)).contains(FIXTURE_TEXT),
+        "text must survive the G3 transcode"
+    );
+}
+
+#[test]
+fn ccitt_g3_input_without_decodeparms_transcodes() {
+    // PDF defaults for an absent /DecodeParms: K = 0, no EOL, no alignment —
+    // exactly the plain shape the local reader handles.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let image = bilevel_scan_image(1728, 900, FIXTURE_SEED);
+    let (_, reloaded) = compress_g3_fixture(
+        dir.path(),
+        "g3-noparms.pdf",
+        &image,
+        lopdf::Dictionary::new(),
+        false,
+        false,
+    );
+
+    let stream = image_streams(&reloaded)[0];
+    assert!(
+        matches!(stream.dict.get(b"Filter"), Ok(Object::Name(name)) if name.as_slice() == b"CCITTFaxDecode"),
+        "default-shape G3 input must transcode, got {:?}",
+        stream.dict.get(b"Filter")
+    );
+}
+
+#[test]
+fn ccitt_g3_byte_aligned_input_transcodes() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let image = bilevel_scan_image(1728, 1200, FIXTURE_SEED);
+    let (_, reloaded) = compress_g3_fixture(
+        dir.path(),
+        "g3-aligned.pdf",
+        &image,
+        dictionary! {
+            "K" => 0,
+            "Columns" => 1728,
+            "Rows" => 1200,
+            "BlackIs1" => true,
+            "EncodedByteAlign" => true,
+        },
+        true,
+        false,
+    );
+
+    assert!(
+        matches!(image_streams(&reloaded)[0].dict.get(b"Filter"), Ok(Object::Name(name)) if name.as_slice() == b"CCITTFaxDecode"),
+        "byte-aligned G3 input must transcode"
+    );
+}
+
+#[test]
+fn ccitt_g3_eol_input_transcodes() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let image = bilevel_scan_image(1728, 1200, FIXTURE_SEED);
+    let (width, height) = image.dimensions();
+    let g3 = encode_ccitt_g3_1d(&image, false, true);
+    let path = write_fixture(
+        dir.path(),
+        "g3-eol.pdf",
+        &build_ccitt_pdf_bytes_with_parms(
+            g3,
+            width,
+            height,
+            dictionary! {
+                "K" => 0,
+                "Columns" => 1728,
+                "Rows" => 1200,
+                "BlackIs1" => true,
+                "EndOfLine" => true,
+            },
+        ),
+    );
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(),
+        None,
+        g4_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("EOL-marked G3 must compress");
+    assert!(response.images_recompressed >= 1);
+
+    let reloaded = Document::load(&response.output_path).expect("reload output");
+    assert!(
+        matches!(image_streams(&reloaded)[0].dict.get(b"Filter"), Ok(Object::Name(name)) if name.as_slice() == b"CCITTFaxDecode"),
+        "EOL-marked G3 input must transcode"
+    );
+}
+
+#[test]
+fn ccitt_g3_two_dimensional_input_stays_skipped() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let image = bilevel_scan_image(1728, 900, FIXTURE_SEED);
+    let (width, height) = image.dimensions();
+    // K > 0 selects mixed one/two-dimensional rows — deliberately unsupported;
+    // the payload below is plain 1D anyway, the point is the shape gate.
+    let g3 = encode_ccitt_g3_1d(&image, false, false);
+    let path = write_fixture(
+        dir.path(),
+        "g3-2d.pdf",
+        &build_ccitt_pdf_bytes_with_parms(
+            g3,
+            width,
+            height,
+            dictionary! {
+                "K" => 4,
+                "Columns" => 1728,
+                "Rows" => 900,
+                "BlackIs1" => true,
+            },
+        ),
+    );
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(),
+        None,
+        g4_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must still succeed");
+    assert!(
+        response.images_skipped >= 1,
+        "two-dimensional G3 must stay skipped"
+    );
+
+    let reloaded = Document::load(&response.output_path).expect("reload output");
+    match image_streams(&reloaded)[0].dict.get(b"DecodeParms") {
+        Ok(Object::Dictionary(parms)) => {
+            assert_eq!(parms.get(b"K").ok(), Some(&Object::Integer(4)));
+        }
+        other => panic!("skipped stream must keep its parms, got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Outline (bookmark) preservation
+// ---------------------------------------------------------------------------
+
+/// Build a two-page PDF with a nested outline tree:
+/// root → "Chapter One" (→ page 1) → child "Section 1.1" (→ page 2)
+///      → "Chapter Two" (→ page 2).
+fn build_pdf_bytes_with_outline(jpeg: Vec<u8>, width: u32, height: u32) -> Vec<u8> {
+    let mut doc = Document::with_version("1.5");
+    let pages_id = doc.new_object_id();
+    let font_id = doc.add_object(dictionary! {
+        "Type" => "Font",
+        "Subtype" => "Type1",
+        "BaseFont" => "Helvetica",
+    });
+    let image_id = doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Image",
+            "Width" => width as i64,
+            "Height" => height as i64,
+            "ColorSpace" => "DeviceRGB",
+            "BitsPerComponent" => 8,
+            "Filter" => "DCTDecode",
+        },
+        jpeg,
+    ));
+    let resources_id = doc.add_object(dictionary! {
+        "Font" => dictionary! { "F1" => font_id },
+        "XObject" => dictionary! { "Im0" => image_id },
+    });
+
+    let mut page_ids = Vec::new();
+    for page_number in 1..=2 {
+        let content = format!(
+            "q 400 0 0 300 72 400 cm /Im0 Do Q\nBT /F1 24 Tf 72 720 Td ({FIXTURE_TEXT} page {page_number}) Tj ET\n"
+        );
+        let content_id = doc.add_object(Stream::new(dictionary! {}, content.into_bytes()));
+        let page_id = doc.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "Contents" => content_id,
+            "Resources" => resources_id,
+            "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+        });
+        page_ids.push(page_id);
+    }
+    doc.objects.insert(
+        pages_id,
+        Object::Dictionary(dictionary! {
+            "Type" => "Pages",
+            "Kids" => page_ids.iter().copied().map(Object::Reference).collect::<Vec<_>>(),
+            "Count" => 2,
+        }),
+    );
+
+    let outlines_id = doc.new_object_id();
+    let section_id = doc.new_object_id();
+    let chapter_two_id = doc.new_object_id();
+    let chapter_one_id = doc.add_object(dictionary! {
+        "Type" => "Outlines",
+        "Title" => Object::string_literal("Chapter One"),
+        "Parent" => outlines_id,
+        "Next" => chapter_two_id,
+        "First" => section_id,
+        "Last" => section_id,
+        "Count" => 1,
+        "Dest" => vec![Object::Reference(page_ids[0]), Object::Name(b"Fit".to_vec())],
+    });
+    doc.objects.insert(
+        section_id,
+        Object::Dictionary(dictionary! {
+            "Type" => "Outlines",
+            "Title" => Object::string_literal("Section 1.1"),
+            "Parent" => chapter_one_id,
+            "Dest" => vec![Object::Reference(page_ids[1]), Object::Name(b"Fit".to_vec())],
+        }),
+    );
+    doc.objects.insert(
+        chapter_two_id,
+        Object::Dictionary(dictionary! {
+            "Type" => "Outlines",
+            "Title" => Object::string_literal("Chapter Two"),
+            "Parent" => outlines_id,
+            "Prev" => chapter_one_id,
+            "Dest" => vec![Object::Reference(page_ids[1]), Object::Name(b"Fit".to_vec())],
+        }),
+    );
+    doc.objects.insert(
+        outlines_id,
+        Object::Dictionary(dictionary! {
+            "Type" => "Outlines",
+            "First" => chapter_one_id,
+            "Last" => chapter_two_id,
+            "Count" => 3,
+        }),
+    );
+    let catalog_id = doc.add_object(dictionary! {
+        "Type" => "Catalog",
+        "Pages" => pages_id,
+        "Outlines" => outlines_id,
+        "PageMode" => "UseOutlines",
+    });
+    doc.trailer.set("Root", catalog_id);
+
+    let mut bytes = Vec::new();
+    doc.save_modern(&mut bytes)
+        .expect("failed to save outline fixture PDF");
+    bytes
+}
+
+/// Collect outline titles depth-first by walking /First and /Next from the
+/// outline root. Order: parent, then its /First subtree, then /Next sibling.
+fn outline_titles(document: &Document) -> Vec<String> {
+    fn reference_at(dict: &lopdf::Dictionary, key: &[u8]) -> Option<lopdf::ObjectId> {
+        dict.get(key)
+            .ok()
+            .and_then(|object| object.as_reference().ok())
+    }
+
+    fn walk(document: &Document, item: Option<lopdf::ObjectId>, titles: &mut Vec<String>) {
+        let mut current = item;
+        while let Some(id) = current {
+            let Some(dict) = document.objects.get(&id).and_then(|o| o.as_dict().ok()) else {
+                break;
+            };
+            if let Ok(Object::String(title, _)) = dict.get(b"Title") {
+                titles.push(String::from_utf8_lossy(title).into_owned());
+            }
+            walk(document, reference_at(dict, b"First"), titles);
+            current = reference_at(dict, b"Next");
+        }
+    }
+
+    let outlines_ref = document
+        .trailer
+        .get(b"Root")
+        .ok()
+        .and_then(|object| object.as_reference().ok())
+        .and_then(|id| document.objects.get(&id))
+        .and_then(|object| object.as_dict().ok())
+        .and_then(|catalog| catalog.get(b"Outlines").ok())
+        .and_then(|object| object.as_reference().ok())
+        .expect("catalog must reference /Outlines");
+    let outlines = document
+        .objects
+        .get(&outlines_ref)
+        .and_then(|object| object.as_dict().ok())
+        .expect("outline root must resolve");
+
+    let mut titles = Vec::new();
+    walk(document, reference_at(outlines, b"First"), &mut titles);
+    titles
+}
+
+#[test]
+fn outline_survives_regular_compression() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let jpeg = encode_jpeg(fixture_rgb_image(1600, 1200), 95);
+    let path = write_fixture(
+        dir.path(),
+        "outline.pdf",
+        &build_pdf_bytes_with_outline(jpeg, 1600, 1200),
+    );
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(),
+        None,
+        maximum_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+
+    let reloaded = Document::load(&response.output_path).expect("reload output");
+    assert_eq!(reloaded.get_pages().len(), 2);
+    let titles = outline_titles(&reloaded);
+    assert!(
+        titles.contains(&"Chapter One".to_string())
+            && titles.contains(&"Section 1.1".to_string())
+            && titles.contains(&"Chapter Two".to_string()),
+        "all outline titles must survive, got {titles:?}"
+    );
+}
+
+#[test]
+fn outline_survives_target_size_search() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let jpeg = encode_jpeg(fixture_rgb_image(1600, 1200), 95);
+    let path = write_fixture(
+        dir.path(),
+        "outline-target.pdf",
+        &build_pdf_bytes_with_outline(jpeg, 1600, 1200),
+    );
+
+    let response = compress_pdf_to_target_size(
+        path.to_str().unwrap(),
+        None,
+        200 * 1024,
+        maximum_settings(),
+        noop_cancel_flag(),
+        &mut |_| {},
+    )
+    .expect("target-size search must succeed");
+
+    let reloaded = Document::load(&response.output_path).expect("reload output");
+    assert_eq!(reloaded.get_pages().len(), 2);
+    let titles = outline_titles(&reloaded);
+    assert!(
+        titles.contains(&"Chapter One".to_string())
+            && titles.contains(&"Section 1.1".to_string())
+            && titles.contains(&"Chapter Two".to_string()),
+        "all outline titles must survive the search, got {titles:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Target-size search: per-image quality allocation
+// ---------------------------------------------------------------------------
+
+#[test]
+fn target_size_search_produces_reproducible_output() {
+    // The per-image quality offsets are a pure function of the decoded plane,
+    // so the same input and budget must produce byte-identical outputs across
+    // runs — the probe-estimate and materialized-encoding paths stay in sync.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let jpeg = encode_jpeg(fixture_rgb_image(1600, 1200), 95);
+    let mut outputs = Vec::new();
+    for run in 0..2 {
+        let path = write_fixture(
+            dir.path(),
+            &format!("target-repro-{run}.pdf"),
+            &build_pdf_bytes(jpeg.clone(), 1600, 1200),
+        );
+        let response = compress_pdf_to_target_size(
+            path.to_str().unwrap(),
+            None,
+            250 * 1024,
+            maximum_settings(),
+            noop_cancel_flag(),
+            &mut |_| {},
+        )
+        .expect("target-size search must succeed");
+        outputs.push(fs::read(&response.output_path).expect("read output"));
+    }
+
+    // Identical inputs differing only in filename: the outputs' image content
+    // must match. (The document ID differs per save, so compare the DCTDecode
+    // payloads instead of whole files.)
+    let image_payloads = |bytes: &[u8]| -> Vec<Vec<u8>> {
+        Document::load_mem(bytes)
+            .expect("reload output")
+            .objects
+            .into_values()
+            .filter_map(|object| match object {
+                Object::Stream(stream)
+                    if matches!(stream.dict.get(b"Filter"), Ok(Object::Name(name)) if name.as_slice() == b"DCTDecode") =>
+                {
+                    Some(stream.content)
+                }
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(
+        image_payloads(&outputs[0]),
+        image_payloads(&outputs[1]),
+        "search rounds must be deterministic"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Quality-regression gates (PSNR)
+// ---------------------------------------------------------------------------
+
+/// Compress the single-image fixture at `preset` and return the decoded
+/// output image, the response, and the PSNR against `source`.
+fn compress_and_measure(
+    dir: &Path,
+    source: &DynamicImage,
+    jpeg: &[u8],
+    preset: &str,
+) -> (CompressionResponse, Option<f64>) {
+    let path = write_fixture(dir, "quality.pdf", &build_pdf_bytes(jpeg.to_vec(), 1200, 900));
+    let settings = CompressionSettings::from_sources(
+        None,
+        CompressionSettingsOverrides {
+            preset: Some(preset.to_string()),
+            ..Default::default()
+        },
+    );
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(),
+        None,
+        settings,
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+
+    let reloaded = Document::load(&response.output_path).expect("reload output");
+    let stream = image_streams(&reloaded)[0];
+    let decoded = image::load_from_memory(&stream.content)
+        .unwrap_or_else(|error| panic!("output image must decode: {error}"));
+    let psnr = luma_psnr_db(source, &decoded);
+    (response, psnr)
+}
+
+#[test]
+fn preset_quality_is_monotonic_and_above_floors() {
+    // 1200×900 stays under every preset's max edge, so the only distortion
+    // source is the JPEG quality knob — exactly what these floors pin down.
+    let source = DynamicImage::ImageRgb8(fixture_rgb_image(1200, 900));
+    let jpeg = encode_jpeg(fixture_rgb_image(1200, 900), 95);
+
+    // Floors measured with ~3 dB headroom below typical values; a drop past
+    // them means a code change made the same quality number visibly worse.
+    // Floors pinned ~2 dB below the measured values on the noise fixture
+    // (the PSNR worst case: conservative ≈ 30.1, balanced ≈ 27.4, maximum ≈
+    // 24.3 dB). A drop past them means a code change made the same quality
+    // number visibly worse.
+    let mut measured: Vec<(&str, f64)> = Vec::new();
+    for (preset, floor) in [("conservative", 28.0), ("balanced", 25.5), ("maximum", 22.5)] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (response, psnr) = compress_and_measure(dir.path(), &source, &jpeg, preset);
+        let psnr = psnr.unwrap_or_else(|| panic!("{preset} output dimensions must match"));
+        eprintln!("{preset}: PSNR {psnr:.2} dB, saved {:.1}%", response.savings_percent);
+        assert!(
+            psnr >= floor,
+            "{preset} quality regressed: PSNR {psnr:.2} dB < floor {floor} dB"
+        );
+        measured.push((preset, psnr));
+    }
+
+    let conservative = measured[0].1;
+    let balanced = measured[1].1;
+    let maximum = measured[2].1;
+    assert!(
+        conservative >= balanced && balanced >= maximum,
+        "quality must be monotonic across presets: {measured:?}"
+    );
+}
+
+/// Opt-in snapshot gate over a real-world corpus. Point
+/// `PDF_COMPRESSOR_QUALITY_CORPUS` at a directory of PDFs and run this test:
+/// the first run writes `quality-baseline.json` next to the corpus; later
+/// runs fail when a preset's size ratio grows by >5% or its mean image PSNR
+/// drops by more than 1 dB against the pinned baseline. Absent the variable
+/// the test is a no-op, keeping CI deterministic and offline.
+#[test]
+fn real_corpus_quality_snapshot() {
+    let Ok(corpus_dir) = std::env::var("PDF_COMPRESSOR_QUALITY_CORPUS") else {
+        return;
+    };
+    let corpus = PathBuf::from(corpus_dir);
+    let baseline_path = corpus.join("quality-baseline.json");
+
+    let mut pdfs: Vec<PathBuf> = fs::read_dir(&corpus)
+        .expect("corpus directory must be readable")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
+        })
+        .collect();
+    pdfs.sort();
+    assert!(!pdfs.is_empty(), "corpus contains no PDFs");
+
+    #[derive(serde::Serialize, serde::Deserialize, Default)]
+    #[serde(rename_all = "camelCase")]
+    struct CorpusBaseline {
+        /// file name → preset → { sizeRatio, meanPsnrDb }
+        files: std::collections::BTreeMap<String, std::collections::BTreeMap<String, Entry>>,
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Entry {
+        size_ratio: f64,
+        mean_psnr_db: Option<f64>,
+    }
+
+    let baseline: Option<CorpusBaseline> = std::fs::read_to_string(&baseline_path)
+        .ok()
+        .map(|contents| serde_json::from_str(&contents).expect("baseline JSON must parse"));
+    let mut next = CorpusBaseline::default();
+    let mut regressions: Vec<String> = Vec::new();
+
+    for pdf in &pdfs {
+        let name = pdf.file_name().unwrap().to_string_lossy().into_owned();
+        let original_bytes = fs::metadata(pdf).expect("stat").len() as f64;
+        let input_images = decoded_image_planes(&Document::load(pdf).expect("load corpus pdf"));
+
+        for preset in ["conservative", "balanced", "maximum"] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = write_fixture(
+                dir.path(),
+                "corpus.pdf",
+                &fs::read(pdf).expect("read corpus pdf"),
+            );
+            let settings = CompressionSettings::from_sources(
+                None,
+                CompressionSettingsOverrides {
+                    preset: Some(preset.to_string()),
+                    ..Default::default()
+                },
+            );
+            let Ok(response) = compress_pdf_with_progress(
+                path.to_str().unwrap(),
+                None,
+                settings,
+                noop_cancel_flag(),
+                |_| {},
+            ) else {
+                continue;
+            };
+
+            let size_ratio = response.compressed_size_bytes / original_bytes;
+            let output_images =
+                decoded_image_planes(&Document::load(&response.output_path).expect("reload"));
+            let psnrs: Vec<f64> = input_images
+                .iter()
+                .zip(output_images.iter())
+                .filter_map(|(source, output)| luma_psnr_db(source, output))
+                .collect();
+            let mean_psnr_db = (!psnrs.is_empty())
+                .then(|| psnrs.iter().sum::<f64>() / psnrs.len() as f64);
+
+            if let Some(entry) = baseline
+                .as_ref()
+                .and_then(|base| base.files.get(&name))
+                .and_then(|presets| presets.get(preset))
+            {
+                if size_ratio > entry.size_ratio * 1.05 {
+                    regressions.push(format!(
+                        "{name}/{preset}: size ratio {size_ratio:.3} grew past baseline {:.3}",
+                        entry.size_ratio
+                    ));
+                }
+                if let (Some(now), Some(pinned)) = (mean_psnr_db, entry.mean_psnr_db) {
+                    if now < pinned - 1.0 {
+                        regressions.push(format!(
+                            "{name}/{preset}: mean PSNR {now:.2} dB dropped below baseline {pinned:.2} dB"
+                        ));
+                    }
+                }
+            }
+
+            next.files.entry(name.clone()).or_default().insert(
+                preset.to_string(),
+                Entry {
+                    size_ratio,
+                    mean_psnr_db,
+                },
+            );
+        }
+    }
+
+    assert!(
+        regressions.is_empty(),
+        "quality regressions against the pinned baseline:\n{}",
+        regressions.join("\n")
+    );
+
+    if baseline.is_none() {
+        std::fs::write(
+            &baseline_path,
+            serde_json::to_string_pretty(&next).expect("serialize baseline"),
+        )
+        .expect("write baseline");
+        eprintln!("wrote new quality baseline at {}", baseline_path.display());
+    }
+}
+
+/// Decode every DCTDecode image plane of a document, in object order.
+fn decoded_image_planes(document: &Document) -> Vec<DynamicImage> {
+    document
+        .objects
+        .values()
+        .filter_map(|object| match object {
+            Object::Stream(stream)
+                if matches!(stream.dict.get(b"Filter"), Ok(Object::Name(name)) if name.as_slice() == b"DCTDecode") =>
+            {
+                image::load_from_memory(&stream.content).ok()
+            }
+            _ => None,
+        })
+        .collect()
 }

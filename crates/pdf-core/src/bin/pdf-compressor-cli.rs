@@ -36,7 +36,7 @@ const USAGE: &str = "\
 pdf-compressor-cli — analyze, compress, or quick-compress PDFs from the shell
 
 USAGE:
-    pdf-compressor-cli analyze <input.pdf>
+    pdf-compressor-cli analyze <input.pdf> [--password <PW>]
     pdf-compressor-cli compress <input.pdf> [OPTIONS]
     pdf-compressor-cli quick <input.pdf> [more.pdf ...] [OPTIONS]
 
@@ -50,6 +50,8 @@ QUICK OPTIONS (background mode, used by file-manager context menus):
     --subset-fonts       Shrink embedded CID TrueType fonts to used glyphs
     --keep-metadata       Keep document metadata (removed by default)
     --target-size <SIZE>  Fit the output under this size (e.g. 5MB, 500K)
+    --password <PW>       Open password for encrypted PDFs (applies to every
+                          input; note the value may appear in shell history)
     --no-notify           Skip the desktop notification
 
     Fields left unset fall back to the quick profile saved in the desktop
@@ -111,13 +113,14 @@ fn parsed_flag<T: std::str::FromStr>(args: &[String], name: &str) -> Result<Opti
 /// arguments. Value-taking flags consume their following argument so paths
 /// are never mistaken for flag values.
 fn split_quick_inputs(args: &[String]) -> Result<(Vec<String>, Vec<String>), String> {
-    const VALUE_FLAGS: [&str; 6] = [
+    const VALUE_FLAGS: [&str; 7] = [
         "--preset",
         "--quality",
         "--max-edge",
         "--bilevel",
         "--target-size",
         "--output-dir",
+        "--password",
     ];
     let mut inputs = Vec::new();
     let mut flags = Vec::new();
@@ -199,6 +202,7 @@ fn target_size_bytes(rest: &[String]) -> Result<Option<u64>, AppError> {
 /// engine itself skips writing a non-smaller result.
 fn quick_compress_one(
     input: &str,
+    password: Option<&str>,
     settings: &CompressionSettings,
     target_bytes: Option<u64>,
 ) -> Result<(CompressionResponse, bool), AppError> {
@@ -209,12 +213,13 @@ fn quick_compress_one(
     let response = match target_bytes {
         Some(target) => compress_pdf_to_target_size(
             input,
+            password,
             target,
             settings.clone(),
             cancel,
             &mut no_progress_mut,
         ),
-        None => compress_pdf_with_progress(input, settings.clone(), cancel, no_progress),
+        None => compress_pdf_with_progress(input, password, settings.clone(), cancel, no_progress),
     }?;
 
     Ok((response.clone(), response.output_was_smaller))
@@ -300,6 +305,9 @@ fn run_quick(rest: &[String], notify: bool) -> Result<QuickSummary, AppError> {
 
     let flag_overrides = compression_overrides(&flags)?;
     let mut target = target_size_bytes(&flags)?;
+    // One password for the whole quick batch (right-click selections are
+    // typically a set of files from the same source).
+    let password = flag_value(&flags, "--password").map_err(AppError::Config)?;
 
     // The persisted quick profile (edited in the desktop app's settings page)
     // fills every field the explicit flags did not set. A missing or unreadable
@@ -326,7 +334,7 @@ fn run_quick(rest: &[String], notify: bool) -> Result<QuickSummary, AppError> {
 
     let mut results = Vec::with_capacity(inputs.len());
     for input in &inputs {
-        let outcome = match quick_compress_one(input, &settings, target) {
+        let outcome = match quick_compress_one(input, password.as_deref(), &settings, target) {
             Ok((response, true)) => QuickOutcome::Compressed(response),
             Ok((response, false)) => QuickOutcome::NotSmaller(response),
             Err(error) => QuickOutcome::Failed(AppErrorPayload::from(error)),
@@ -597,18 +605,20 @@ fn run(args: &[String]) -> Result<String, AppError> {
         .clone();
 
     match command.as_str() {
-        "analyze" => analyze_pdf_with_progress(&input, |_| {})
+        "analyze" => analyze_pdf_with_progress(&input, password_arg(rest)?.as_deref(), |_| {})
             .map(|response| serde_json::to_string_pretty(&response).expect("serializable")),
         "compress" => {
             // Flag parsing errors are surfaced through AppError::Config.
             let overrides = compression_overrides(rest)?;
             let target_bytes = target_size_bytes(rest)?;
+            let password = password_arg(rest)?;
             let settings = CompressionSettings::from_sources(None, overrides);
             let mut no_progress = |_| {};
 
             match target_bytes {
                 Some(target) => compress_pdf_to_target_size(
                     &input,
+                    password.as_deref(),
                     target,
                     settings,
                     Arc::new(AtomicBool::new(false)),
@@ -616,6 +626,7 @@ fn run(args: &[String]) -> Result<String, AppError> {
                 ),
                 None => compress_pdf_with_progress(
                     &input,
+                    password.as_deref(),
                     settings,
                     Arc::new(AtomicBool::new(false)),
                     |_| {},
@@ -625,6 +636,11 @@ fn run(args: &[String]) -> Result<String, AppError> {
         }
         other => Err(AppError::Config(format!("unknown command: {other}"))),
     }
+}
+
+/// `--password` for the analyze/compress subcommands.
+fn password_arg(rest: &[String]) -> Result<Option<String>, AppError> {
+    flag_value(rest, "--password").map_err(AppError::Config)
 }
 
 fn main() -> ExitCode {

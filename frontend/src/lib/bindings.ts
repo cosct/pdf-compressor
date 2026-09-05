@@ -15,7 +15,7 @@ export const commands = {
 	saveQuickProfile: (profile: QuickProfilePayload) => typedError<QuickProfilePayload, AppErrorPayload>(__TAURI_INVOKE("save_quick_profile", { profile })),
 	openPath: (path: string) => typedError<null, AppErrorPayload>(__TAURI_INVOKE("open_path", { path })),
 	revealPathInFolder: (path: string) => typedError<null, AppErrorPayload>(__TAURI_INVOKE("reveal_path_in_folder", { path })),
-	analyzePdf: (path: string | null, inputPath: string | null, onProgress: Channel<ProgressUpdate>) => typedError<AnalysisResponse, AppErrorPayload>(__TAURI_INVOKE("analyze_pdf", { path, inputPath, onProgress })),
+	analyzePdf: (path: string | null, inputPath: string | null, password: string | null, onProgress: Channel<ProgressUpdate>) => typedError<AnalysisResponse, AppErrorPayload>(__TAURI_INVOKE("analyze_pdf", { path, inputPath, password, onProgress })),
 	compressPdf: (request: CompressPdfRequest, onProgress: Channel<ProgressUpdate>) => typedError<CompressionResponse, AppErrorPayload>(__TAURI_INVOKE("compress_pdf", { request, onProgress })),
 	compressScannedPdf: (request: CompressScannedPdfRequest_Deserialize, onProgress: Channel<ProgressUpdate>) => typedError<CompressionResponse, AppErrorPayload>(__TAURI_INVOKE("compress_scanned_pdf", { request, onProgress })),
 	cancelCompression: (taskId: string) => typedError<null, AppErrorPayload>(__TAURI_INVOKE("cancel_compression", { taskId })),
@@ -67,6 +67,11 @@ export type CompressPdfRequest = {
 	path: string | null,
 	inputPath: string | null,
 	taskId: string | null,
+	/**
+	 *  Open password for encrypted PDFs. `None`/absent for plain files; a
+	 *  wrong password fails with `error.wrongPassword`.
+	 */
+	password?: string | null,
 	settings: CompressionSettingsPayload | null,
 	preset: string | null,
 	imageQuality: number | null,
@@ -89,6 +94,11 @@ export type CompressScannedPdfRequest_Deserialize = {
 	path: string | null,
 	inputPath: string | null,
 	taskId: string | null,
+	/**
+	 *  Open password for encrypted PDFs — same semantics as
+	 *  `CompressPdfRequest.password`.
+	 */
+	password?: string | null,
 	settings: CompressionSettingsPayload | null,
 	preset: string | null,
 	imageQuality: number | null,
@@ -133,6 +143,11 @@ export type CompressScannedPdfRequest_Serialize = {
 	path: string | null,
 	inputPath: string | null,
 	taskId: string | null,
+	/**
+	 *  Open password for encrypted PDFs — same semantics as
+	 *  `CompressPdfRequest.password`.
+	 */
+	password: string | null,
 	settings: CompressionSettingsPayload | null,
 	preset: string | null,
 	imageQuality: number | null,

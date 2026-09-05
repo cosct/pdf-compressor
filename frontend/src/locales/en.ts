@@ -46,6 +46,33 @@ const en = {
     savedBody: 'Right-click compression now uses these settings.',
     note: 'Applies to right-click actions on this machine.',
   },
+  password: {
+    title: 'Password required',
+    requiredHint: 'This PDF is encrypted with an open password. Enter the password to continue.',
+    wrongPasswordHint: 'That password did not unlock the file. Try again.',
+    placeholder: 'Open password',
+    submit: 'Unlock',
+    cancel: 'Cancel',
+  },
+  updater: {
+    title: 'Software update',
+    checkForUpdates: 'Check for updates',
+    checking: 'Checking…',
+    upToDateTitle: 'Up to date',
+    upToDateBody: 'You are running the latest version ({version}).',
+    availableTitle: 'Update available',
+    availableBody: 'Version {version} is available. Download and install it now?',
+    downloadAndInstall: 'Download and install',
+    downloading: 'Downloading… ({contentLength})',
+    installing: 'Installing…',
+    installedTitle: 'Update installed',
+    installedBody: 'Restart the app to finish the update.',
+    restartNow: 'Restart now',
+    later: 'Later',
+    failedTitle: 'Update check failed',
+    failedBody: 'The update check did not complete: {detail}',
+    unavailableBody: 'Updates are not configured for this build.',
+  },
   intake: {
     browse: 'Browse',
     browseDisabledPreview: 'Browse (desktop only)',
@@ -258,7 +285,13 @@ const en = {
       body: 'The selected file is not a PDF: {path}',
     },
     'error.encryptedPdf': {
-      body: 'This PDF is password-protected or DRM-encrypted; encrypted documents are not supported.',
+      body: 'This PDF uses DRM encryption with an unsupported security handler; it cannot be processed.',
+    },
+    'error.passwordRequired': {
+      body: 'This PDF needs an open password before it can be processed.',
+    },
+    'error.wrongPassword': {
+      body: 'The supplied password did not unlock this PDF.',
     },
     'error.image': {
       body: 'Image processing failed: {detail}',

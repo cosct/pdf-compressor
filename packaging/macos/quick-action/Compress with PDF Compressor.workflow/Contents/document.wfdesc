@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>AMAccepts</key>
+	<dict>
+		<key>Container</key>
+		<string>List</string>
+		<key>Optional</key>
+		<true/>
+		<key>Types</key>
+		<array>
+			<string>com.apple.cocoa.path</string>
+		</array>
+	</dict>
+	<key>AMActions</key>
+	<array>
+		<dict>
+			<key>Action</key>
+			<string>com.apple.RunShellScript</string>
+			<key>Application</key>
+			<array>
+				<string>Automator</string>
+			</array>
+			<key>AMActionParameters</key>
+			<dict>
+				<key>source</key>
+				<string>CLI="@@CLI_PATH@@"
+if [ ! -x "$CLI" ]; then
+  osascript -e 'display notification "pdf-compressor-cli not found" with title "PDF Compressor"'
+  exit 1
+fi
+"$CLI" quick --no-notify "$@"
+</string>
+				<key>inputMethod</key>
+				<integer>1</integer>
+				<key>shell</key>
+				<string>/bin/bash</string>
+				<key>argumentFlags</key>
+				<integer>0</integer>
+			</dict>
+		</dict>
+	</array>
+	<key>AMApplication</key>
+	<array>
+		<string>Automator</string>
+	</array>
+	<key>AMCanShowWhenRun</key>
+	<false/>
+	<key>AMCategory</key>
+	<string>AMCategoryUtilities</string>
+	<key>AMComment</key>
+	<string>Compress selected PDFs with pdf-compressor-cli quick.</string>
+	<key>AMDescription</key>
+	<dict>
+		<key>AMDSummary</key>
+		<string>Compress selected PDFs with PDF Compressor.</string>
+	</dict>
+	<key>AMIconName</key>
+	<string>Automator</string>
+	<key>AMKeywords</key>
+	<array>
+		<string>pdf</string>
+		<string>compress</string>
+	</array>
+	<key>AMName</key>
+	<string>Compress with PDF Compressor</string>
+	<key>AMProvides</key>
+	<dict>
+		<key>Container</key>
+		<string>List</string>
+		<key>Types</key>
+		<array>
+			<string>com.apple.cocoa.path</string>
+		</array>
+	</dict>
+	<key>AMRequires</key>
+	<string>Files</string>
+</dict>
+</plist>

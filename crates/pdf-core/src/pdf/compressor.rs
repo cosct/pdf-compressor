@@ -138,6 +138,7 @@ struct CompressionRuntime<'a> {
 /// the provided callback. Returns detailed statistics on what was optimized.
 pub fn compress_pdf_with_progress<F>(
     path: &str,
+    password: Option<&str>,
     settings: CompressionSettings,
     cancel_flag: Arc<AtomicBool>,
     mut report_progress: F,
@@ -157,10 +158,13 @@ where
 
     // --- Load the PDF document ---
     ensure_not_cancelled(&cancel_flag, path)?;
-    let mut document = Document::load(&input_path)
-        .map_err(|e| AppError::PdfBuild(format!("Failed to load PDF: {e}")))?;
+    let password_attempted = password.is_some_and(|value| !value.is_empty());
+    let mut document = super::load_document(&input_path, password)?;
     let mut stats = CompressionStats {
-        decrypted_with_empty_password: super::ensure_not_encrypted(&mut document)?,
+        decrypted_with_empty_password: super::ensure_not_encrypted(
+            &mut document,
+            password_attempted,
+        )?,
         ..CompressionStats::default()
     };
 

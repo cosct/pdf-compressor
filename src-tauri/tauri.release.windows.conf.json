@@ -1,0 +1,14 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "bundle": {
+    "createUpdaterArtifacts": true,
+    "resources": {
+      "binaries/pdf-compressor-cli.exe": "binaries/"
+    },
+    "windows": {
+      "nsis": {
+        "installerHooks": "../packaging/windows/context-menu.nsh"
+      }
+    }
+  }
+}

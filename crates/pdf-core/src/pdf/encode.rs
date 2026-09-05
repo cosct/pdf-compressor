@@ -66,6 +66,82 @@ impl SkipPolicy {
 /// Recompressing a 100×100 icon yields almost no savings.
 pub(super) const TRIVIAL_PIXEL_COUNT: u64 = 10_000;
 
+// ---------------------------------------------------------------------------
+// Per-image quality allocation (target-size search rounds)
+// ---------------------------------------------------------------------------
+
+/// Quality offset applied to low-detail (flat) planes during target-size
+/// search rounds. Flat content survives low quality nearly unharmed, and its
+/// bytes are better spent keeping detail-rich planes sharp.
+const DETAIL_LOW_QUALITY_OFFSET: i16 = -12;
+
+/// Quality offset applied to high-detail planes — funded by the savings from
+/// the flat planes, roughly size-neutral per round.
+const DETAIL_HIGH_QUALITY_OFFSET: i16 = 6;
+
+/// Mean absolute luma-gradient below this score marks a plane "flat".
+const DETAIL_LOW_SCORE: f32 = 8.0;
+
+/// Mean absolute luma-gradient above this score marks a plane "detailed".
+const DETAIL_HIGH_SCORE: f32 = 25.0;
+
+/// Sample stride for the detail score — every 4th row and column keeps the
+/// pass cheap on large planes while staying deterministic.
+const DETAIL_SAMPLE_STRIDE: u32 = 4;
+
+/// Mean absolute luma gradient over a strided sample of the plane. A cheap,
+/// deterministic proxy for JPEG "detail": flat scans score near zero,
+/// noisy photographs score high.
+fn plane_detail_score(plane: &DynamicImage) -> f32 {
+    use image::Pixel as _;
+
+    let luma_at = |x: u32, y: u32| -> u32 {
+        u32::from(plane.get_pixel(x, y).to_luma().0[0])
+    };
+
+    let (width, height) = plane.dimensions();
+    if width < 2 || height < 2 {
+        return 0.0;
+    }
+
+    let mut total: u32 = 0;
+    let mut count: u32 = 0;
+    let mut y = 0;
+    while y < height - 1 {
+        let mut x = 0;
+        while x < width - 1 {
+            let here = luma_at(x, y);
+            total += (here as i32 - luma_at(x + 1, y) as i32).unsigned_abs();
+            total += (here as i32 - luma_at(x, y + 1) as i32).unsigned_abs();
+            count += 2;
+            x += DETAIL_SAMPLE_STRIDE;
+        }
+        y += DETAIL_SAMPLE_STRIDE;
+    }
+
+    if count == 0 {
+        0.0
+    } else {
+        total as f32 / count as f32
+    }
+}
+
+/// Effective per-image quality for one target-size search round: detail-rich
+/// planes get a boost, flat planes a penalty, so the round's byte budget is
+/// spent where artifacts are visible. A pure function of the (deterministic)
+/// post-resize plane, so probe estimates and materialized bytes stay in sync.
+fn search_round_quality(base_quality: u8, plane: &DynamicImage) -> u8 {
+    let score = plane_detail_score(plane);
+    let offset = if score < DETAIL_LOW_SCORE {
+        DETAIL_LOW_QUALITY_OFFSET
+    } else if score > DETAIL_HIGH_SCORE {
+        DETAIL_HIGH_QUALITY_OFFSET
+    } else {
+        0
+    };
+    (i16::from(base_quality) + offset).clamp(10, 100) as u8
+}
+
 /// For small JPEG images that are already at or below the target edge, skip
 /// if pixel count is under this threshold (roughly 500×500).
 const SMALL_JPEG_PIXEL_COUNT: u64 = 250_000;
@@ -349,7 +425,7 @@ pub(super) fn optimize_image_stream(
             } else if filter_info.has_ccitt {
                 #[cfg(feature = "ccitt")]
                 {
-                    decode_ccitt_g4_stream(stream)
+                    decode_ccitt_stream(stream)
                         .map_err(|e| format!("failed to decode CCITT image stream: {e}"))
                 }
                 #[cfg(not(feature = "ccitt"))]
@@ -415,6 +491,17 @@ pub(super) fn optimize_image_stream(
     ensure_not_cancelled(cancel_flag, task_id)?;
     let plane_dimensions = (plane.width(), plane.height());
 
+    // Target-size search rounds only: redistribute the round's quality across
+    // images by plane detail (see `search_round_quality`). Outside the search
+    // the user's quality number is applied verbatim. The plane is a
+    // deterministic function of (stream, edge, grayscale), so probe estimates
+    // and materialized encodings stay byte-identical.
+    let encode_quality = if search_cache.is_some() {
+        search_round_quality(settings.image_quality, &plane)
+    } else {
+        settings.image_quality
+    };
+
     #[cfg(feature = "ccitt")]
     let bilevel_g4 =
         settings.bilevel_codec.uses_ccitt() && plane_is_near_bilevel(&plane);
@@ -432,7 +519,7 @@ pub(super) fn optimize_image_stream(
         }
     } else {
         let estimated_output_size = (original_len as f32 * 0.65) as usize;
-        match encode_dynamic_image_as_jpeg(&plane, settings.image_quality, estimated_output_size) {
+        match encode_dynamic_image_as_jpeg(&plane, encode_quality, estimated_output_size) {
             Ok(encoded) => encoded,
             Err(e) => {
                 return Ok(ImageOptimization::Skipped {
@@ -918,12 +1005,38 @@ fn encode_dynamic_image_as_jpeg(
 // CCITT Group 4 (bi-level) codec helpers
 // ---------------------------------------------------------------------------
 
-/// Validate that a CCITT stream uses the pure Group-4 shape this engine can
-/// decode: direct `/DecodeParms` dictionary with `K < 0`, no byte alignment.
-/// Returns `(width, height, black_is_1)` on success. Group 3 (`K >= 0`) and
-/// `EncodedByteAlign` streams stay unsupported.
+/// Decodable CCITT input shape, shared by the filter gate and the decoder
+/// dispatch. Group 3 support covers the one-dimensional (K = 0) coding used
+/// by legacy fax scans: rows are plain MH run-lengths, optionally EOL-
+/// delimited (TIFF-style) or byte-aligned.
 #[cfg(feature = "ccitt")]
-fn ccitt_g4_parms(stream: &Stream) -> Option<(u32, u32, bool)> {
+enum CcittInputShape {
+    /// Group 4 (K < 0), no byte alignment.
+    Group4 {
+        width: u32,
+        height: u32,
+        black_is_1: bool,
+    },
+    /// Group 3 one-dimensional (K = 0). `end_of_line` rows are decoded by
+    /// fax's `decode_g3` (fill bits + EOL + RTC aware); plain rows use the
+    /// local no-EOL reader, which also honors `EncodedByteAlign`. The rare
+    /// EOL-plus-alignment combination is not supported (the align padding
+    /// between an EOL and the next row's codes is ambiguous).
+    Group3OneDim {
+        width: u32,
+        height: u32,
+        black_is_1: bool,
+        end_of_line: bool,
+        byte_align: bool,
+    },
+}
+
+/// Validate that a CCITT stream uses a shape this engine can decode. Returns
+/// the shape on success. Group 3 two-dimensional coding (K > 0), indirect
+/// `/DecodeParms`, flate-mixed chains, and oversized dimensions stay
+/// unsupported.
+#[cfg(feature = "ccitt")]
+fn ccitt_input_shape(stream: &Stream) -> Option<CcittInputShape> {
     let width = optional_integer(stream, b"Width")?;
     let height = optional_integer(stream, b"Height")?;
     // Never let hostile dimensions reach the decoded-plane allocation: a
@@ -933,38 +1046,106 @@ fn ccitt_g4_parms(stream: &Stream) -> Option<(u32, u32, bool)> {
     if !(1..=65_535).contains(&width) || !(1..=65_535).contains(&height) {
         return None;
     }
-    let width = width as u32;
-    let height = height as u32;
+    let (width, height) = (width as u32, height as u32);
 
-    // An absent /DecodeParms defaults to K = 0 (Group 3 one-dimensional),
-    // which is not decodable here. Indirect parameter references are rare
-    // and are not resolved in this stream-local context.
+    // An absent /DecodeParms defaults to K = 0 — Group 3 one-dimensional
+    // without EOL markers, which the local reader handles. Indirect parameter
+    // references are rare and are not resolved in this stream-local context.
     let parms = match stream.dict.get(b"DecodeParms") {
-        Ok(Object::Dictionary(dict)) => dict,
-        _ => return None,
+        Ok(Object::Dictionary(dict)) => Some(dict),
+        Err(_) => None,
+        Ok(_) => return None,
     };
 
-    let k = optional_dict_integer(parms, b"K").unwrap_or(0);
-    if k >= 0 {
-        return None;
-    }
-    if matches!(parms.get(b"EncodedByteAlign"), Ok(Object::Boolean(true))) {
-        return None;
-    }
+    let flag = |dict: Option<&Dictionary>, key: &[u8]| {
+        dict.and_then(|dict| match dict.get(key) {
+            Ok(Object::Boolean(value)) => Some(*value),
+            _ => None,
+        })
+        .unwrap_or(false)
+    };
 
-    let black_is_1 = matches!(parms.get(b"BlackIs1"), Ok(Object::Boolean(true)));
-    Some((width, height, black_is_1))
+    let black_is_1 = flag(parms, b"BlackIs1");
+    let byte_align = flag(parms, b"EncodedByteAlign");
+    let k = parms
+        .and_then(|dict| optional_dict_integer(dict, b"K"))
+        .unwrap_or(0);
+
+    match k {
+        0 => {
+            let end_of_line = flag(parms, b"EndOfLine");
+            if end_of_line && byte_align {
+                return None;
+            }
+            Some(CcittInputShape::Group3OneDim {
+                width,
+                height,
+                black_is_1,
+                end_of_line,
+                byte_align,
+            })
+        }
+        k if k < 0 => {
+            if byte_align {
+                return None;
+            }
+            Some(CcittInputShape::Group4 {
+                width,
+                height,
+                black_is_1,
+            })
+        }
+        _ => None,
+    }
 }
 
-/// Decode a pure Group-4 CCITT image stream into an 8-bit grayscale plane
-/// (black = 0, white = 255). The fax crate emits per-line color transitions;
-/// `pels` expands them back into full rows.
+/// Decode a CCITT image stream (Group 4 or one-dimensional Group 3) into an
+/// 8-bit grayscale plane (black = 0, white = 255).
 #[cfg(feature = "ccitt")]
-fn decode_ccitt_g4_stream(stream: &Stream) -> Result<DynamicImage, AppError> {
-    let (width, height, black_is_1) = ccitt_g4_parms(stream).ok_or_else(|| {
-        AppError::PdfBuild("CCITT stream does not use the supported Group 4 shape".into())
-    })?;
+fn decode_ccitt_stream(stream: &Stream) -> Result<DynamicImage, AppError> {
+    match ccitt_input_shape(stream).ok_or_else(|| {
+        AppError::PdfBuild("CCITT stream does not use a supported decode shape".into())
+    })? {
+        CcittInputShape::Group4 {
+            width,
+            height,
+            black_is_1,
+        } => decode_ccitt_g4_rows(stream, width, height, black_is_1),
+        CcittInputShape::Group3OneDim {
+            width,
+            height,
+            black_is_1,
+            end_of_line: true,
+            byte_align: false,
+        } => decode_ccitt_g3_eol(stream, width, height, black_is_1),
+        CcittInputShape::Group3OneDim {
+            width,
+            height,
+            black_is_1,
+            end_of_line: false,
+            byte_align,
+        } => decode_ccitt_g3_plain(stream, width, height, black_is_1, byte_align),
+        // The EOL-plus-alignment combination is filtered out by
+        // `ccitt_input_shape`; this arm only satisfies exhaustiveness.
+        CcittInputShape::Group3OneDim {
+            end_of_line: true,
+            byte_align: true,
+            ..
+        } => Err(AppError::PdfBuild(
+            "CCITT Group 3 EOL with byte alignment is not supported".into(),
+        )),
+    }
+}
 
+/// Group 4 path: the fax crate emits per-line color transitions; `pels`
+/// expands them back into full rows.
+#[cfg(feature = "ccitt")]
+fn decode_ccitt_g4_rows(
+    stream: &Stream,
+    width: u32,
+    height: u32,
+    black_is_1: bool,
+) -> Result<DynamicImage, AppError> {
     let mut pixels = vec![0u8; width as usize * height as usize];
     let mut written_rows = 0usize;
 
@@ -973,20 +1154,11 @@ fn decode_ccitt_g4_stream(stream: &Stream) -> Result<DynamicImage, AppError> {
         width,
         Some(height),
         |transitions| {
-            if written_rows >= height as usize {
-                return;
-            }
-            let row_start = written_rows * width as usize;
-            let row = &mut pixels[row_start..row_start + width as usize];
-            for (x, color) in fax::decoder::pels(transitions, width).enumerate() {
-                if x >= row.len() {
-                    break;
-                }
-                // fax uses the T.6 bit convention (1 = black). PDF's
-                // BlackIs1=false inverts it: 0 bits render as black.
-                let is_black = (color == fax::Color::Black) == black_is_1;
-                row[x] = if is_black { 0 } else { 255 };
-            }
+            write_transitions_row(
+                &mut pixels[written_rows * width as usize..][..width as usize],
+                transitions,
+                black_is_1,
+            );
             written_rows += 1;
         },
     );
@@ -1000,6 +1172,151 @@ fn decode_ccitt_g4_stream(stream: &Stream) -> Result<DynamicImage, AppError> {
     image::GrayImage::from_vec(width, height, pixels)
         .map(DynamicImage::ImageLuma8)
         .ok_or_else(|| AppError::PdfBuild("CCITT decode produced mismatched buffer".into()))
+}
+
+/// Group 3 with EOL markers: fax's `decode_g3` handles fill bits, EOL
+/// delimiters, and the RTC (six EOLs) terminator. Rows beyond the declared
+/// height are dropped; trailing garbage after the RTC is tolerated.
+#[cfg(feature = "ccitt")]
+fn decode_ccitt_g3_eol(
+    stream: &Stream,
+    width: u32,
+    height: u32,
+    black_is_1: bool,
+) -> Result<DynamicImage, AppError> {
+    let mut pixels = vec![0u8; width as usize * height as usize];
+    let mut written_rows = 0usize;
+
+    let decoded = fax::decoder::decode_g3(
+        stream.content.iter().copied(),
+        |transitions| {
+            if written_rows < height as usize {
+                write_transitions_row(
+                    &mut pixels[written_rows * width as usize..][..width as usize],
+                    transitions,
+                    black_is_1,
+                );
+                written_rows += 1;
+            }
+        },
+    );
+
+    if written_rows < height as usize && decoded.is_none() {
+        return Err(AppError::PdfBuild(
+            "failed to decode CCITT Group 3 image stream".into(),
+        ));
+    }
+
+    image::GrayImage::from_vec(width, height, pixels)
+        .map(DynamicImage::ImageLuma8)
+        .ok_or_else(|| AppError::PdfBuild("CCITT decode produced mismatched buffer".into()))
+}
+
+/// Expand one row of color-transition positions into 8-bit pixels. The
+/// transitions are cumulative positions where the run color changes, starting
+/// white (the T.4/T.6 convention — 1 bits are black in the code tables);
+/// PDF's `BlackIs1 = false` inverts the rendering. Runs past the row width
+/// are truncated, short rows pad white (both per-spec behaviors).
+#[cfg(feature = "ccitt")]
+fn write_transitions_row(row: &mut [u8], transitions: &[u32], black_is_1: bool) {
+    let white_value: u8 = if black_is_1 { 255 } else { 0 };
+    let black_value: u8 = 255 - white_value;
+    let mut cursor = 0usize;
+    let mut color = fax::Color::White;
+    for &position in transitions {
+        let end = (position as usize).min(row.len());
+        let value = if color == fax::Color::Black {
+            black_value
+        } else {
+            white_value
+        };
+        if end > cursor {
+            row[cursor..end].fill(value);
+            cursor = end;
+        }
+        color = !color;
+    }
+    row[cursor..].fill(white_value);
+}
+
+/// Group 3 one-dimensional rows without EOL markers — PDF's default shape
+/// (EndOfLine false). Reads alternating white/black MH run lengths straight
+/// off the bitstream; `EncodedByteAlign` pads each completed row to the byte
+/// boundary.
+#[cfg(feature = "ccitt")]
+fn decode_ccitt_g3_plain(
+    stream: &Stream,
+    width: u32,
+    height: u32,
+    black_is_1: bool,
+    byte_align: bool,
+) -> Result<DynamicImage, AppError> {
+    use fax::BitReader as _;
+
+    let white_value: u8 = if black_is_1 { 255 } else { 0 };
+    let black_value: u8 = 255 - white_value;
+    // fax's code tables need a few bits of lookahead past the final code — a
+    // stream ending exactly at the last row would otherwise fail to decode
+    // its own tail. Trailing zeros are spec-legal fill and never form a valid
+    // code prefix, so genuinely truncated streams still fail cleanly.
+    let mut content = stream.content.clone();
+    content.extend_from_slice(&[0u8; 4]);
+    let mut reader = fax::slice_reader(&content);
+    let mut pixels = vec![0u8; width as usize * height as usize];
+
+    for row in pixels.chunks_mut(width as usize) {
+        let mut color = fax::Color::White;
+        let mut written = 0usize;
+        while written < row.len() {
+            let run = read_markup_run(&mut reader, color).ok_or_else(|| {
+                AppError::PdfBuild("failed to decode CCITT Group 3 run lengths".into())
+            })?;
+            let value = if color == fax::Color::Black {
+                black_value
+            } else {
+                white_value
+            };
+            let end = (written + run as usize).min(row.len());
+            row[written..end].fill(value);
+            written = end;
+            color = !color;
+        }
+
+        if byte_align {
+            let padding = reader.bits_to_byte_boundary();
+            if reader.consume(padding).is_err() {
+                return Err(AppError::PdfBuild(
+                    "CCITT Group 3 stream ended mid-row".into(),
+                ));
+            }
+        }
+    }
+
+    Ok(DynamicImage::ImageLuma8(
+        image::GrayImage::from_vec(width, height, pixels)
+            .ok_or_else(|| AppError::PdfBuild("CCITT decode produced mismatched buffer".into()))?,
+    ))
+}
+
+/// One MH run length: accumulate makeup codes (multiples of 64) until a
+/// terminating code (< 64) lands. `None` on stream exhaustion or an invalid
+/// code — both leave the image undecodable.
+#[cfg(feature = "ccitt")]
+fn read_markup_run(
+    reader: &mut impl fax::BitReader,
+    color: fax::Color,
+) -> Option<u32> {
+    let mut sum: u32 = 0;
+    loop {
+        let markup = match color {
+            fax::Color::Black => fax::maps::black::decode(reader)?,
+            fax::Color::White => fax::maps::white::decode(reader)?,
+        };
+        sum = sum.checked_add(u32::from(markup))?;
+        if markup < 64 {
+            return Some(sum);
+        }
+    }
 }
 
 /// Encode an 8-bit grayscale plane as CCITT Group 4 (ITU T.6). Pixels at or
@@ -1169,12 +1486,14 @@ fn stream_filter_info(stream: &Stream) -> StreamFilterInfo {
         }
     }
 
-    // CCITT input is only decodable in the pure Group-4 shape: the filter
-    // chain must be exactly one CCITTFaxDecode (no flate pre-compression) and
-    // the decode parameters must be K < 0 without byte alignment. Everything
-    // else (G3 one/two-dimensional, aligned rows) stays unsupported.
+    // CCITT input is decodable in the pure G4 shape and the one-dimensional
+    // G3 shapes (see `ccitt_input_shape`): the filter chain must be exactly
+    // one CCITTFaxDecode (no flate pre-compression). Everything else — G3
+    // two-dimensional coding, aligned EOL rows, flate mixes — stays
+    // unsupported.
     #[cfg(feature = "ccitt")]
-    let ccitt_decodable = info.has_ccitt && names.len() == 1 && ccitt_g4_parms(stream).is_some();
+    let ccitt_decodable =
+        info.has_ccitt && names.len() == 1 && ccitt_input_shape(stream).is_some();
     #[cfg(not(feature = "ccitt"))]
     let ccitt_decodable = false;
     if info.has_ccitt && !ccitt_decodable {
@@ -1317,4 +1636,91 @@ mod tests {
         assert_eq!(y, height);
         assert_eq!(decoded.as_raw(), image.as_raw());
     }
+
+    #[test]
+    #[cfg(feature = "ccitt")]
+    fn g3_plain_roundtrip_preserves_bilevel_pixels() {
+        use crate::testutil::{bilevel_scan_image, encode_ccitt_g3_1d};
+
+        // The second case mirrors the integration fixture exactly (full fax
+        // page width; larger runs exercise multi-makeup sequences).
+        for ((width, height, seed), (byte_align, with_eol)) in [
+            ((331u32, 37u32, 11u32), (false, false)),
+            ((331, 37, 11), (true, false)),
+            ((331, 37, 11), (false, true)),
+            ((1728, 1200, 0x1234_5678), (false, false)),
+            ((1728, 1200, 0x1234_5678), (true, false)),
+            ((1728, 1200, 0x1234_5678), (false, true)),
+        ] {
+            let image = bilevel_scan_image(width, height, seed);
+            let encoded = encode_ccitt_g3_1d(&image, byte_align, with_eol);
+            let (width, height) = image.dimensions();
+
+            let stream = Stream::new(
+                dictionary! {
+                    "Type" => "XObject",
+                    "Subtype" => "Image",
+                    "Width" => width as i64,
+                    "Height" => height as i64,
+                    "BitsPerComponent" => 1,
+                    "Filter" => "CCITTFaxDecode",
+                    "DecodeParms" => dictionary! {
+                        "K" => 0,
+                        "Columns" => width as i64,
+                        "Rows" => height as i64,
+                        "BlackIs1" => true,
+                        "EncodedByteAlign" => byte_align,
+                        "EndOfLine" => with_eol,
+                    },
+                },
+                encoded,
+            );
+            let decoded = decode_ccitt_stream(&stream)
+                .unwrap_or_else(|error| panic!("align={byte_align} eol={with_eol}: {error}"));
+            let DynamicImage::ImageLuma8(plane) = decoded else {
+                panic!("CCITT decode must produce a luma plane");
+            };
+            assert_eq!(
+                plane.as_raw(),
+                image.as_raw(),
+                "align={byte_align} eol={with_eol} must round-trip"
+            );
+        }
+    }
+
+    #[test]
+    fn detail_score_separates_flat_from_detailed_planes() {
+        use crate::testutil::{fixture_rgb_image, gradient_rgb_image};
+
+        let flat = DynamicImage::ImageRgb8(gradient_rgb_image(400, 300, FIXTURE_SEED_FOR_TESTS));
+        let detailed = DynamicImage::ImageRgb8(fixture_rgb_image(400, 300));
+
+        let flat_score = plane_detail_score(&flat);
+        let detailed_score = plane_detail_score(&detailed);
+        assert!(flat_score < DETAIL_LOW_SCORE, "gradient is flat: {flat_score}");
+        assert!(
+            detailed_score > DETAIL_HIGH_SCORE,
+            "noisy fixture is detailed: {detailed_score}"
+        );
+    }
+
+    #[test]
+    fn search_round_quality_offsets_and_clamps() {
+        use crate::testutil::{fixture_rgb_image, gradient_rgb_image};
+
+        let flat = DynamicImage::ImageRgb8(gradient_rgb_image(400, 300, FIXTURE_SEED_FOR_TESTS));
+        let detailed = DynamicImage::ImageRgb8(fixture_rgb_image(400, 300));
+
+        assert_eq!(search_round_quality(72, &flat), 60, "flat planes get the penalty");
+        assert_eq!(
+            search_round_quality(72, &detailed),
+            78,
+            "detailed planes get the boost"
+        );
+        // Clamping at both ends of the encoder's quality range.
+        assert_eq!(search_round_quality(15, &flat), 10);
+        assert_eq!(search_round_quality(99, &detailed), 100);
+    }
+
+    const FIXTURE_SEED_FOR_TESTS: u32 = 0x1234_5678;
 }

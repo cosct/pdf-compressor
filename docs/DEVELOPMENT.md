@@ -100,6 +100,8 @@ cargo run -p pdf-core --bin pdf-compressor-cli -- quick <file.pdf> --grayscale  
 | 基准 | `cargo bench -p pdf-core` | 全管线各预设、编码器对比（jpeg-encoder vs image crate）；夹具生成器共享自 `testutil` |
 | 变异测试 | `cargo mutants`（在 `crates/pdf-core` 下，配置 `.cargo/mutants.toml`） | 每周一 CI 自动跑（`.github/workflows/mutants.yml`），报告在 `mutants.out/` |
 | 模糊测试 | `cd crates/pdf-core && cargo +nightly fuzz run pipeline` | 任意字节跑 analyze+compress+目标大小搜索；CI 每次 push 冒烟 60s |
+| 质量门禁 | `cargo test -p pdf-core --lib preset_quality` | 1200×900 噪声夹具（PSNR 最坏情形）逐预设解码比对源平面：conservative ≥ 28 dB、balanced ≥ 25.5、maximum ≥ 22.5，且单调；防"同质量号变糊"回归 |
+| 真实语料快照 | `PDF_COMPRESSOR_QUALITY_CORPUS=<dir> cargo test -p pdf-core --lib real_corpus` | 首跑写 `<dir>/quality-baseline.json`（逐文件逐预设的体积比 + 平均 PSNR），后续跑对基线回归告警（体积比 +5% 或 PSNR −1dB）；未设变量时 no-op，CI 保持离线确定性 |
 
 夹具共享：`crates/pdf-core/src/testutil.rs` 提供确定性图片/JPEG 生成器
 （`deterministic_rgb_image`/`gradient_rgb_image`/`fixture_rgb_image`/`encode_jpeg`），由 `testutil` feature
@@ -115,11 +117,16 @@ cargo run -p pdf-core --bin pdf-compressor-cli -- quick <file.pdf> --grayscale  
 - **SkipPolicy**（`encode.rs`）：小流跳过阈值是文档级策略——图片对象数 ≥ 24 或显式
   灰度/G4 双级请求时解除（降到 6KB tiny 下限）。分析器的预估经 `image_is_actionable` 镜像同一
   套启发式，两边必须同步改，否则预估重新失真。
-- **CCITT Group 4**（`encode.rs`，feature `ccitt` 默认开启）：输出侧按“近双级”判定
-  （midtone 占比 ≤ 5%，`NEAR_BILEVEL_MIDTONE_FRACTION`）决定 JPEG 还是 G4，连续调图永远走
-  JPEG；输入侧只解码纯 G4 形状（单一 `CCITTFaxDecode` 过滤器 + `/DecodeParms` K<0 + 无
-  `EncodedByteAlign`），G3（K≥0）与 flate 混合链保持 skip——判定收口在 `stream_filter_info`
-  的 `ccitt_decodable`，分析器自动跟随。目标大小搜索中 G4 无质量旋钮，产物按尺寸 memo 于
+- **CCITT 输入解码**（`encode.rs`，feature `ccitt` 默认开启）：输入侧经 `ccitt_input_shape`
+  收口两类可解码形状——纯 G4（K<0、无 `EncodedByteAlign`）与一维 G3（K=0）。G3 细分两路：
+  `EndOfLine=true` 走 fax 自带 `decode_g3`（fill/EOL/RTC aware，要求 `!EncodedByteAlign`）；
+  PDF 默认的无 EOL 形态走本地 1D MH 读码器（`decode_ccitt_g3_plain`，用 fax 公开的
+  `maps::white/black` 码表 + `BitReader`，支持 `EncodedByteAlign` 逐行对齐）。**尾部先行位坑**：
+  fax 的码表查找需要越过最后一个码的若干先行位，流恰好结束在最后一行时必须先在副本尾部补
+  4 个零字节再解（零序列不是合法码前缀，截断流仍干净失败）。G3 二维（K>0）、flate 混合链、
+  EOL+对齐组合保持 skip——判定收口在 `stream_filter_info` 的 `ccitt_decodable`，分析器自动跟随。
+  输出侧按“近双级”判定（midtone 占比 ≤ 5%，`NEAR_BILEVEL_MIDTONE_FRACTION`）决定 JPEG 还是
+  G4，连续调图永远走 JPEG。目标大小搜索中 G4 无质量旋钮，产物按尺寸 memo 于
   `ImageSearchCache::bilevel_product`。**JBIG2 门禁结论（2026-08，暂不引入）**：
   Rust 生态两个候选均非直接可用——`jbig2enc-rust` 声称 MIT OR Apache-2.0，但默认开启的
   `symboldict` 特性含改编自 djvulibre 的代码（GPL 传染风险）、仓库无独立 LICENSE 文件、
@@ -127,6 +134,12 @@ cargo run -p pdf-core --bin pdf-compressor-cli -- quick <file.pdf> --grayscale  
   自称 reimplementation，但算法源自同一 AGPL 原版，衍生关系未经验证。本项目以 MIT 分发
   二进制，在出现可验证清洁来源的实现前保持 G4 唯一双级出口；如需 JBIG2 再按
   T.88 规范自研 generic-region 编码器（无符号字典，收益约 10-25%，约 2-3 周）另立决策。
+- **目标大小搜索的逐图质量分配**（`encode.rs`）：搜索轮内（`search_cache.is_some()`）按解码
+  后平面的细节分层给质量偏移——平面细节分（`plane_detail_score`，按 4 像素步长采样的平均
+  luma 梯度）< 8 视为平坦（q−12），> 25 视为高细节（q+6），夹在 [10,100]。平坦内容低质量
+  几乎无感且省字节，预算花在细节图上；非搜索模式严格用用户设定的 q。偏移是（流,边长,灰度）
+  的确定性纯函数，探测估计与物化编码保持字节一致（`target_size_search_produces_reproducible_output`
+  钉死这一点）。
 - **灰度/G4 设置链路**：`grayscale: bool` + `bilevel_codec: BilevelCodec`（"jpeg"/"ccitt-g4"
   字符串上 IPC 线格式）；GUI 的“色彩模式”三态选择在 `CompressionSettingsPanel` 里映射成这对
   字段（黑白 = grayscale+G4）。CLI 为 `--grayscale` / `--bilevel g4`（后者已入
@@ -147,10 +160,13 @@ cargo run -p pdf-core --bin pdf-compressor-cli -- quick <file.pdf> --grayscale  
   兜底取“estimate 最小的探测参数”。**中间探测轮的 materialize 禁止 renumber**——
   `save_and_build_response_with_renumber(…, false)`：renumber 会使搜索条目持有的
   object id 全部失效，后续轮（或最优轮恢复）会在陈旧 id 上插入流，产出内容错乱的文件。
-- **加密守卫**（`pdf/mod.rs::ensure_not_encrypted`）：lopdf 加载时空密码解密成功的
-  文档（仅 owner 密码）trailer 已无 `/Encrypt`、状态记于 `Document::encryption_state`；
-  认证失败的（真用户密码/DRM）对象图未解析、页数为 0。守卫据此放行前者（清状态 +
-  双端通知）并拒绝后者。
+- **加密守卫与密码支持**（`pdf/mod.rs`）：三个入口都接受 `password: Option<&str>`
+  （`load_document` 走 lopdf 的 `load_with_password`）。空密码自动解锁的 owner-only 文档
+  放行并通知（输出为明文）；未给密码的用户密码文档报 `PasswordRequired`
+  （`error.passwordRequired`），给了但错误报 `WrongPassword`（`error.wrongPassword`——lopdf
+  加载期直接 Err `InvalidPassword`，在 `load_document` 映射）。GUI 在选中任务的错误为这两
+  个码时弹 `PasswordPromptDialog`，提交后带密码重跑分析（密码仅会话内存，永不进持久化队
+  列）；CLI 为 `--password`（quick 模式一个密码作用于整批，注意 shell 历史可能记录）。
 - **不写更大输出**（`compressor.rs::save_and_build_response_with_renumber`）：先在内存
   序列化再比较原件，未胜出时不落盘、`output_path` 置空（前端据此禁用打开/显示），
   并附 `compress.warning.outputNotSmaller` 通知。
@@ -230,6 +246,29 @@ pnpm run tauri:arch   # 安装包 + Arch zst 包（release/bundle/archlinux/，s
 - Linux（Arch）：AUR 源码包在 `packaging/archlinux/`，PKGBUILD 走与 deb/appimage
   相同的 `tauri build --no-bundle` 管线（另编 headless CLI），不会与 bundle 目标漂移。
 - Release 流程见 `.github/workflows/release.yml`；产物命名与标识符见 README「Release metadata」。
+
+### 文件管理器右键集成（三平台）
+
+| 平台 | 机制 | 位置 |
+| --- | --- | --- |
+| KDE Dolphin | KIO ServiceMenu（系统级，随包安装） | `packaging/servicemenus/` |
+| GNOME Nautilus / Nemo | Scripts 菜单（用户级，`packaging/nautilus/install.sh` 安装；Arch 包把脚本放在 `/usr/share/pdf-compressor/nautilus/`） | `packaging/nautilus/` |
+| Windows 资源管理器 | NSIS 安装钩子在安装时写 `SystemFileAssociations\.pdf\shell` 注册表子菜单，卸载时删除；调用随包分发的 CLI | `packaging/windows/context-menu.nsh` |
+| macOS 访达 | Quick Action（用户级，`packaging/macos/quick-action/install.sh` 安装到 `~/Library/Services`） | `packaging/macos/quick-action/` |
+
+Windows/macOS 的 CLI 经 `tauri.release*.conf.json` 的 `resources` 随应用分发（release CI
+先构建再复制进 `src-tauri/binaries/`；本地 `tauri build` 不要求该文件存在，故资源声明放在
+release overlay 而非主配置）。
+
+### 应用内更新（plugin:updater）
+
+- 公钥固化在 `tauri.conf.json` 的 `plugins.updater.pubkey`；**私钥不在仓库**——本机生成于
+  `~/.tauri/pdf-compressor-updater.key`（minisign 格式，无口令），**必须备份**，丢失即永远
+  无法再签发更新。发布时 CI 从 GitHub secret `TAURI_SIGNING_PRIVATE_KEY`（及可选的
+  `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`）读取并签名，`latest.json` 由 tauri-action 附着到
+  release。前端入口在设置页 `UpdaterPanel`（手动检查、确认后下载、重启应用）。
+- 生成新密钥对：`pnpm exec tauri signer generate -w ~/.tauri/pdf-compressor-updater.key`
+  （换钥 = 所有旧版本收不到新更新，慎重）。
 
 ## 7. 开发常见问题
 

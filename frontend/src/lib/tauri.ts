@@ -75,10 +75,11 @@ function createProgressChannel(onProgress?: (update: ProgressUpdate) => void) {
 
 export async function analyzePdf(
   path: string,
+  password: string | null | undefined,
   onProgress?: (update: ProgressUpdate) => void,
 ): Promise<AnalysisResponseWire> {
   const channel = createProgressChannel(onProgress)
-  return unwrap(commands.analyzePdf(path, path, channel))
+  return unwrap(commands.analyzePdf(path, path, password ?? null, channel))
 }
 
 export async function compressPdf(
@@ -86,6 +87,7 @@ export async function compressPdf(
   settings: CompressionSettings,
   taskId: string,
   onProgress?: (update: ProgressUpdate) => void,
+  password?: string | null,
 ): Promise<CompressionResponseWire> {
   const maxImageSizePx = calculateMaxImageSizePx(
     settings.maxImageSizePercent,
@@ -103,6 +105,7 @@ export async function compressPdf(
         path,
         inputPath: path,
         taskId,
+        password: password?.trim() ? password.trim() : null,
         settings: {
           preset: settings.preset,
           imageQuality: settings.imageQuality,
@@ -140,6 +143,7 @@ export async function compressScannedPdf(
   settings: CompressionSettings,
   taskId: string,
   onProgress?: (update: ProgressUpdate) => void,
+  password?: string | null,
 ): Promise<CompressionResponseWire> {
   const maxImageSizePx = calculateMaxImageSizePx(
     settings.maxImageSizePercent,
@@ -157,6 +161,7 @@ export async function compressScannedPdf(
         path,
         inputPath: path,
         taskId,
+        password: password?.trim() ? password.trim() : null,
         settings: {
           preset: settings.preset,
           imageQuality: settings.imageQuality,
@@ -272,6 +277,82 @@ export async function saveQuickProfile(profile: QuickProfilePayload): Promise<Qu
   }
 
   return unwrap(commands.saveQuickProfile(profile))
+}
+
+// ---------------------------------------------------------------------------
+// App update checks (plugin:updater + plugin:process)
+// ---------------------------------------------------------------------------
+
+/** Version metadata for an available update. */
+export type AppUpdateInfo = {
+  version: string
+  currentVersion: string
+  notes: string | null
+}
+
+/** Result of an update check: either an available update or the current version. */
+export type AppUpdateCheck =
+  | { available: true; info: AppUpdateInfo }
+  | { available: false; currentVersion: string }
+
+let pendingUpdate: import('@tauri-apps/plugin-updater').Update | null = null
+
+export async function checkForAppUpdate(): Promise<AppUpdateCheck> {
+  if (!hasNativeCommands()) {
+    throw new Error('update checks require the desktop app')
+  }
+  const [{ check }, { getVersion }] = await Promise.all([
+    import('@tauri-apps/plugin-updater'),
+    import('@tauri-apps/api/app'),
+  ])
+  const [update, currentVersion] = await Promise.all([check(), getVersion()])
+  pendingUpdate = update
+  return update
+    ? {
+        available: true,
+        info: {
+          version: update.version,
+          currentVersion,
+          notes: update.body ?? null,
+        },
+      }
+    : { available: false, currentVersion }
+}
+
+export async function downloadAndInstallAppUpdate(
+  onProgress?: (downloadedBytes: number, totalBytes: number | undefined) => void,
+): Promise<void> {
+  const update = pendingUpdate
+  if (!update) {
+    throw new Error('no update pending — run a check first')
+  }
+
+  let total: number | undefined
+  let downloaded = 0
+  await update.downloadAndInstall((event) => {
+    switch (event.event) {
+      case 'Started':
+        total = event.data.contentLength
+        onProgress?.(0, total)
+        break
+      case 'Progress':
+        downloaded += event.data.chunkLength
+        onProgress?.(downloaded, total)
+        break
+      case 'Finished':
+        onProgress?.(total ?? downloaded, total)
+        break
+    }
+  })
+  pendingUpdate = null
+}
+
+export async function relaunchApp(): Promise<void> {
+  if (!hasNativeCommands()) {
+    return
+  }
+  const { relaunch } = await import('@tauri-apps/plugin-process')
+  await relaunch()
 }
 
 // ---------------------------------------------------------------------------

@@ -26,11 +26,12 @@ fuzz_target!(|data: &[u8]| {
     }
     let path_str = path.to_string_lossy().into_owned();
 
-    let _ = analyze_pdf_with_progress(&path_str, |_| {});
+    let _ = analyze_pdf_with_progress(&path_str, None, |_| {});
 
     let settings = CompressionSettings::from_sources(None, CompressionSettingsOverrides::default());
     let _ = compress_pdf_with_progress(
         &path_str,
+        None,
         settings.clone(),
         Arc::new(AtomicBool::new(false)),
         |_| {},
@@ -41,6 +42,7 @@ fuzz_target!(|data: &[u8]| {
     // The modest budget keeps valid inputs inside a few probe rounds.
     let _ = compress_pdf_to_target_size(
         &path_str,
+        None,
         64 * 1024,
         settings,
         Arc::new(AtomicBool::new(false)),

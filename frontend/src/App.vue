@@ -8,13 +8,15 @@ import AppearanceSettingsPanel from './components/AppearanceSettingsPanel.vue'
 import CompressionSettingsPanel from './components/CompressionSettingsPanel.vue'
 import ErrorToastViewport from './components/ErrorToastViewport.vue'
 import OutputDirPanel from './components/OutputDirPanel.vue'
+import PasswordPromptDialog from './components/PasswordPromptDialog.vue'
 import PdfUploadPanel from './components/PdfUploadPanel.vue'
 import PresetBar from './components/PresetBar.vue'
 import QuickCompressPanel from './components/QuickCompressPanel.vue'
+import UpdaterPanel from './components/UpdaterPanel.vue'
 import { createNotice } from './composables/backendMessages'
 import { usePdfCompressor } from './composables/usePdfCompressor'
 import { listenForOpenPdf } from './lib/tauri'
-import type { NoticeItem } from './types/pdf'
+import { isWrongPasswordError, type NoticeItem } from './types/pdf'
 import { formatBytes, formatPercent } from './utils/format'
 
 const {
@@ -32,6 +34,8 @@ const {
   canCompress,
   canCancelCompression,
   pendingQueueCount,
+  selectedJobNeedsPassword,
+  submitJobPassword,
   pushErrorToast,
   updateSettings,
   applySettingsToAll,
@@ -178,6 +182,36 @@ const queueItems = computed(() =>
     }),
 )
 
+// The retry prompt keys off the selected job's password error; the selected
+// job object itself may vanish (row deleted) while the dialog is open.
+// Dismissing hides the prompt for the current error only — a new password
+// failure re-opens it.
+const dismissedPasswordJobId = ref<string | null>(null)
+const passwordPromptJob = computed(() => {
+  if (!selectedJobNeedsPassword.value) {
+    return null
+  }
+  const job = jobs.value.find((item) => item.id === selectedJobId.value) ?? null
+  return job && job.id !== dismissedPasswordJobId.value ? job : null
+})
+const passwordPromptWrong = computed(() =>
+  isWrongPasswordError(passwordPromptJob.value?.error ?? null),
+)
+
+function handleSubmitPassword(password: string) {
+  const job = passwordPromptJob.value
+  if (job) {
+    dismissedPasswordJobId.value = null
+    submitJobPassword(job.id, password)
+  }
+}
+
+function handleDismissPasswordPrompt() {
+  if (passwordPromptJob.value) {
+    dismissedPasswordJobId.value = passwordPromptJob.value.id
+  }
+}
+
 function handlePresetSaved() {
   pushErrorToast(
     createNotice(
@@ -226,6 +260,13 @@ onBeforeUnmount(() => {
       @dismiss="dismissErrorToast"
       @pause="pauseErrorToast"
       @resume="resumeErrorToast"
+    />
+    <PasswordPromptDialog
+      :visible="passwordPromptJob !== null"
+      :file-name="passwordPromptJob?.fileName ?? ''"
+      :wrong-password="passwordPromptWrong"
+      @submit="handleSubmitPassword"
+      @dismiss="handleDismissPasswordPrompt"
     />
 
     <main v-if="currentView === 'main'" class="shell-content">
@@ -319,6 +360,9 @@ onBeforeUnmount(() => {
                 @saved="handleQuickProfileSaved"
                 @error="reportError"
               />
+            </div>
+            <div class="settings-card fd-card">
+              <UpdaterPanel />
             </div>
           </div>
         </div>

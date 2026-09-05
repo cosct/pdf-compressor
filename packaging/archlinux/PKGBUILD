@@ -62,4 +62,13 @@ package() {
   install -Dm644 packaging/pdf-compressor.desktop "${pkgdir}/usr/share/applications/pdf-compressor.desktop"
   # KDE Dolphin right-click integration for PDFs (headless quick mode).
   install -Dm644 packaging/servicemenus/pdf-compressor.desktop "${pkgdir}/usr/share/kio/servicemenus/pdf-compressor.desktop"
+
+  # GNOME Nautilus / Nemo "Scripts" menu entries. The Scripts folder is
+  # per-user by design — copy these into ~/.local/share/nautilus/scripts/
+  # (run packaging/nautilus/install.sh from a source checkout for the
+  # automatic variant).
+  install -dm755 "${pkgdir}/usr/share/${pkgname}/nautilus"
+  for _script in packaging/nautilus/compress-*.sh; do
+    install -m755 "${_script}" "${pkgdir}/usr/share/${pkgname}/nautilus/"
+  done
 }

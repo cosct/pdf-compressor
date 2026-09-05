@@ -131,5 +131,27 @@ export interface PdfQueueJob {
   /** Settings came from the persisted queue — the first analysis pass after
    *  a restart must not overwrite them with the fresh recommendation. */
   settingsRestored: boolean
+  /** Open password for encrypted PDFs, entered per job via the retry prompt.
+   *  Session-only by design — never written to the persisted queue. */
+  password: string | null
   error: NoticeItem | null
+}
+
+/** Backend error codes that mean "this file needs (a better) password". */
+export const PASSWORD_ERROR_CODES = ['error.passwordRequired', 'error.wrongPassword'] as const
+
+export function isPasswordError(error: NoticeItem | null): boolean {
+  if (error === null) {
+    return false
+  }
+  // Backend codes live as prefixes of the notice id (`code:{values}`); the
+  // notice itself does not carry the code as a dedicated field.
+  return PASSWORD_ERROR_CODES.some((code) => error.id === code || error.id.startsWith(`${code}:`))
+}
+
+export function isWrongPasswordError(error: NoticeItem | null): boolean {
+  return (
+    error !== null &&
+    (error.id === 'error.wrongPassword' || error.id.startsWith('error.wrongPassword:'))
+  )
 }

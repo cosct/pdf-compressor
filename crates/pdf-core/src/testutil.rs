@@ -20,6 +20,33 @@ pub const TEST_FONT_GID_D: u16 = 22;
 pub const TEST_FONT_GID_F: u16 = 24;
 pub const TEST_FONT_GID_P: u16 = 34;
 
+/// Peak signal-to-noise ratio (dB) between two same-sized images on the luma
+/// channel. `None` when the dimensions differ; `INFINITY` for identical
+/// planes. The quality-regression gates compare a fixture's source plane
+/// against the decoded output of a compression run.
+pub fn luma_psnr_db(left: &DynamicImage, right: &DynamicImage) -> Option<f64> {
+    let left = left.to_luma8();
+    let right = right.to_luma8();
+    if left.dimensions() != right.dimensions() || left.is_empty() {
+        return None;
+    }
+
+    let squared_error: f64 = left
+        .as_raw()
+        .iter()
+        .zip(right.as_raw())
+        .map(|(&a, &b)| {
+            let difference = i32::from(a) - i32::from(b);
+            f64::from(difference * difference)
+        })
+        .sum();
+    let mean_squared_error = squared_error / left.as_raw().len() as f64;
+    if mean_squared_error == 0.0 {
+        return Some(f64::INFINITY);
+    }
+    Some(10.0 * (255.0f64 * 255.0 / mean_squared_error).log10())
+}
+
 /// One page drawing "PDF" (gids 34/22/24) through a Type0/CIDFontType2 font
 /// with the full 77-glyph test font embedded as FontFile2 — the font
 /// subsetting fixture.
@@ -264,3 +291,79 @@ pub fn encode_ccitt_g4(image: &GrayImage) -> Vec<u8> {
     };
     writer.finish()
 }
+
+/// One MH run length (T.4 one-dimensional): makeup codes for every full
+/// 64-block (capped at 2560), then the terminating code for the remainder.
+#[cfg(feature = "ccitt")]
+fn write_g3_run(writer: &mut fax::VecWriter, mut run: u16, color: fax::Color) {
+    use fax::BitWriter as _;
+
+    let code = |value: u16| {
+        match color {
+            fax::Color::Black => fax::maps::black::encode(value),
+            fax::Color::White => fax::maps::white::encode(value),
+        }
+        .expect("valid MH run code")
+    };
+
+    while run >= 64 {
+        let makeup = run / 64 * 64;
+        let makeup = makeup.min(2560);
+        let _ = writer.write(code(makeup));
+        run -= makeup;
+    }
+    let _ = writer.write(code(run));
+}
+
+/// Encode a grayscale image as one-dimensional Group 3 MH (K = 0) without EOL
+/// markers — PDF's default `/CCITTFaxDecode` shape. Used to build G3 *input*
+/// fixtures; luma >= 128 renders white, matching `BlackIs1: true`.
+#[cfg(feature = "ccitt")]
+pub fn encode_ccitt_g3_1d(image: &GrayImage, byte_align: bool, with_eol: bool) -> Vec<u8> {
+    use fax::BitWriter as _;
+
+    let (width, _) = image.dimensions();
+    let mut writer = fax::VecWriter::new();
+
+    let eol = fax::maps::EOL;
+    if with_eol {
+        // An EOL before the first row, as a TIFF-style G3 file starts.
+        let _ = writer.write(eol);
+    }
+
+    for row in image.as_raw().chunks(width as usize) {
+        // Rows are alternating white/black runs and must start with a white
+        // code — a leading black pixel needs a zero-length white run first.
+        let mut color = fax::Color::White;
+        let mut index = 0usize;
+        if row.first().is_some_and(|&luma| luma < 128) {
+            write_g3_run(&mut writer, 0, fax::Color::White);
+            color = fax::Color::Black;
+        }
+        while index < row.len() {
+            let black = row[index] < 128;
+            let start = index;
+            while index < row.len() && (row[index] < 128) == black {
+                index += 1;
+            }
+            write_g3_run(&mut writer, (index - start) as u16, color);
+            color = !color;
+        }
+        if with_eol {
+            let _ = writer.write(eol);
+        } else if byte_align {
+            writer.pad();
+        }
+    }
+
+    if with_eol {
+        // RTC: six consecutive EOLs terminate the coded image.
+        for _ in 0..6 {
+            let _ = writer.write(eol);
+        }
+    }
+
+    // `finish` pads the trailing partial byte with zeros — legal in both shapes.
+    writer.finish()
+}
+

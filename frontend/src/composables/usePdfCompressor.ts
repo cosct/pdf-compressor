@@ -33,6 +33,7 @@ import type {
   QueueItemStatus,
   WorkflowState,
 } from '../types/pdf'
+import { isPasswordError } from '../types/pdf'
 import {
   clampImageQuality,
   clampMaxImageSizePercent,
@@ -153,6 +154,7 @@ function createJob(path: string): PdfQueueJob {
     recommendedSettings: { ...defaults },
     useRecommendedSettings: true,
     settingsRestored: false,
+    password: null,
     error: null,
   }
 }
@@ -282,6 +284,10 @@ export function usePdfCompressor() {
       (allCompressionTargetIds.value.length > 0 || selectedCompressionTargetIds.value.length > 0),
   )
   const canCancelCompression = computed(() => compressionRunning.value)
+  // The selected job is blocked on a password — drives the retry prompt.
+  const selectedJobNeedsPassword = computed(
+    () => selectedJob.value !== null && isPasswordError(selectedJob.value.error),
+  )
 
   function findJob(jobId: string): PdfQueueJob | undefined {
     return jobs.value.find((job) => job.id === jobId)
@@ -514,7 +520,7 @@ export function usePdfCompressor() {
     applyProgress(job, { phase: 'analyzing', percent: 0 })
 
     try {
-      const response = await analyzePdf(requestedPath, (update) => {
+      const response = await analyzePdf(requestedPath, job.password, (update) => {
         if (job.sourcePath === requestedPath) {
           applyProgress(job, update)
         }
@@ -581,11 +587,17 @@ export function usePdfCompressor() {
           ),
         )
       }
-      const response = await runCompression(requestedPath, job.settings, taskId, (update) => {
-        if (job.sourcePath === requestedPath && isActiveCompressionTask(job.id, taskId)) {
-          applyProgress(job, update)
-        }
-      })
+      const response = await runCompression(
+        requestedPath,
+        job.settings,
+        taskId,
+        (update) => {
+          if (job.sourcePath === requestedPath && isActiveCompressionTask(job.id, taskId)) {
+            applyProgress(job, update)
+          }
+        },
+        job.password,
+      )
 
       if (job.sourcePath !== requestedPath || !isActiveCompressionTask(job.id, taskId)) {
         return
@@ -676,6 +688,23 @@ export function usePdfCompressor() {
 
       cancelledCompressionRuns.delete(runId)
     }
+  }
+
+  /** Retry a password-blocked job: store the password (session-only), clear
+   *  the error state, and re-run the analysis — success marks the job ready
+   *  for compression, another password failure re-opens the prompt. */
+  function submitJobPassword(jobId: string, password: string) {
+    const job = findJob(jobId)
+    if (!job || compressionRunning.value) {
+      return
+    }
+
+    job.password = password.trim() || null
+    job.error = null
+    job.result = null
+    job.progress = { phase: 'queued', percent: 0 }
+    setJobStatus(job, 'selected')
+    queueJobAnalysis(jobId)
   }
 
   async function compressCurrentPdf() {
@@ -885,6 +914,8 @@ export function usePdfCompressor() {
     canCompress,
     canCancelCompression,
     pendingQueueCount,
+    selectedJobNeedsPassword,
+    submitJobPassword,
     pushErrorToast,
     updateSettings,
     applySettingsToAll,

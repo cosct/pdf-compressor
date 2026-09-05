@@ -523,3 +523,66 @@ describe('queue restore', () => {
     expect(composable.jobs.value[0].useRecommendedSettings).toBe(true)
   })
 })
+
+describe('password retry', () => {
+  function passwordError(code: 'error.passwordRequired' | 'error.wrongPassword') {
+    return Object.assign(new Error('locked'), {
+      code,
+      fallback: 'needs a password',
+    })
+  }
+
+  it('flags a password-blocked job, retries analysis with the password, and passes it to compression', async () => {
+    mockedAnalyze.mockRejectedValueOnce(passwordError('error.passwordRequired'))
+    const composable = usePdfCompressor()
+    composable.addSourcePaths(['/tmp/locked.pdf'])
+
+    await vi.waitFor(() => {
+      expect(composable.jobs.value[0].status).toBe('error')
+    })
+    expect(composable.selectedJobNeedsPassword.value).toBe(true)
+    // The password never enters the persisted queue (other tests' debounced
+    // writes may share the storage stub, so assert on absence, not shape).
+    expect(window.localStorage.getItem('pdf-compressor-queue')).not.toContain('open-secret')
+
+    mockedAnalyze.mockResolvedValue(analysisResponse())
+    composable.submitJobPassword(composable.jobs.value[0].id, 'open-secret')
+
+    await vi.waitFor(() => {
+      expect(composable.jobs.value[0].status).toBe('ready')
+    })
+    expect(composable.selectedJobNeedsPassword.value).toBe(false)
+    expect(mockedAnalyze).toHaveBeenLastCalledWith(
+      '/tmp/locked.pdf',
+      'open-secret',
+      expect.any(Function),
+    )
+
+    mockedCompress.mockResolvedValue(compressionResponse())
+    await composable.compressCurrentPdf()
+    expect(mockedCompress).toHaveBeenCalledWith(
+      '/tmp/locked.pdf',
+      expect.anything(),
+      expect.any(String),
+      expect.any(Function),
+      'open-secret',
+    )
+  })
+
+  it('re-flags the job when the supplied password is wrong', async () => {
+    mockedAnalyze.mockRejectedValueOnce(passwordError('error.passwordRequired'))
+    const composable = usePdfCompressor()
+    composable.addSourcePaths(['/tmp/locked.pdf'])
+    await vi.waitFor(() => {
+      expect(composable.jobs.value[0].status).toBe('error')
+    })
+
+    mockedAnalyze.mockRejectedValueOnce(passwordError('error.wrongPassword'))
+    composable.submitJobPassword(composable.jobs.value[0].id, 'not-it')
+
+    await vi.waitFor(() => {
+      expect(composable.jobs.value[0].error?.id.startsWith('error.wrongPassword')).toBe(true)
+    })
+    expect(composable.selectedJobNeedsPassword.value).toBe(true)
+  })
+})

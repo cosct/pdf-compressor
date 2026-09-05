@@ -20,8 +20,14 @@ pub enum AppError {
     #[error("The selected file is not a PDF: {0}")]
     InvalidPdfPath(PathBuf),
 
-    #[error("The PDF is password-protected or DRM-encrypted; encrypted documents are not supported")]
+    #[error("The PDF is DRM-encrypted with an unsupported security handler; it cannot be processed")]
     Encrypted,
+
+    #[error("The PDF requires an open password; supply one to process the file")]
+    PasswordRequired,
+
+    #[error("The supplied password did not unlock the PDF")]
+    WrongPassword,
 
     #[error("Image processing failed: {0}")]
     Image(#[from] ImageError),
@@ -70,9 +76,20 @@ impl From<AppError> for AppErrorPayload {
             AppError::Encrypted => Self {
                 code: "error.encryptedPdf".to_string(),
                 values: BTreeMap::new(),
-                fallback: "The PDF is password-protected or DRM-encrypted; encrypted \
-                           documents are not supported"
+                fallback: "The PDF is DRM-encrypted with an unsupported security handler; \
+                           it cannot be processed"
                     .to_string(),
+            },
+            AppError::PasswordRequired => Self {
+                code: "error.passwordRequired".to_string(),
+                values: BTreeMap::new(),
+                fallback: "The PDF requires an open password; supply one to process the file."
+                    .to_string(),
+            },
+            AppError::WrongPassword => Self {
+                code: "error.wrongPassword".to_string(),
+                values: BTreeMap::new(),
+                fallback: "The supplied password did not unlock the PDF.".to_string(),
             },
             AppError::Image(error) => Self {
                 code: "error.image".to_string(),

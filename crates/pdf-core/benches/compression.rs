@@ -105,6 +105,7 @@ fn bench_compression(c: &mut Criterion) {
                 };
                 let response = compress_pdf_with_progress(
                     black_box(&fixture_path),
+                    black_box(None),
                     black_box(settings),
                     Arc::new(AtomicBool::new(false)),
                     |_| {},
