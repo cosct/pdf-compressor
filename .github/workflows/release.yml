@@ -38,7 +38,10 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.os == 'macos-latest' && 'universal-apple-darwin' || '' }}
+          # `universal-apple-darwin` is a tauri-action convention, not a rustup
+          # target — install the two real slices instead (tauri build lipo's
+          # them for `--target universal-apple-darwin`).
+          targets: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
       - name: Install Linux build dependencies
         if: matrix.os == 'ubuntu-22.04'
