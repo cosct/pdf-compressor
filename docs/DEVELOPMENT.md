@@ -196,9 +196,14 @@ cargo run -p pdf-core --bin pdf-compressor-cli -- quick <file.pdf> --grayscale  
   `rebuild_color_space` 对 Cmyk 恒 None，Indexed 的 CMYK 基同理）。带 `/Decode`
   映射数组的 CMYK（名字路径与解析路径都查）保持 skip：映射会重释采样值，朴素
   转换会静默偏色。PDF 原始/JPX 的 CMYK 采样不反转（0=无墨），与 DCT 流内
-  Adobe 约定的反相 CMYK 不同——后者由 JPEG 解码器先归一。印刷级色彩保真需要
-  真 CMS（读 ICC profile 做意图转换），超出重编码压缩的范围，属已知取舍；
-  保真度由 PSNR 门禁钉住（`CMYK_TRANSCODE_PSNR_FLOOR_DB`，梯度夹具实测 ≈46dB）。
+  Adobe 约定的反相 CMYK 不同——后者由 JPEG 解码器（zune-jpeg）先归一。
+  **色彩保真的已知限制（2026-09 实测）**：朴素减色公式与主流渲染器的 CMS
+  解释存在系统性偏差——以 poppler 为基准，规范 Adobe YCCK 夹具在 conservative
+  档下压缩前后渲染差 ≈7.6 dB（质量档不敏感 → 模型差异而非压缩损失；暗部与
+  饱和色偏差最大）。`CMYK_TRANSCODE_PSNR_FLOOR_DB`（≈46dB）只钉"转换自洽性"
+  （对照同一公式的参考平面），**不能**证明与渲染器一致；真保真需 lcms2 级
+  CMS 转换（见 0.7.0 路线）。DCT CMYK 的朴素转换是 0.3 起的既有行为，0.6.0
+  把它扩展到了 raw/JPX 路径。
 - **JPX（JPEG 2000）解码**（`jpx.rs`，feature `jpx` **默认关**，保持默认构建纯
   Rust；桌面 release 与 AUR 包开启，src-tauri 经 `--features jpx` 转发）：走
   `jpeg2k` crate（0.10，MIT/Apache）→ `openjpeg-sys` 1.0.x（BSD-2）——**vendored
@@ -326,3 +331,62 @@ release overlay 而非主配置）。
 - **目标大小模式未达标**：引擎最多尝试 12 轮（`MAX_ATTEMPTS`），产出“当前可达的最小结果”并返回
   `compress.warning.targetSizeMissed` 提示；前端以警告 toast + 状态卡 notes 呈现。
 - **`cargo bench` 名字冲突**：基准每轮使用独立临时目录，避免 100 次重名上限。
+
+## 8. 版本路线（0.7.0 评估，2026-09）
+
+0.6.0 收口范围：JPX 解码、CMYK 三路径、搜索缓存淘汰与内存护栏、2GiB 友好报错、
+CFF/Type1C 字体子集化。0.7.0 方向按优先级评估如下（P0 有实测证据支撑）。
+
+### P0：CMYK 色彩保真（正确性续接 0.6.0）
+
+- **实测问题**（见上文 CMYK 段）：朴素减色公式与渲染器 CMS 的系统偏差
+  ≈7-9 dB（poppler 基准、质量档不敏感）。影响 0.6.0 的 raw/JPX CMYK 与
+  0.3 起的 DCT CMYK。
+- **两步走**：
+  1. **0.6.0 发布前决策**：`cmyk_conversion` opt-in 开关（默认关 = CMYK 保持
+     原样跳过，回到 0.5 行为；开关覆盖 raw/Indexed/JPX-CMYK，DCT 既有行为
+     可一并纳入）。这是最初路线图预留的决策点，现在有了支持"opt-in"的实证。
+  2. **0.7.0 主体**：lcms2 真转换——`lcms2` crate（kornelski 安全封装，
+     Apache-2.0/MIT，追踪 LCMS 2.19.x；`lcms2-sys` vendored C，同 jpx 的
+     feature 门控模式，默认关保持纯 Rust）。无 profile 用内置默认
+     CMYK→sRGB，有 ICC 用图像自带 profile；以 poppler/PDFium 渲染对比
+     校准目标 profile；渲染比对门禁并入 corpus 快照。
+- 验收：规范 Adobe YCCK/CMYK 夹具上，压缩前后 poppler 渲染差 ≥25 dB
+  （当前 ≈7.6 dB）。
+
+### P1：JBIG2 输入解码（覆盖面收官）
+
+- 生态已就绪（2026 年新出）：**hayro-jbig2**（Apache-2.0 OR MIT，纯 Rust，
+  1.7M 下载——hayro PDF 渲染器同源，`image` feature 直接出位图；edition
+  2024 → 需 rustc 1.85+，本仓库 MSRV 1.88 兼容；**纯 Rust 无需 feature 门禁**，
+  不像 jpx 需要 C 工具链）。备选 justbig2（MIT/Apache，no_std，较新较小）。
+- 集成照 CCITT/JPX 形状门禁模式：PDF 侧需解析 `/JBIG2Globals` 全局段流
+  （文档级上下文，走 `prepare_document` 的 colorspace 同款预解析）、区分
+  内联符号字典与引用、随机接入段表；解码后平面走既有 G4/JPEG 出口。
+- **输出侧维持 JBIG2 门禁结论**（2026-08 备忘录）：jbig2enc-rs 系许可疑虑
+  未解，G4 仍是唯一双级出口；解码引入不改变这一点。
+- 验收：JBIG2 扫描件夹具（用 jbig2enc C 版生成 committed 夹具，仅测试用，
+  不进依赖）解码转码 + 渲染比对；fuzz target 覆盖。
+
+### P2：JPX 边缘补全（搭车项）
+
+- `/SMask` 为 JPX/DCT 编码的图像（当前 `decode_smask_gray` 只认 raw/flate
+  8bit gray，此类图整图跳过）——SMask 解码复用主解码器即可。
+- JPX 子采样分量（per-component dx/dy > 1）的上采样支持评估（当前拒绝）。
+
+### P3：大文件与体验
+
+- 2GiB 预检提示已做（0.6.0）；0.7.0 评估上限工程（lopdf 全内存对象图的
+  分页/惰性加载属多周工程，收益人群有限——倾向维持上限 + 文档明示）。
+- CLI 管道模式（stdin/stdout）与批量目录递归增强（低风险体验项）。
+
+### 维持暂缓
+
+- 线性化（lopdf `SaveOptions::linearize` 空壳，自研多周）；
+- JBIG2 输出编码（许可）；简单字体（Type1/PFB、简单 TrueType）子集化（低收益）。
+
+### 节奏建议
+
+0.7.0 主打 P0 + P1（正确性与覆盖面的收官），P2 搭车，P3 按余量取舍。
+0.6.0 发布前的唯一待决：CMYK opt-in 开关是否随 0.6.0 落地（建议落地，
+成本约半天；至少需在 README/CHANGELOG 明示 CMYK 重编码的偏色限制）。

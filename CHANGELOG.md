@@ -7,7 +7,7 @@
 ### 新增
 
 - **JPX（JPEG 2000）输入解码**（feature `jpx`，默认关闭以保持默认构建纯 Rust；桌面 release 安装包与 AUR 包开启）：PDF 内嵌的 JPEG 2000 图片（J2K 裸码流与 JP2 容器两种形态）现可解码转码为 JPEG/G4 压缩；1/3/4 分量分别按灰度/RGB/CMYK 处理。实现经 `jpeg2k`（OpenJPEG 安全封装）——vendored OpenJPEG 用 `cc` 静态编译链接，**无需 cmake、无需在安装包携带运行时动态库**，三平台打包风险由此消除（2026-09 spike 结论）。unsafe C 面配专职 fuzz target（`cargo +nightly fuzz run jpx`，CI 45s 冒烟）；形状门禁照 CCITT 模式在 `stream_filter_info` 收口，分析器预估自动跟随
-- **CMYK 图片支持**：ICC N=4、`DeviceCMYK`、CMYK 基 Indexed 的图片经油墨减色转换（`(1-cmy)×(1-k)`）转为 RGB 后走既有 JPEG 管线；重建流声明 `DeviceRGB`（CMYK profile 不随行）；带 `/Decode` 映射数组的 CMYK 保持跳过（防静默偏色）。保真度由 PSNR 门禁钉住（梯度夹具实测 ≈46dB）
+- **CMYK 图片支持**：ICC N=4、`DeviceCMYK`、CMYK 基 Indexed 的图片经油墨减色转换（`(1-cmy)×(1-k)`）转为 RGB 后走既有 JPEG 管线；重建流声明 `DeviceRGB`（CMYK profile 不随行）；带 `/Decode` 映射数组的 CMYK 保持跳过（防静默偏色）。**已知限制**：朴素减色公式与主流渲染器的色彩管理解释存在系统性偏差（poppler 基准实测 ≈7.6 dB，质量档不敏感），屏幕分享对比前后可感知偏色，印刷场景建议关闭图片重压缩；真色彩管理（lcms2）列入 0.7.0 计划
 - **2GiB 输入上限的友好提示**：专用错误码 `error.inputTooLarge`（GUI 双语文案就位），携带人性化体积（如 "2.1 GB"）而非原始字节数
 - **内存护栏**：目标大小搜索的缓存预算核算扩展到 alpha/G4 产物（原先只算彩色平面），超限两级淘汰；多图大文档搜索的进程内存峰值测试护栏（Linux，实测 ≈390MB / 上限 2GB）；worker 池按编解码真实内存占用估算并发数（JPX 19 字节/像素、CMYK 7 字节/像素）
 - **CFF 字体子集化**：Type0→CIDFontType0（CFF 轮廓，现代 PDF 内嵌字体主流）现可裁剪——FontFile3 的 `/CIDFontType0C`、误标 `/Type1C` 与 `/OpenType` 包装输入均支持。内容流 CID 零改写：subsetter 输出的恒等 charset 经"尾部追加 format-0 charset + 改 Top DICT 偏移"桥接回原 CID；`/W` 保持不动。含最小 CFF 解析器（`pdf/cff.rs`，fail-closed）、poppler 渲染比对门禁（工具缺失时跳过）、fuzz 目标开启字体路径。TrueType（CIDFontType2）子集化行为不变
