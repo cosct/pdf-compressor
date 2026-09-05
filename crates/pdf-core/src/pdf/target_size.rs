@@ -95,6 +95,9 @@ where
     ensure_input_size_supported(original_size_bytes)?;
     // The final file lands next to the source with the regular naming.
     let output_path = build_output_path(&input_path, &settings)?;
+    // Same placeholder hygiene as the plain compressor: a failed or
+    // cancelled search must not leave the empty claimed name behind.
+    let _claim_guard = super::compressor::OutputClaimGuard(output_path.clone());
 
     // --- Load the document once for the whole search ---
     ensure_not_cancelled(&cancel_flag, path)?;

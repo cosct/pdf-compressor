@@ -90,8 +90,19 @@ where
     ensure_input_size_supported(file_size_bytes)?;
 
     let password_attempted = password.is_some_and(|value| !value.is_empty());
-    let mut document = super::load_document(&input_path, password)
-        .map_err(|error| AppError::PdfBuild(format!("Failed to inspect PDF structure: {error}")))?;
+    let mut document = super::load_document(&input_path, password).map_err(|error| {
+        // Password and encryption errors carry their own UI-facing codes —
+        // wrapping them in PdfBuild would hide the GUI's password-retry
+        // entry point after a wrong first attempt.
+        match error {
+            AppError::WrongPassword
+            | AppError::PasswordRequired
+            | AppError::Encrypted
+            | AppError::MissingInput(_)
+            | AppError::InvalidPdfPath(_) => error,
+            other => AppError::PdfBuild(format!("Failed to inspect PDF structure: {other}")),
+        }
+    })?;
     let decrypted_with_empty_password =
         super::ensure_not_encrypted(&mut document, password_attempted)?;
 

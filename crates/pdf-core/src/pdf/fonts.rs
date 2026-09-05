@@ -576,8 +576,17 @@ fn collect_context_cids(
     }
 
     let mut current_type0: Option<ObjectId> = None;
+    // `Tf` lives in the graphics state: `q` snapshots it and `Q` restores
+    // it, so text after a `q…Q` interlude belongs to the font selected
+    // before it. Unbalanced `Q`s (a hostile stream popping an empty stack)
+    // just leave the current font unchanged.
+    let mut font_state_stack: Vec<Option<ObjectId>> = Vec::new();
     for operation in &content.operations {
         match operation.operator.as_str() {
+            "q" => font_state_stack.push(current_type0),
+            "Q" => {
+                current_type0 = font_state_stack.pop().unwrap_or(current_type0);
+            }
             "Tf" => {
                 let Some(Object::Name(name)) = operation.operands.first() else {
                     continue;

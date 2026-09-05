@@ -4332,3 +4332,527 @@ fn decoded_image_planes(document: &Document) -> Vec<DynamicImage> {
         })
         .collect()
 }
+
+// ---------------------------------------------------------------------------
+// Review regressions (2026-09 external audit)
+// ---------------------------------------------------------------------------
+
+/// Default-settings helper for the review regressions.
+fn review_settings() -> CompressionSettings {
+    CompressionSettings::from_sources(None, CompressionSettingsOverrides::default())
+}
+
+/// Save a fixture with a large compressible Info blob so a run always has
+/// something to win (the output is only written when it beats the original).
+fn save_review_input(document: &mut Document, path: &Path) {
+    let info = document.add_object(dictionary! {
+        "Producer" => Object::string_literal("review fixture ".repeat(5000)),
+    });
+    document.trailer.set("Info", info);
+    document
+        .save_modern(&mut fs::File::create(path).expect("create fixture"))
+        .expect("save fixture");
+}
+
+fn finish_review_page(document: &mut Document, resources: lopdf::Dictionary, content: Vec<u8>) {
+    let pages = document.new_object_id();
+    let content_id = document.add_object(Stream::new(dictionary! {}, content));
+    let page = document.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => pages,
+        "Contents" => content_id,
+        "Resources" => resources,
+        "MediaBox" => vec![0.into(), 0.into(), 600.into(), 800.into()],
+    });
+    document.objects.insert(
+        pages,
+        Object::Dictionary(dictionary! {
+            "Type" => "Pages",
+            "Count" => 1,
+            "Kids" => vec![Object::Reference(page)],
+        }),
+    );
+    let root = document.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages });
+    document.trailer.set("Root", root);
+}
+
+/// Two forms sharing one `/Resources` object, each drawing its own font: the
+/// per-form cleanup used to delete the sibling's font (twice, in sequence).
+#[test]
+fn review_shared_form_resources_preserve_both_fonts() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut doc = Document::with_version("1.5");
+    let f1 = doc.add_object(dictionary! {
+        "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica",
+    });
+    let f2 = doc.add_object(dictionary! {
+        "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Courier",
+    });
+    let shared = doc.add_object(dictionary! { "Font" => dictionary! { "F1" => f1, "F2" => f2 } });
+    let a = doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject", "Subtype" => "Form",
+            "BBox" => vec![0.into(), 0.into(), 600.into(), 800.into()],
+            "Resources" => shared,
+        },
+        b"BT /F1 24 Tf 72 700 Td (First form) Tj ET".to_vec(),
+    ));
+    let b = doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject", "Subtype" => "Form",
+            "BBox" => vec![0.into(), 0.into(), 600.into(), 800.into()],
+            "Resources" => shared,
+        },
+        b"BT /F2 24 Tf 72 650 Td (Second form) Tj ET".to_vec(),
+    ));
+    finish_review_page(
+        &mut doc,
+        dictionary! { "XObject" => dictionary! { "A" => a, "B" => b } },
+        b"/A Do /B Do".to_vec(),
+    );
+    let input = dir.path().join("shared.pdf");
+    save_review_input(&mut doc, &input);
+
+    let response = compress_pdf_with_progress(
+        input.to_str().unwrap(),
+        None,
+        review_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+
+    let out = Document::load(&response.output_path).expect("output must load");
+    let fonts = out
+        .objects
+        .values()
+        .filter(|object| {
+            matches!(object, Object::Dictionary(dict)
+                if matches!(dict.get(b"Type"), Ok(Object::Name(kind)) if kind.as_slice() == b"Font"))
+        })
+        .count();
+    assert_eq!(
+        fonts, 2,
+        "both forms draw their distinct fonts through the shared resources"
+    );
+}
+
+/// A full worker queue plus cancellation used to block the producer forever
+/// in `send()` — the pool must return promptly now.
+#[test]
+fn review_cancel_while_worker_queue_is_full_returns() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let flag = Arc::new(AtomicBool::new(false));
+    let flag_for_pool = flag.clone();
+    let (started_tx, started_rx) = mpsc::channel();
+    let (finished_tx, finished_rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let result = super::workers::run_worker_pool(
+            vec![(); 32],
+            2,
+            4,
+            &flag_for_pool,
+            "review-cancel",
+            |()| {
+                started_tx.send(()).unwrap();
+                while !flag_for_pool.load(std::sync::atomic::Ordering::Relaxed) {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+            },
+            |_| Ok(()),
+        );
+        let _ = finished_tx.send(result);
+    });
+    started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    flag.store(true, std::sync::atomic::Ordering::Relaxed);
+    assert!(
+        finished_rx.recv_timeout(Duration::from_secs(2)).is_ok(),
+        "worker exited, but the producer must also unblock and let the pool return"
+    );
+}
+
+/// Text after a `q…Q` font interlude keeps the font selected before the
+/// save; the subsetter must collect those glyphs too.
+#[cfg(feature = "subset-fonts")]
+#[test]
+fn review_font_after_q_restore_remains_mapped() {
+    let mut doc = Document::load_mem(&crate::testutil::build_type0_pdf_bytes()).unwrap();
+    let page_id = doc.get_pages()[&1];
+    let resources_id = doc
+        .get_object(page_id)
+        .unwrap()
+        .as_dict()
+        .unwrap()
+        .get(b"Resources")
+        .unwrap()
+        .as_reference()
+        .unwrap();
+    let second_font = doc.add_object(dictionary! {
+        "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica",
+    });
+    doc.get_object_mut(resources_id)
+        .unwrap()
+        .as_dict_mut()
+        .unwrap()
+        .get_mut(b"Font")
+        .unwrap()
+        .as_dict_mut()
+        .unwrap()
+        .set("F2", second_font);
+    let stream_id = doc.add_object(Stream::new(
+        dictionary! {},
+        b"BT /F1 24 Tf 72 720 Td <0022> Tj ET\nq\nBT /F2 24 Tf 72 680 Td (interlude) Tj ET\nQ\nBT 72 640 Td <0016> Tj ET\n".to_vec(),
+    ));
+    doc.get_object_mut(page_id)
+        .unwrap()
+        .as_dict_mut()
+        .unwrap()
+        .set("Contents", stream_id);
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let input = dir.path().join("state.pdf");
+    save_review_input(&mut doc, &input);
+
+    let mut options = review_settings();
+    options.subset_fonts = true;
+    let response = compress_pdf_with_progress(
+        input.to_str().unwrap(),
+        None,
+        options,
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+    assert!(response
+        .notices
+        .iter()
+        .any(|n| n.code == "compress.note.fontsSubsetted"));
+
+    let out = Document::load(&response.output_path).expect("output must load");
+    let descendant = out
+        .objects
+        .values()
+        .find_map(|object| match object {
+            Object::Dictionary(dict)
+                if matches!(dict.get(b"Subtype"), Ok(Object::Name(sub)) if sub.as_slice() == b"CIDFontType2") =>
+            {
+                Some(dict)
+            }
+            _ => None,
+        })
+        .expect("descendant survives");
+    let map_id = descendant
+        .get(b"CIDToGIDMap")
+        .unwrap()
+        .as_reference()
+        .unwrap();
+    let map = out
+        .get_object(map_id)
+        .unwrap()
+        .as_stream()
+        .unwrap()
+        .get_plain_content()
+        .unwrap();
+    let position = usize::from(crate::testutil::TEST_FONT_GID_D) * 2;
+    let mapped = map
+        .get(position..position + 2)
+        .map(|bytes| u16::from_be_bytes([bytes[0], bytes[1]]))
+        .unwrap_or(0);
+    assert_ne!(
+        mapped, 0,
+        "Q restores F1; the final D must not turn into .notdef"
+    );
+}
+
+/// An SMask carrying `/Decode [1 0]` must have its opacity normalized into
+/// the rewritten samples (the rebuilt mask drops the array).
+#[test]
+fn review_soft_mask_decode_keeps_opacity() {
+    let (width, height) = (600u32, 450u32);
+    let mut doc = Document::with_version("1.5");
+    let mut alpha = vec![0u8; (width * height) as usize];
+    for row in alpha.chunks_mut(width as usize) {
+        row[(width / 2) as usize..].fill(255);
+    }
+    let mut mask = Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Image",
+            "Width" => i64::from(width),
+            "Height" => i64::from(height),
+            "ColorSpace" => "DeviceGray",
+            "BitsPerComponent" => 8,
+            "Decode" => vec![1.into(), 0.into()],
+        },
+        alpha,
+    );
+    mask.compress().unwrap();
+    let mask_id = doc.add_object(mask);
+    let image_id = doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Image",
+            "Width" => i64::from(width),
+            "Height" => i64::from(height),
+            "ColorSpace" => "DeviceRGB",
+            "BitsPerComponent" => 8,
+            "Filter" => "DCTDecode",
+            "SMask" => mask_id,
+        },
+        crate::testutil::encode_jpeg(crate::testutil::fixture_rgb_image(width, height), 100),
+    ));
+    finish_review_page(
+        &mut doc,
+        dictionary! { "XObject" => dictionary! { "Im" => image_id } },
+        b"q 600 0 0 450 0 0 cm /Im Do Q".to_vec(),
+    );
+    let dir = tempfile::tempdir().expect("tempdir");
+    let input = dir.path().join("mask.pdf");
+    save_review_input(&mut doc, &input);
+
+    let response = compress_pdf_with_progress(
+        input.to_str().unwrap(),
+        None,
+        review_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+    assert_eq!(response.images_recompressed, 1);
+
+    let out = Document::load(&response.output_path).expect("output must load");
+    let mask = out
+        .objects
+        .values()
+        .find_map(|object| {
+            let stream = object.as_stream().ok()?;
+            let id = stream.dict.get(b"SMask").ok()?.as_reference().ok()?;
+            out.get_object(id).ok()?.as_stream().ok()
+        })
+        .expect("rewritten SMask survives");
+    let data = mask.get_plain_content().unwrap();
+    let still_inverted = mask
+        .dict
+        .get(b"Decode")
+        .ok()
+        .and_then(|o| o.as_array().ok())
+        .is_some_and(|a| a.first() == Some(&Object::Integer(1)));
+    let actual_opacity = if still_inverted { 255 - data[0] } else { data[0] };
+    assert_eq!(
+        actual_opacity, 255,
+        "the visible half of the picture must stay visible"
+    );
+}
+
+fn review_simple_document(text: &str) -> Document {
+    let mut doc = Document::with_version("1.5");
+    let font = doc.add_object(dictionary! {
+        "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica",
+    });
+    finish_review_page(
+        &mut doc,
+        dictionary! { "Font" => dictionary! { "F1" => font } },
+        format!("BT /F1 24 Tf 72 700 Td ({text}) Tj ET").into_bytes(),
+    );
+    doc
+}
+
+/// Two jobs exporting the same basename into one directory must not claim
+/// the same output name.
+#[test]
+fn review_parallel_same_basename_outputs_are_distinct() {
+    use std::sync::Barrier;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let input_a_dir = dir.path().join("a");
+    let input_b_dir = dir.path().join("b");
+    let output_dir = dir.path().join("output");
+    fs::create_dir_all(&input_a_dir).unwrap();
+    fs::create_dir_all(&input_b_dir).unwrap();
+    fs::create_dir_all(&output_dir).unwrap();
+    let paths = [input_a_dir.join("report.pdf"), input_b_dir.join("report.pdf")];
+    let mut doc_a = review_simple_document("Document from directory A");
+    save_review_input(&mut doc_a, &paths[0]);
+    let mut doc_b = review_simple_document("Document from directory B");
+    save_review_input(&mut doc_b, &paths[1]);
+
+    let barrier = Arc::new(Barrier::new(2));
+    let results: Vec<_> = std::thread::scope(|scope| {
+        let handles: Vec<_> = paths
+            .iter()
+            .map(|input| {
+                let mut options = review_settings();
+                options.output_dir = Some(output_dir.to_str().unwrap().to_owned());
+                let barrier = barrier.clone();
+                scope.spawn(move || {
+                    let mut waiting = true;
+                    compress_pdf_with_progress(
+                        input.to_str().unwrap(),
+                        None,
+                        options,
+                        Arc::new(AtomicBool::new(false)),
+                        |progress| {
+                            if waiting && progress.percent == 15.0 {
+                                waiting = false;
+                                barrier.wait();
+                            }
+                        },
+                    )
+                    .unwrap()
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect()
+    });
+    assert!(!results[0].output_path.is_empty() && !results[1].output_path.is_empty());
+    assert_ne!(
+        results[0].output_path, results[1].output_path,
+        "concurrent jobs must not overwrite each other's output"
+    );
+}
+
+/// G4 output must keep a white page white under an independent renderer.
+#[test]
+fn review_g4_output_keeps_white_page_background() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (width, height) = (1600u32, 1200u32);
+    let mut doc = Document::with_version("1.5");
+    let jpeg = crate::testutil::encode_jpeg(
+        crate::testutil::bilevel_scan_rgb_image(width, height, 11),
+        100,
+    );
+    let image_id = doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Image",
+            "Width" => i64::from(width),
+            "Height" => i64::from(height),
+            "ColorSpace" => "DeviceRGB",
+            "BitsPerComponent" => 8,
+            "Filter" => "DCTDecode",
+        },
+        jpeg,
+    ));
+    finish_review_page(
+        &mut doc,
+        dictionary! { "XObject" => dictionary! { "Im" => image_id } },
+        b"q 600 0 0 450 0 0 cm /Im Do Q".to_vec(),
+    );
+    let input = dir.path().join("scan.pdf");
+    save_review_input(&mut doc, &input);
+
+    let mut options = review_settings();
+    options.bilevel_codec = super::BilevelCodec::CcittG4;
+    let response = compress_pdf_with_progress(
+        input.to_str().unwrap(),
+        None,
+        options,
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+    assert!(response
+        .notices
+        .iter()
+        .any(|n| n.code == "compress.note.bilevelEncoded"));
+
+    let render = |pdf: &Path, name: &str| -> Option<u8> {
+        let prefix = dir.path().join(name);
+        let result = std::process::Command::new("pdftoppm")
+            .args(["-f", "1", "-singlefile", "-r", "72", "-png"])
+            .arg(pdf)
+            .arg(&prefix)
+            .output()
+            .ok()?;
+        if !result.status.success() {
+            return None;
+        }
+        let png = std::fs::read(prefix.with_extension("png")).ok()?;
+        image::load_from_memory(&png)
+            .ok()
+            .map(|raster| raster.to_luma8().get_pixel(5, 5)[0])
+    };
+    let (Some(before), Some(after)) = (
+        render(&input, "before"),
+        render(Path::new(&response.output_path), "after"),
+    ) else {
+        eprintln!("pdftoppm unavailable or failed — raster check skipped");
+        return;
+    };
+    assert_eq!(before, after, "G4 encoding must not invert black and white");
+}
+
+/// A wrong password at the analysis entry must surface the password error
+/// code (the GUI retry dialog keys on it), not a generic build error.
+#[test]
+fn review_wrong_password_analysis_keeps_retry_error_code() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let input = dir.path().join("encrypted.pdf");
+    let mut doc = review_simple_document("Password retry fixture");
+    doc.trailer.set(
+        "ID",
+        vec![
+            Object::String(vec![0x11; 16], StringFormat::Hexadecimal),
+            Object::String(vec![0x22; 16], StringFormat::Hexadecimal),
+        ],
+    );
+    let version = lopdf::EncryptionVersion::V1 {
+        document: &doc,
+        owner_password: "owner",
+        user_password: "secret",
+        permissions: lopdf::Permissions::all(),
+    };
+    let state = lopdf::EncryptionState::try_from(version).unwrap();
+    doc.encrypt(&state).unwrap();
+    doc.save(&input).unwrap();
+
+    let error = analyze_pdf_with_progress(input.to_str().unwrap(), Some("wrong"), |_| {})
+        .unwrap_err();
+    let payload = crate::AppErrorPayload::from(error);
+    assert_eq!(
+        payload.code, "error.wrongPassword",
+        "the password prompt only retries password-specific codes"
+    );
+}
+
+/// 4-bit indexed rows of odd width end with a padding nibble that is not a
+/// pixel — unpacking must skip it per row.
+#[test]
+fn review_indexed_odd_width_skips_each_rows_padding_nibble() {
+    use std::io::Write as _;
+
+    let raw = vec![0x01, 0x20, 0x34, 0x50];
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(&raw).unwrap();
+    let compressed = encoder.finish().unwrap();
+    let stream = Stream::new(
+        dictionary! {
+            "Width" => 3,
+            "Height" => 2,
+            "BitsPerComponent" => 4,
+            "Filter" => "FlateDecode",
+        },
+        compressed,
+    );
+    let info = super::colorspace::ImageColorSpaceInfo {
+        decode: super::colorspace::DecodeColorSpace::Indexed {
+            base_channels: 1,
+            palette: (0..=15u8).map(|i| i * 17).collect(),
+        },
+        rebuild_color_space: None,
+    };
+    let image = super::encode::decode_raw_image_stream(&stream, Some(&info))
+        .expect("tiny indexed image decodes")
+        .to_luma8();
+    assert_eq!(
+        image.get_pixel(0, 1)[0],
+        51,
+        "a 4-bit row of odd width has a padding nibble, not an extra pixel"
+    );
+}

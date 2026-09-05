@@ -63,6 +63,10 @@ pub(crate) fn remove_unused_resources(document: &mut Document) -> usize {
         }
     }
 
+    // Forms referenced by pages that could not be walked may share a
+    // resources object with walked forms — those objects stay untouched.
+    let mut blocked_shared_resources: HashSet<ObjectId> = HashSet::new();
+
     for page_id in pages.values().copied() {
         let Some(Object::Dictionary(page_dict)) = document.objects.get(&page_id) else {
             continue;
@@ -76,6 +80,7 @@ pub(crate) fn remove_unused_resources(document: &mut Document) -> usize {
         };
 
         if !page_is_safe(document, page_dict) {
+            block_page_form_resources(document, page_dict, &mut blocked_shared_resources);
             continue;
         }
 
@@ -96,10 +101,13 @@ pub(crate) fn remove_unused_resources(document: &mut Document) -> usize {
         // A page can only be cleaned when its whole content tree resolves.
         let mut page_usage = UsedNames::default();
         let mut visited_forms: HashSet<ObjectId> = HashSet::new();
-        let mut form_usage: HashMap<ObjectId, UsedNames> = HashMap::new();
+        let mut form_usage: HashMap<ResourcesOwner, UsedNames> = HashMap::new();
         let content = match document.get_and_decode_page_content(page_id) {
             Ok(content) => content,
-            Err(_) => continue,
+            Err(_) => {
+                block_page_form_resources(document, page_dict, &mut blocked_shared_resources);
+                continue;
+            }
         };
 
         if !collect_used_names(
@@ -110,21 +118,21 @@ pub(crate) fn remove_unused_resources(document: &mut Document) -> usize {
             &mut visited_forms,
             &mut form_usage,
         ) {
+            block_page_form_resources(document, page_dict, &mut blocked_shared_resources);
             continue;
         }
 
-        // Merge the page and every successfully walked form into their owners.
+        // Merge the page and every successfully walked form into their
+        // actual resource-dictionary owners — two forms sharing one
+        // /Resources object must union their names there, not clean it in
+        // isolation twice (which would delete each other's entries).
         merge_usage(&mut usage_by_owner, owner, &page_usage);
-        for (form_id, usage) in form_usage {
-            merge_usage(&mut usage_by_owner, ResourcesOwner::Form(form_id), &usage);
+        for (form_owner, usage) in form_usage {
+            merge_usage(&mut usage_by_owner, form_owner, &usage);
+            cleanable.push(form_owner);
         }
         processed_pages.insert(page_id);
         cleanable.push(owner);
-        cleanable.extend(
-            visited_forms
-                .iter()
-                .map(|form_id| ResourcesOwner::Form(*form_id)),
-        );
     }
 
     // Cleanable owners may repeat (several pages sharing one resources
@@ -135,11 +143,15 @@ pub(crate) fn remove_unused_resources(document: &mut Document) -> usize {
     });
     cleanable.dedup();
     // A shared resources object is cleaned only when every page referencing
-    // it was fully processed — one unproven sibling vetoes the group.
+    // it was fully processed — one unproven sibling (or a sibling's
+    // unwalked form) vetoes the group.
     cleanable.retain(|owner| match owner {
-        ResourcesOwner::SharedResources(resources_id) => shared_pages
-            .get(resources_id)
-            .is_some_and(|ids| ids.iter().all(|id| processed_pages.contains(id))),
+        ResourcesOwner::SharedResources(resources_id) => {
+            !blocked_shared_resources.contains(resources_id)
+                && shared_pages
+                    .get(resources_id)
+                    .is_some_and(|ids| ids.iter().all(|id| processed_pages.contains(id)))
+        }
         _ => true,
     });
 
@@ -162,6 +174,42 @@ fn merge_usage(target: &mut HashMap<ResourcesOwner, UsedNames>, owner: Resources
     let entry = target.entry(owner).or_default();
     entry.fonts.extend(usage.fonts.iter().cloned());
     entry.xobjects.extend(usage.xobjects.iter().cloned());
+}
+
+/// Block the shared resources objects reachable from a page that could not
+/// be proven safe: every form in its `/XObject` category may draw names the
+/// failed walk never recorded, so any `/Resources` those forms reference
+/// indirectly must keep everything.
+fn block_page_form_resources(
+    document: &Document,
+    page_dict: &Dictionary,
+    blocked: &mut HashSet<ObjectId>,
+) {
+    let Some(resources_dict) = page_dict
+        .get(b"Resources")
+        .ok()
+        .and_then(|entry| dereference_dictionary(document, entry))
+    else {
+        return;
+    };
+    let Some(xobject_dict) = resources_dict
+        .get(b"XObject")
+        .ok()
+        .and_then(|entry| dereference_dictionary(document, entry))
+    else {
+        return;
+    };
+    for entry in xobject_dict.iter() {
+        let Object::Reference(form_id) = entry.1 else {
+            continue;
+        };
+        let Some(Object::Stream(form)) = document.objects.get(form_id) else {
+            continue;
+        };
+        if let Ok(Object::Reference(resources_id)) = form.dict.get(b"Resources") {
+            blocked.insert(*resources_id);
+        }
+    }
 }
 
 /// Whole-page safety probes for patterns whose resource usage cannot be
@@ -223,16 +271,18 @@ fn dereference_dictionary<'a>(document: &'a Document, object: &'a Object) -> Opt
 }
 
 /// Walk one decoded content stream, recording the names it uses against
-/// `usage`. `Do` recursion into form XObjects records against the form's own
-/// usage set (forms are resource contexts of their own). Returns false when
-/// anything is off — the caller then keeps this tree untouched.
+/// `usage`. `Do` recursion into form XObjects records against the form's
+/// actual resource-dictionary owner — the shared object when the form's
+/// `/Resources` is a reference (so sibling forms union there), the form
+/// itself when the dict is inline. Returns false when anything is off —
+/// the caller then keeps this tree untouched.
 fn collect_used_names(
     document: &Document,
     content: &Content,
     resources_dict: &Dictionary,
     usage: &mut UsedNames,
     visited_forms: &mut HashSet<ObjectId>,
-    form_usage: &mut HashMap<ObjectId, UsedNames>,
+    form_usage: &mut HashMap<ResourcesOwner, UsedNames>,
 ) -> bool {
     let font_dict = resources_dict
         .get(b"Font")
@@ -325,7 +375,16 @@ fn collect_used_names(
                 ) {
                     return false;
                 }
-                let accumulated = form_usage.entry(*form_id).or_default();
+                // Attribution key: the dictionary this form's names resolve
+                // against — the shared object when referenced (sibling forms
+                // union into the same bucket), the form itself when inline.
+                let form_owner = match form.dict.get(b"Resources") {
+                    Ok(Object::Reference(resources_id)) => {
+                        ResourcesOwner::SharedResources(*resources_id)
+                    }
+                    _ => ResourcesOwner::Form(*form_id),
+                };
+                let accumulated = form_usage.entry(form_owner).or_default();
                 accumulated.fonts.extend(nested.fonts);
                 accumulated.xobjects.extend(nested.xobjects);
             }

@@ -715,7 +715,10 @@ fn build_smask_stream(alpha: &image::GrayImage) -> Stream {
 
 /// Decode an `/SMask` stream into an 8-bit grayscale image. Returns `None`
 /// for any shape we cannot rewrite safely (non-gray, non-8bit, mismatched
-/// byte counts, undecodable filter).
+/// byte counts, undecodable filter, an unsupported `/Decode` mapping).
+/// A `/Decode` of `[1 0]` inverts the samples — the values are normalized
+/// here so the rebuilt mask (which never carries `/Decode`) preserves the
+/// original opacity.
 fn decode_smask_gray(smask: &Stream) -> Option<image::GrayImage> {
     let width = optional_integer(smask, b"Width")? as u32;
     let height = optional_integer(smask, b"Height")? as u32;
@@ -733,9 +736,32 @@ fn decode_smask_gray(smask: &Stream) -> Option<image::GrayImage> {
         }
     }
 
+    let inverted = match smask.dict.get(b"Decode") {
+        // Identity (or absent): samples map straight to opacity.
+        Ok(Object::Array(items)) if items.len() == 2 => {
+            let as_number = |item: &Object| match item {
+                Object::Integer(value) => Some(*value as f64),
+                Object::Real(value) => Some(f64::from(*value)),
+                _ => None,
+            };
+            match (as_number(&items[0]), as_number(&items[1])) {
+                (Some(0.0), Some(1.0)) => false,
+                (Some(1.0), Some(0.0)) => true,
+                // Partial ranges would rescale the ramp — not a shape this
+                // rewrite can preserve honestly.
+                _ => return None,
+            }
+        }
+        Err(_) => false,
+        Ok(_) => return None,
+    };
+
     // A mask without /Filter is spec-legal (raw bytes); get_plain_content
     // handles both raw and flate-encoded shapes.
-    let data = smask.get_plain_content().ok()?;
+    let mut data = smask.get_plain_content().ok()?;
+    if inverted {
+        data.iter_mut().for_each(|sample| *sample = 255 - *sample);
+    }
     image::GrayImage::from_raw(width, height, data)
 }
 
@@ -935,7 +961,7 @@ fn try_simd_resize(image: &DynamicImage, target_w: u32, target_h: u32) -> Option
 /// `color_space` carries document-level context resolved up front (ICC
 /// channel counts, indexed palettes); without it only plain device-name
 /// color spaces are decodable.
-fn decode_raw_image_stream(
+pub(super) fn decode_raw_image_stream(
     stream: &Stream,
     color_space: Option<&ImageColorSpaceInfo>,
 ) -> Result<DynamicImage, AppError> {
@@ -972,7 +998,8 @@ fn decode_raw_image_stream(
                     ));
                 }
                 let bits = optional_integer(stream, b"BitsPerComponent").unwrap_or(8);
-                let indices = super::colorspace::unpack_indices(&decoded, bits).ok_or_else(|| {
+                let indices =
+                    super::colorspace::unpack_indices(&decoded, bits, width).ok_or_else(|| {
                     AppError::PdfBuild(
                         "Indexed image uses an unsupported index bit depth.".into(),
                     )
@@ -1150,6 +1177,13 @@ fn ccitt_input_shape(stream: &Stream) -> Option<CcittInputShape> {
         Ok(_) => return None,
     };
 
+    // A /Decode array re-interprets the decoded samples before rendering;
+    // the row expanders assume only the BlackIs1 mapping, so such streams
+    // stay untouched rather than silently flipping polarity.
+    if stream.dict.get(b"Decode").is_ok() {
+        return None;
+    }
+
     let flag = |dict: Option<&Dictionary>, key: &[u8]| {
         dict.and_then(|dict| match dict.get(key) {
             Ok(Object::Boolean(value)) => Some(*value),
@@ -1284,10 +1318,14 @@ fn decode_ccitt_g3_eol(
         stream.content.iter().copied(),
         |transitions| {
             if written_rows < height as usize {
+                // `decode_g3` does NOT swap the fax Color labels the way the
+                // G4 path does (see `write_transitions_row`): a fax-White run
+                // is a true white run here, so the flag is flipped to undo
+                // the G4-oriented polarity inside the row expander.
                 write_transitions_row(
                     &mut pixels[written_rows * width as usize..][..width as usize],
                     transitions,
-                    black_is_1,
+                    !black_is_1,
                 );
                 written_rows += 1;
             }
@@ -1305,14 +1343,17 @@ fn decode_ccitt_g3_eol(
         .ok_or_else(|| AppError::PdfBuild("CCITT decode produced mismatched buffer".into()))
 }
 
-/// Expand one row of color-transition positions into 8-bit pixels. The
-/// transitions are cumulative positions where the run color changes, starting
-/// white (the T.4/T.6 convention — 1 bits are black in the code tables);
-/// PDF's `BlackIs1 = false` inverts the rendering. Runs past the row width
-/// are truncated, short rows pad white (both per-spec behaviors).
+/// Expand one row of color-transition positions into 8-bit pixels.
+///
+/// Polarity model (verified against poppler, see the `g4_*` tests): the fax
+/// crate's `Color::White` runs are **1-bits** — the `BlackIs1 = false`
+/// convention (1 = white). With `BlackIs1 = true` a renderer maps 1-bits to
+/// black, so a fax-`White` run renders black there. Runs past the row width
+/// are truncated, short rows pad with the row's final run color (both
+/// per-spec behaviors).
 #[cfg(feature = "ccitt")]
 fn write_transitions_row(row: &mut [u8], transitions: &[u32], black_is_1: bool) {
-    let white_value: u8 = if black_is_1 { 255 } else { 0 };
+    let white_value: u8 = if black_is_1 { 0 } else { 255 };
     let black_value: u8 = 255 - white_value;
     let mut cursor = 0usize;
     let mut color = fax::Color::White;
@@ -1329,7 +1370,15 @@ fn write_transitions_row(row: &mut [u8], transitions: &[u32], black_is_1: bool) 
         }
         color = !color;
     }
-    row[cursor..].fill(white_value);
+    // The tail extends the color the transition walk has flipped into — for
+    // a whole-row run (a lone transition at 0) that is the run after the
+    // zero-length one, and for short rows it continues the final run.
+    let tail_value = if color == fax::Color::Black {
+        black_value
+    } else {
+        white_value
+    };
+    row[cursor..].fill(tail_value);
 }
 
 /// Group 3 one-dimensional rows without EOL markers — PDF's default shape
@@ -1346,6 +1395,11 @@ fn decode_ccitt_g3_plain(
 ) -> Result<DynamicImage, AppError> {
     use fax::BitReader as _;
 
+    // This reader consumes the code tables directly (no fax Color labels),
+    // so a `White`-table run is a true T.4 white-pixel run: with
+    // `BlackIs1 = true` (0 = white) it renders 255. The transitions-based
+    // paths above invert this because the fax crate binds its Color labels
+    // to the opposite tables (see `write_transitions_row`).
     let white_value: u8 = if black_is_1 { 255 } else { 0 };
     let black_value: u8 = 255 - white_value;
     // fax's code tables need a few bits of lookahead past the final code — a
@@ -1414,8 +1468,11 @@ fn read_markup_run(
 
 /// Encode an 8-bit grayscale plane as CCITT Group 4 (ITU T.6). Pixels at or
 /// above the 128 luma threshold become white, everything else black. The
-/// output bitstream follows the T.6 convention (1 = black), which the rebuilt
-/// stream advertises as `BlackIs1: true`.
+/// fax crate's `Color::White` runs are **1-bits** (the `BlackIs1 = false`
+/// convention, 1 = white), but the rebuilt stream declares `BlackIs1: true`
+/// where 1-bits must be black — so the color fed to the encoder is the
+/// *inverted* plane polarity, making white pixels ride 0-bit runs. Verified
+/// against poppler in `g4_output_renders_white_background_as_white`.
 #[cfg(feature = "ccitt")]
 fn encode_gray_as_ccitt_g4(plane: &image::GrayImage) -> Vec<u8> {
     let (width, height) = plane.dimensions();
@@ -1427,7 +1484,7 @@ fn encode_gray_as_ccitt_g4(plane: &image::GrayImage) -> Vec<u8> {
         // VecWriter's error type is `Infallible` — there is nothing to handle.
         let _ = encoder.encode_line(
             row.iter()
-                .map(|&luma| if luma >= 128 { fax::Color::White } else { fax::Color::Black }),
+                .map(|&luma| if luma >= 128 { fax::Color::Black } else { fax::Color::White }),
             width,
         );
     }
@@ -1728,21 +1785,30 @@ mod tests {
         let encoded = encode_ccitt_g4(&image);
         let (width, height) = image.dimensions();
 
-        // Rebuild rows through the same expansion the engine's decoder uses.
-        let mut decoded = image::GrayImage::new(width, height);
-        let mut y = 0u32;
-        let outcome = fax::decoder::decode_g4(encoded.iter().copied(), width, Some(height), |tr| {
-            for (x, color) in fax::decoder::pels(tr, width).enumerate() {
-                if x < width as usize {
-                    let is_black = color == fax::Color::Black; // BlackIs1: true
-                    decoded.put_pixel(x as u32, y, image::Luma([if is_black { 0 } else { 255 }]));
-                }
-            }
-            y += 1;
-        });
-        assert!(outcome.is_some(), "encoded fixture must decode cleanly");
-        assert_eq!(y, height);
-        assert_eq!(decoded.as_raw(), image.as_raw());
+        // Round-trip through the engine's own decoder, which carries the
+        // polarity model this file documents (see `write_transitions_row`).
+        let stream = Stream::new(
+            dictionary! {
+                "Type" => "XObject",
+                "Subtype" => "Image",
+                "Width" => width as i64,
+                "Height" => height as i64,
+                "BitsPerComponent" => 1,
+                "Filter" => "CCITTFaxDecode",
+                "DecodeParms" => dictionary! {
+                    "K" => -1,
+                    "Columns" => width as i64,
+                    "Rows" => height as i64,
+                    "BlackIs1" => true,
+                },
+            },
+            encoded,
+        );
+        let decoded = decode_ccitt_stream(&stream).expect("fixture must decode cleanly");
+        let DynamicImage::ImageLuma8(plane) = decoded else {
+            panic!("CCITT decode must produce a luma plane");
+        };
+        assert_eq!(plane.as_raw(), image.as_raw());
     }
 
     #[test]
@@ -1828,6 +1894,106 @@ mod tests {
         // Clamping at both ends of the encoder's quality range.
         assert_eq!(search_round_quality(15, &flat), 10);
         assert_eq!(search_round_quality(99, &detailed), 100);
+    }
+
+    /// A 64×32 reference G4 bitstream (white background, black bar at rows
+    /// 12..=20 / cols 20..=44), generated with the battle-tested `tiffcp
+    /// -c g4`. T.4 polarity: 0 bits are white.
+    const REFERENCE_G4_BAR: &[u8] = &[
+        0x26, 0xA0, 0x78, 0x6F, 0xFF, 0xFF, 0xFC, 0x86, 0x85, 0x7F, 0xFF, 0xFF, 0xFF, 0xF8,
+        0xFF, 0xFF, 0xFC, 0x00, 0x40, 0x04,
+    ];
+
+    fn reference_bar_plane() -> image::GrayImage {
+        let mut image = image::GrayImage::from_pixel(64, 32, image::Luma([255u8]));
+        for y in 12..=20 {
+            for x in 20..=44 {
+                image.put_pixel(x, y, image::Luma([0u8]));
+            }
+        }
+        image
+    }
+
+    #[test]
+    #[cfg(feature = "ccitt")]
+    fn g4_decode_matches_reference_bitstream() {
+        let stream = Stream::new(
+            dictionary! {
+                "Width" => 64,
+                "Height" => 32,
+                "BitsPerComponent" => 1,
+                "Filter" => "CCITTFaxDecode",
+                "DecodeParms" => dictionary! {
+                    "K" => -1, "Columns" => 64, "Rows" => 32, "BlackIs1" => true,
+                },
+            },
+            REFERENCE_G4_BAR.to_vec(),
+        );
+        let decoded = decode_ccitt_stream(&stream).expect("reference stream decodes");
+        let DynamicImage::ImageLuma8(plane) = decoded else {
+            panic!("must decode to luma");
+        };
+        assert_eq!(plane.as_raw(), reference_bar_plane().as_raw());
+    }
+
+    #[test]
+    #[cfg(feature = "ccitt")]
+    fn g4_output_renders_white_background_as_white() {
+        // The polarity end-to-end gate: embed the engine-encoded G4 with the
+        // exact dict shape the compressor writes and check an independent
+        // renderer (poppler) keeps white as white. Skipped when pdftoppm is
+        // unavailable; the byte-level guarantees are covered by the
+        // reference-bitstream tests above.
+        let scratch = std::env::temp_dir().join("pdf-core-g4-render.pdf");
+        if std::process::Command::new("pdftoppm")
+            .arg("-h")
+            .output()
+            .is_err()
+        {
+            eprintln!("pdftoppm unavailable — skipping the G4 render gate");
+            return;
+        }
+
+        let g4 = encode_gray_as_ccitt_g4(&reference_bar_plane());
+        let mut pdf = format!(
+            "%PDF-1.5\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n\
+             3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 64 32]/Contents 5 0 R/Resources<</XObject<</Im0 4 0 R>>>>>>endobj\n\
+             4 0 obj<</Type/XObject/Subtype/Image/Width 64/Height 32/ColorSpace/DeviceGray/BitsPerComponent 1/Filter/CCITTFaxDecode/DecodeParms<</K -1/Columns 64/Rows 32/BlackIs1 true>>/Length {}>>stream\n",
+            g4.len(),
+        )
+        .into_bytes();
+        pdf.extend_from_slice(&g4);
+        pdf.extend_from_slice(b"\nendstream\nendobj\n5 0 obj<</Length 22>>stream\nq 64 0 0 32 0 0 cm /Im0 Do Q\nendstream\nendobj\n");
+        let xref = pdf.len();
+        pdf.extend_from_slice(b"xref\n0 6\n0000000000 65535 f \n0000000009 00000 n \n0000000058 00000 n \n0000000111 00000 n \n");
+        pdf.extend_from_slice(format!("{:010} 00000 n \n", 300).as_bytes());
+        pdf.extend_from_slice(b"0000000487 00000 n \ntrailer<</Size 6/Root 1 0 R>>\nstartxref\n");
+        pdf.extend_from_slice(xref.to_string().as_bytes());
+        pdf.extend_from_slice(b"\n%%EOF");
+        std::fs::write(&scratch, &pdf).unwrap();
+
+        let prefix = std::env::temp_dir().join("pdf-core-g4-render");
+        let rendered = std::process::Command::new("pdftoppm")
+            .args(["-r", "30", "-png", "-singlefile"])
+            .arg(&scratch)
+            .arg(&prefix)
+            .output()
+            .expect("pdftoppm runs");
+        assert!(
+            rendered.status.success(),
+            "{}",
+            String::from_utf8_lossy(&rendered.stderr)
+        );
+        let png = std::fs::read(prefix.with_extension("png")).unwrap();
+        let raster = image::load_from_memory(&png).unwrap().to_luma8();
+        let (w, h) = raster.dimensions();
+        let corner = raster.get_pixel(1, 1)[0];
+        let bar = raster.get_pixel(w / 2, h / 2)[0];
+        println!("engine-encoded G4 rendered: corner={corner} bar={bar}");
+        assert!(
+            corner > 200 && bar < 60,
+            "engine G4 must render white bg + black bar"
+        );
     }
 
     const FIXTURE_SEED_FOR_TESTS: u32 = 0x1234_5678;

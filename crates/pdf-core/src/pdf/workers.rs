@@ -8,6 +8,7 @@ use std::{
         mpsc, Arc, Mutex,
     },
     thread,
+    time::Duration,
 };
 
 use super::ensure_not_cancelled;
@@ -76,12 +77,31 @@ where
         // Drop the spare sender so result_rx closes when all workers finish.
         drop(result_tx);
 
-        // Feed tasks into the channel.
+        // Feed tasks into the channel. A blocking `send` could never return
+        // under cancellation (the scope keeps a receiver alive, so the
+        // channel never disconnects while we wait), so the feed polls with
+        // `try_send` and re-checks the flag — cancellation unblocks the
+        // producer, whose early return drops the sender and releases the
+        // workers.
         for task in tasks {
-            ensure_not_cancelled(cancel_flag, task_id)?;
-            task_tx.send(task).map_err(|_| {
-                AppError::PdfBuild("Failed to schedule a worker-pool task.".to_string())
-            })?;
+            let mut task = task;
+            loop {
+                ensure_not_cancelled(cancel_flag, task_id)?;
+                match task_tx.try_send(task) {
+                    Ok(()) => break,
+                    Err(mpsc::TrySendError::Full(returned)) => {
+                        task = returned;
+                        // Workers are saturating the channel; a short park
+                        // keeps the poll cheap while progress is being made.
+                        thread::park_timeout(Duration::from_millis(2));
+                    }
+                    Err(mpsc::TrySendError::Disconnected(_)) => {
+                        return Err(AppError::PdfBuild(
+                            "A worker exited before its tasks were scheduled.".to_string(),
+                        ));
+                    }
+                }
+            }
         }
         drop(task_tx);
 

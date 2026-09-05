@@ -166,6 +166,9 @@ where
     let original_size_bytes = fs::metadata(&input_path)?.len();
     ensure_input_size_supported(original_size_bytes)?;
     let output_path = build_output_path(&input_path, &settings)?;
+    // A failed or cancelled run must not leave the empty placeholder the
+    // name claim created behind (it would steal the name from the retry).
+    let _claim_guard = OutputClaimGuard(output_path.clone());
 
     // --- Load the PDF document ---
     ensure_not_cancelled(&cancel_flag, path)?;
@@ -1406,6 +1409,23 @@ fn report_progress_if_needed<F>(
 // File path helpers
 // ---------------------------------------------------------------------------
 
+/// Removes an output-name placeholder when a run dies before writing real
+/// bytes: a 0-byte leftover would both confuse users and steal the name
+/// from the next attempt's allocation. Runs on early returns and panics;
+/// once the final write (or an explicit removal) has happened, the file is
+/// no longer empty and the guard is a no-op.
+pub(crate) struct OutputClaimGuard(pub(crate) PathBuf);
+
+impl Drop for OutputClaimGuard {
+    fn drop(&mut self) {
+        if let Ok(metadata) = fs::metadata(&self.0) {
+            if metadata.len() == 0 {
+                let _ = fs::remove_file(&self.0);
+            }
+        }
+    }
+}
+
 /// Pick the output path for `input_path` according to `settings.output_dir`,
 /// with the `__optimized-<preset>` naming and collision suffixes. Shared with
 /// the target-size search, which materializes next to the source file.
@@ -1439,6 +1459,11 @@ pub(crate) fn build_output_path(
 
     let base_name = format!("{stem}__optimized-{}", settings.preset.as_label());
 
+    // Atomically claim the name: two concurrent jobs exporting the same
+    // basename to one directory would otherwise both pass an `exists()`
+    // check and overwrite each other's result. The winner creates an empty
+    // placeholder that its own final write truncates (and its
+    // "did not shrink" branch removes); losers move on to the next suffix.
     for attempt in 0..100u16 {
         let suffix = if attempt == 0 {
             String::new()
@@ -1447,8 +1472,16 @@ pub(crate) fn build_output_path(
         };
 
         let candidate = parent.join(format!("{base_name}{suffix}.pdf"));
-        if !candidate.exists() {
-            return Ok(candidate);
+        match fs::File::options()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(_) => return Ok(candidate),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(AppError::Io(error));
+            }
         }
     }
 

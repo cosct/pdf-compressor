@@ -292,14 +292,21 @@ fn optional_dict_integer(dict: &Dictionary, key: &[u8]) -> Option<i64> {
 }
 
 /// Decode palette index bytes (4 or 8 bits per component) into index bytes.
-pub(crate) fn unpack_indices(data: &[u8], bits: i64) -> Option<Vec<u8>> {
+/// 4-bit rows start on byte boundaries — an odd-width row ends with a
+/// padding nibble that is not a pixel, so unpacking needs the row width.
+pub(crate) fn unpack_indices(data: &[u8], bits: i64, width: u32) -> Option<Vec<u8>> {
     match bits {
         8 => Some(data.to_vec()),
         4 => {
+            let row_bytes = (width as usize).div_ceil(2);
+            let row_width = width as usize;
             let mut indices = Vec::with_capacity(data.len() * 2);
-            for byte in data {
-                indices.push(byte >> 4);
-                indices.push(byte & 0x0F);
+            for row in data.chunks(row_bytes) {
+                indices.extend(
+                    row.iter()
+                        .flat_map(|byte| [byte >> 4, byte & 0x0F])
+                        .take(row_width),
+                );
             }
             Some(indices)
         }

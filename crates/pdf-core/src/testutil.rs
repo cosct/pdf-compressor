@@ -462,8 +462,9 @@ pub fn jpx_bilevel_reference() -> GrayImage {
 }
 
 /// Encode a grayscale image as CCITT Group 4 (luma >= 128 → white). Used to
-/// build CCITT *input* fixtures; mirrors the engine's T.6 conventions
-/// (`BlackIs1: true`).
+/// build CCITT *input* fixtures; mirrors the engine's polarity model: the
+/// fax crate's `White` runs are 1-bits, so a `BlackIs1: true` fixture needs
+/// white pixels on 0-bit (`Color::Black`) runs.
 #[cfg(feature = "ccitt")]
 pub fn encode_ccitt_g4(image: &GrayImage) -> Vec<u8> {
     let (width, _) = image.dimensions();
@@ -471,7 +472,7 @@ pub fn encode_ccitt_g4(image: &GrayImage) -> Vec<u8> {
     for row in image.as_raw().chunks(width as usize) {
         let _ = encoder.encode_line(
             row.iter()
-                .map(|&luma| if luma >= 128 { fax::Color::White } else { fax::Color::Black }),
+                .map(|&luma| if luma >= 128 { fax::Color::Black } else { fax::Color::White }),
             width,
         );
     }
