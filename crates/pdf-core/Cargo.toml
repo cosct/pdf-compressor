@@ -43,6 +43,10 @@ jpx = ["dep:jpeg2k"]
 [dependencies]
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 lopdf = "0.44"
+# Pure-Rust JBIG2 (ITU T.88) decode for scanned text pages — no feature
+# gate needed (no C toolchain). `std` only: the decode sink is local, so
+# neither the `image` integration nor `simd` features are required.
+hayro-jbig2 = { version = "0.3", default-features = false, features = ["std"] }
 fax = { version = "0.3", optional = true }
 subsetter = { version = "0.2", optional = true }
 # No-default-features: we assemble planes from `components()` ourselves

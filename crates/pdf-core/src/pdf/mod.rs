@@ -9,6 +9,7 @@ mod compressor;
 mod encode;
 #[cfg(feature = "subset-fonts")]
 mod fonts;
+mod jbig2;
 #[cfg(feature = "jpx")]
 mod jpx;
 mod resources;

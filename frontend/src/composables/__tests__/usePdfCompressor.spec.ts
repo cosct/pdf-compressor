@@ -84,6 +84,7 @@ function makeSettings(overrides: Partial<CompressionSettings> = {}): Compression
     grayscale: false,
     bilevelCodec: 'jpeg',
     subsetFonts: false,
+    cmykConversion: false,
     outputDir: null,
     targetFileSizeMb: null,
     ...overrides,
@@ -158,6 +159,7 @@ describe('normalizeSettings', () => {
       grayscale: false,
       bilevelCodec: 'jpeg',
       subsetFonts: false,
+      cmykConversion: false,
       outputDir: '  /tmp/out  ',
       targetFileSizeMb: 99999,
     })
@@ -177,6 +179,7 @@ describe('normalizeSettings', () => {
         grayscale: false,
         bilevelCodec: 'jpeg',
         subsetFonts: false,
+        cmykConversion: false,
         outputDir: null,
         targetFileSizeMb: 0,
       }).targetFileSizeMb,
@@ -195,6 +198,7 @@ describe('normalizeSettings', () => {
       grayscale: undefined as unknown as boolean,
       bilevelCodec: undefined as unknown as 'jpeg',
       subsetFonts: undefined as unknown as boolean,
+      cmykConversion: false,
       outputDir: null,
       targetFileSizeMb: null,
     })
@@ -214,6 +218,7 @@ describe('normalizeSettings', () => {
       grayscale: true,
       bilevelCodec: 'ccitt-g4',
       subsetFonts: true,
+      cmykConversion: false,
       outputDir: null,
       targetFileSizeMb: null,
     })
@@ -485,6 +490,7 @@ describe('queue restore', () => {
       grayscale: true,
       bilevelCodec: 'ccitt-g4',
       subsetFonts: true,
+      cmykConversion: false,
       outputDir: '/tmp/custom-out',
       targetFileSizeMb: null,
     })

@@ -286,6 +286,9 @@ pub(crate) fn image_codec_class(stream: &Stream) -> (bool, bool) {
 /// properties at `target_edge` under `policy`? Mirrors the fast-path skip
 /// heuristics of `optimize_image_stream` — used by the analyzer so the
 /// estimated savings only count images that can actually shrink.
+/// `cmyk_declared` marks a CMYK color space, which stays untouched under
+/// the default settings (the conversion is opt-in).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn image_is_actionable(
     is_jpeg: bool,
     codec_supported: bool,
@@ -294,8 +297,9 @@ pub(crate) fn image_is_actionable(
     pixels: Option<u64>,
     target_edge: u32,
     policy: SkipPolicy,
+    cmyk_declared: bool,
 ) -> bool {
-    if !codec_supported {
+    if !codec_supported || cmyk_declared {
         return false;
     }
     if let Some(pixels) = pixels {
@@ -345,6 +349,7 @@ pub(super) fn optimize_image_stream(
     skip_policy: SkipPolicy,
     mut search_cache: Option<&mut ImageSearchCache>,
     color_space: Option<&ImageColorSpaceInfo>,
+    jbig2_globals: Option<&[u8]>,
 ) -> Result<ImageOptimization, AppError> {
     ensure_not_cancelled(cancel_flag, task_id)?;
     // --- Skip: stencil image masks and color-key masks stay untouched ---
@@ -437,6 +442,19 @@ pub(super) fn optimize_image_stream(
         return Ok(ImageOptimization::Skipped { reason });
     }
 
+    // --- CMYK fidelity gate (opt-in conversion) ---
+    // The naive ink-subtraction conversion deviates measurably from how
+    // color-managed renderers interpret CMYK, so CMYK images stay untouched
+    // unless the user opted in (or requested a grayscale/G4 collapse, where
+    // the deviation is far below the intent's own loss). Applies to every
+    // path: raw and indexed planes here, CMYK JPEGs (the JPEG decoder
+    // silently converts), and 4-component JPX codestreams at decode.
+    if declares_cmyk(stream, color_space) && !settings.converts_cmyk() {
+        return Ok(ImageOptimization::Skipped {
+            reason: "CMYK image kept untouched (enable the CMYK conversion setting to re-encode)".into(),
+        });
+    }
+
     if let Some(reason) = raw_recompression_skip_reason(stream, filter_info, color_space) {
         return Ok(ImageOptimization::Skipped { reason });
     }
@@ -478,7 +496,7 @@ pub(super) fn optimize_image_stream(
             } else if filter_info.has_jpx {
                 #[cfg(feature = "jpx")]
                 {
-                    super::jpx::decode_jpx_stream(stream)
+                    super::jpx::decode_jpx_stream(stream, settings.converts_cmyk())
                         .map_err(|e| format!("failed to decode JPX image stream: {e}"))
                 }
                 #[cfg(not(feature = "jpx"))]
@@ -486,6 +504,9 @@ pub(super) fn optimize_image_stream(
                     // Unreachable: non-decodable JPX was skipped above.
                     Err("JPX support is not compiled in".to_string())
                 }
+            } else if filter_info.has_jbig2 {
+                super::jbig2::decode_jbig2_stream(stream, jbig2_globals)
+                    .map_err(|e| format!("failed to decode JBIG2 image stream: {e}"))
             } else {
                 decode_raw_image_stream(stream, color_space)
                     .map_err(|e| format!("failed to decode raw image stream: {e}"))
@@ -807,6 +828,27 @@ fn skip_recompression_reason(
     None
 }
 
+/// Does this stream declare a CMYK color space — resolved (ICC N=4,
+/// CMYK-based Indexed) or by a plain `/DeviceCMYK` name (covers CMYK JPEGs
+/// and raw planes alike)? Shared by the compressor gate and the analyzer's
+/// actionable mirror.
+pub(crate) fn declares_cmyk(
+    stream: &Stream,
+    color_space: Option<&ImageColorSpaceInfo>,
+) -> bool {
+    if let Some(info) = color_space {
+        return match &info.decode {
+            DecodeColorSpace::Cmyk => true,
+            DecodeColorSpace::Indexed { base_channels, .. } => *base_channels == 4,
+            _ => false,
+        };
+    }
+    matches!(
+        stream.dict.get(b"ColorSpace"),
+        Ok(Object::Name(name)) if name.as_slice() == b"DeviceCMYK"
+    )
+}
+
 fn raw_recompression_skip_reason(
     stream: &Stream,
     filter_info: StreamFilterInfo,
@@ -815,9 +857,9 @@ fn raw_recompression_skip_reason(
     if filter_info.has_jpeg {
         return None;
     }
-    // CCITT and JPX streams go through their own decoders; the raw-plane
-    // checks below (bit depth, name color space) do not apply to them.
-    if filter_info.has_ccitt || filter_info.has_jpx {
+    // CCITT, JPX, and JBIG2 streams go through their own decoders; the
+    // raw-plane checks below (bit depth, name color space) do not apply.
+    if filter_info.has_ccitt || filter_info.has_jpx || filter_info.has_jbig2 {
         return None;
     }
 
@@ -1610,6 +1652,7 @@ struct StreamFilterInfo {
     has_jpeg: bool,
     has_ccitt: bool,
     has_jpx: bool,
+    has_jbig2: bool,
     has_unsupported_filter: bool,
 }
 
@@ -1633,7 +1676,8 @@ fn stream_filter_info(stream: &Stream) -> StreamFilterInfo {
             b"DCTDecode" => info.has_jpeg = true,
             b"CCITTFaxDecode" => info.has_ccitt = true,
             b"JPXDecode" => info.has_jpx = true,
-            b"JBIG2Decode" | b"Crypt" => info.has_unsupported_filter = true,
+            b"JBIG2Decode" => info.has_jbig2 = true,
+            b"Crypt" => info.has_unsupported_filter = true,
             _ => {}
         }
     }
@@ -1662,6 +1706,16 @@ fn stream_filter_info(stream: &Stream) -> StreamFilterInfo {
     #[cfg(not(feature = "jpx"))]
     let jpx_decodable = false;
     if info.has_jpx && !jpx_decodable {
+        info.has_unsupported_filter = true;
+    }
+
+    // JBIG2 input is decodable in the plain embedded shape: single-element
+    // filter chain, sane dimensions, no DecodeParms/Decode arrays. The
+    // `/JBIG2Globals` context is resolved document-side; everything here is
+    // stream-local like the other gates.
+    let jbig2_decodable =
+        info.has_jbig2 && names.len() == 1 && super::jbig2::jbig2_input_shape(stream).is_some();
+    if info.has_jbig2 && !jbig2_decodable {
         info.has_unsupported_filter = true;
     }
 

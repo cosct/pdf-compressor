@@ -48,6 +48,9 @@ QUICK OPTIONS (background mode, used by file-manager context menus):
     --bilevel <CODEC>     Codec for near-black-and-white images: g4 | jpeg
                           (g4 = lossless CCITT Group 4, best for text scans)
     --subset-fonts       Shrink embedded CID TrueType fonts to used glyphs
+    --convert-cmyk       Convert CMYK images to RGB for re-encoding (off by
+                          default; the naive conversion shifts colors slightly
+                          vs color-managed viewers, see docs)
     --keep-metadata       Keep document metadata (removed by default)
     --target-size <SIZE>  Fit the output under this size (e.g. 5MB, 500K)
     --password <PW>       Open password for encrypted PDFs (applies to every
@@ -171,6 +174,11 @@ fn compression_overrides(rest: &[String]) -> Result<CompressionSettingsOverrides
             None
         },
         subset_fonts: if rest.iter().any(|arg| arg == "--subset-fonts") {
+            Some(true)
+        } else {
+            None
+        },
+        cmyk_conversion: if rest.iter().any(|arg| arg == "--convert-cmyk") {
             Some(true)
         } else {
             None

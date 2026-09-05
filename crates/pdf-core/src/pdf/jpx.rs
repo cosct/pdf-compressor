@@ -67,8 +67,10 @@ pub(super) fn jpx_input_shape(stream: &Stream) -> Option<JpxInputShape> {
 /// Decode a JPX image stream into an RGB or grayscale plane. The codestream
 /// may be a raw J2K codestream or a JP2 file — `from_bytes` auto-detects —
 /// because both forms appear inside PDFs. Four-component (CMYK) codestreams
-/// come back as RGB via the shared ink-subtraction conversion.
-pub(super) fn decode_jpx_stream(stream: &Stream) -> Result<DynamicImage, AppError> {
+/// come back as RGB via the shared ink-subtraction conversion, but only
+/// when `allow_cmyk` is set (the compressor's opt-in gate); otherwise they
+/// fail cleanly so the image keeps its original stream.
+pub(super) fn decode_jpx_stream(stream: &Stream, allow_cmyk: bool) -> Result<DynamicImage, AppError> {
     let shape = jpx_input_shape(stream)
         .ok_or_else(|| AppError::PdfBuild("JPX stream does not use a supported decode shape".into()))?;
     let image = jpeg2k::Image::from_bytes(&stream.content).map_err(|error| {
@@ -120,7 +122,7 @@ pub(super) fn decode_jpx_stream(stream: &Stream) -> Result<DynamicImage, AppErro
                 .map(DynamicImage::ImageRgb8)
                 .ok_or_else(|| AppError::PdfBuild("JPX decode produced mismatched buffer".into()))
         }
-        [cyan, magenta, yellow, key] => {
+        [cyan, magenta, yellow, key] if allow_cmyk => {
             let mut pixels = Vec::with_capacity(width as usize * height as usize * 3);
             for (c, (m, (y, k))) in cyan
                 .data_u8()
@@ -186,7 +188,7 @@ mod tests {
             ("bilevel-j2k", JPX_BILEVEL_J2K, true, 1),
         ] {
             let stream = fixture_stream(content, bilevel);
-            let plane = decode_jpx_stream(&stream)
+            let plane = decode_jpx_stream(&stream, true)
                 .unwrap_or_else(|error| panic!("{name}: {error}"));
             assert_eq!(plane.dimensions(), fixture_dims(bilevel), "{name} dimensions");
             let bytes = plane.as_bytes();
@@ -204,26 +206,26 @@ mod tests {
     /// planes).
     #[test]
     fn lossless_codestreams_round_trip_exactly() {
-        let rgb = decode_jpx_stream(&fixture_stream(JPX_RGB_J2K, false)).expect("rgb j2k");
+        let rgb = decode_jpx_stream(&fixture_stream(JPX_RGB_J2K, false), true).expect("rgb j2k");
         assert_eq!(
             rgb.to_rgb8().as_raw(),
             jpx_rgb_reference().as_raw(),
             "RGB codestream must decode to the reference plane"
         );
-        let rgb_jp2 = decode_jpx_stream(&fixture_stream(JPX_RGB_JP2, false)).expect("rgb jp2");
+        let rgb_jp2 = decode_jpx_stream(&fixture_stream(JPX_RGB_JP2, false), true).expect("rgb jp2");
         assert_eq!(
             rgb_jp2.to_rgb8().as_raw(),
             jpx_rgb_reference().as_raw(),
             "JP2 container must yield the same pixels as the raw codestream"
         );
-        let gray = decode_jpx_stream(&fixture_stream(JPX_GRAY_J2K, false)).expect("gray j2k");
+        let gray = decode_jpx_stream(&fixture_stream(JPX_GRAY_J2K, false), true).expect("gray j2k");
         assert_eq!(
             gray.to_luma8().as_raw(),
             jpx_gray_reference().as_raw(),
             "grayscale codestream must decode to the reference plane"
         );
         let bilevel =
-            decode_jpx_stream(&fixture_stream(JPX_BILEVEL_J2K, true)).expect("bilevel");
+            decode_jpx_stream(&fixture_stream(JPX_BILEVEL_J2K, true), true).expect("bilevel");
         assert_eq!(
             bilevel.to_luma8().as_raw(),
             jpx_bilevel_reference().as_raw(),
@@ -238,7 +240,7 @@ mod tests {
             i64::from(JPX_PLANE_WIDTH) + 32,
             i64::from(JPX_PLANE_HEIGHT),
         );
-        assert!(decode_jpx_stream(&stream).is_err());
+        assert!(decode_jpx_stream(&stream, true).is_err());
     }
 
     #[test]
@@ -266,8 +268,8 @@ mod tests {
         let width = i64::from(JPX_PLANE_WIDTH);
         let height = i64::from(JPX_PLANE_HEIGHT);
         let stream = jpx_stream(b"not a codestream at all", width, height);
-        assert!(decode_jpx_stream(&stream).is_err());
+        assert!(decode_jpx_stream(&stream, true).is_err());
         let empty = jpx_stream(&[], width, height);
-        assert!(decode_jpx_stream(&empty).is_err());
+        assert!(decode_jpx_stream(&empty, true).is_err());
     }
 }

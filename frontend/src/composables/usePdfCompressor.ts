@@ -71,6 +71,7 @@ function createSettingsForPreset(
     grayscale: overrides?.grayscale ?? presetDefaults.grayscale,
     bilevelCodec: overrides?.bilevelCodec ?? presetDefaults.bilevelCodec,
     subsetFonts: overrides?.subsetFonts ?? presetDefaults.subsetFonts,
+    cmykConversion: overrides?.cmykConversion ?? presetDefaults.cmykConversion,
     outputDir: overrides?.outputDir ?? null,
     targetFileSizeMb: overrides?.targetFileSizeMb ?? null,
   })
@@ -105,6 +106,7 @@ export function normalizeSettings(settings: CompressionSettings): CompressionSet
     grayscale: settings.grayscale ?? false,
     bilevelCodec: settings.bilevelCodec === 'ccitt-g4' ? 'ccitt-g4' : 'jpeg',
     subsetFonts: settings.subsetFonts ?? false,
+    cmykConversion: settings.cmykConversion ?? false,
     outputDir: settings.outputDir?.trim() ? settings.outputDir.trim() : null,
     targetFileSizeMb: normalizeTargetFileSizeMb(settings.targetFileSizeMb),
   }
@@ -176,6 +178,7 @@ function comparableCompressionSettings(settings: CompressionSettings) {
     grayscale: normalized.grayscale,
     bilevelCodec: normalized.bilevelCodec,
     subsetFonts: normalized.subsetFonts,
+    cmykConversion: normalized.cmykConversion,
     targetFileSizeMb: normalized.targetFileSizeMb,
   }
 }

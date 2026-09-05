@@ -17,8 +17,9 @@
 
 ### 新增
 
+- **JBIG2（T.88）输入解码**：扫描文本页的最后一个输入编解码盲区。`hayro-jbig2`（纯 Rust、Apache-2.0 OR MIT、T.88 全量、hayro PDF 渲染器同源）接入，无 feature 门控、默认构建即含。`/JBIG2Globals` 共享符号字典在准备阶段预解析、随流携带到 worker；形状门禁照 CCITT/JPX 模式收口；解码平面（本地 push-based sink 直组灰度）自动落 G4/JPEG 出口。夹具为 conformance 语料的真实 A4 扫描页（`scripts/make-jbig2-fixture.sh` 再生），poppler 渲染门禁做保真锚点；无收益转码（符号压缩的 JBIG2 常比 G4 更小）被"不写更大输出"规则正确拒绝。输出侧编码维持许可门禁结论（G4 仍是唯一双级出口）
+- **CMYK 转换开关（`cmyk_conversion`，默认关）**：实测朴素减色公式与渲染器 CMS 解释存在 ≈7.6dB 系统偏差（质量档不敏感，见 0.7.0 调研）后，CMYK 图片默认回到保持原样的保守行为；开关（GUI 设置卡 / CLI `--convert-cmyk` / quick 档案 / 预设档案）显式开启转换；**灰度/G4 请求隐式开启**（彩色→灰度折叠本身即有损意图，偏差远小）；统一 gate 拦截 ICC N=4 / DeviceCMYK / CMYK 基 Indexed / CMYK JPEG / 4 分量 JPX 全部路径；分析器预估按默认设置镜像（宁低勿高）。0.7.0 将以 lcms2 真转换达标（验收 ≥25dB）后评估翻转默认值
 - **JPX（JPEG 2000）输入解码**（feature `jpx`，默认关闭以保持默认构建纯 Rust；桌面 release 安装包与 AUR 包开启）：PDF 内嵌的 JPEG 2000 图片（J2K 裸码流与 JP2 容器两种形态）现可解码转码为 JPEG/G4 压缩；1/3/4 分量分别按灰度/RGB/CMYK 处理。实现经 `jpeg2k`（OpenJPEG 安全封装）——vendored OpenJPEG 用 `cc` 静态编译链接，**无需 cmake、无需在安装包携带运行时动态库**，三平台打包风险由此消除（2026-09 spike 结论）。unsafe C 面配专职 fuzz target（`cargo +nightly fuzz run jpx`，CI 45s 冒烟）；形状门禁照 CCITT 模式在 `stream_filter_info` 收口，分析器预估自动跟随
-- **CMYK 图片支持**：ICC N=4、`DeviceCMYK`、CMYK 基 Indexed 的图片经油墨减色转换（`(1-cmy)×(1-k)`）转为 RGB 后走既有 JPEG 管线；重建流声明 `DeviceRGB`（CMYK profile 不随行）；带 `/Decode` 映射数组的 CMYK 保持跳过（防静默偏色）。**已知限制**：朴素减色公式与主流渲染器的色彩管理解释存在系统性偏差（poppler 基准实测 ≈7.6 dB，质量档不敏感），屏幕分享对比前后可感知偏色，印刷场景建议关闭图片重压缩；真色彩管理（lcms2）列入 0.7.0 计划
 - **2GiB 输入上限的友好提示**：专用错误码 `error.inputTooLarge`（GUI 双语文案就位），携带人性化体积（如 "2.1 GB"）而非原始字节数
 - **内存护栏**：目标大小搜索的缓存预算核算扩展到 alpha/G4 产物（原先只算彩色平面），超限两级淘汰；多图大文档搜索的进程内存峰值测试护栏（Linux，实测 ≈390MB / 上限 2GB）；worker 池按编解码真实内存占用估算并发数（JPX 19 字节/像素、CMYK 7 字节/像素）
 - **CFF 字体子集化**：Type0→CIDFontType0（CFF 轮廓，现代 PDF 内嵌字体主流）现可裁剪——FontFile3 的 `/CIDFontType0C`、误标 `/Type1C` 与 `/OpenType` 包装输入均支持。内容流 CID 零改写：subsetter 输出的恒等 charset 经"尾部追加 format-0 charset + 改 Top DICT 偏移"桥接回原 CID；`/W` 保持不动。含最小 CFF 解析器（`pdf/cff.rs`，fail-closed）、poppler 渲染比对门禁（工具缺失时跳过）、fuzz 目标开启字体路径。TrueType（CIDFontType2）子集化行为不变
@@ -26,7 +27,8 @@
 
 ### 变更
 
-- 分析器"不支持的编解码"通知文案更新（CCITT/JPX 的可解码形状不再点名）
+- **CMYK 默认行为回退**：0.6.0 开发中途引入的 CMYK→RGB 自动转换改为默认关闭（实测偏色后回退到 0.5 的保守行为），需显式开启 `cmyk_conversion`（灰度/G4 模式不受影响，照常转换）
+- 分析器"不支持的编解码"通知文案更新（JBIG2/CCITT/JPX 的可解码形状不再点名；JBIG2 已支持解码）
 - 质量门禁基线解码器覆盖 JPX 输入流（`PDF_COMPRESSOR_QUALITY_CORPUS` 语料中的 JPEG 2000 文件纳入 PSNR 基线）
 - 测试新增 JPX 集成路径：J2K/JP2 转码一致性（逐字节）、双级 JPX 转 G4、字典不一致与 flate 混合链保持原样、目标大小搜索覆盖；夹具码流 committed 于 `crates/pdf-core/assets/`（`scripts/make-jpx-fixtures.sh` 再生）
 

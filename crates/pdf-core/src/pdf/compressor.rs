@@ -113,6 +113,8 @@ pub(super) struct ImageTask {
     /// Resolved color-space context (ICC/Indexed/aliases); `None` means the
     /// stream dictionary alone describes the pixels.
     pub(super) color_space: Option<super::colorspace::ImageColorSpaceInfo>,
+    /// `/JBIG2Globals` segment bytes for JBIG2 images; `None` otherwise.
+    pub(super) jbig2_globals: Option<Vec<u8>>,
     /// Cached stream byte length — avoids re-reading during scheduling.
     stream_size: usize,
 }
@@ -508,6 +510,8 @@ pub(crate) struct DocumentPreparation {
     /// Document-level color-space context per image (ICC channel counts,
     /// indexed palettes, resolved name aliases).
     pub color_space_by_image: HashMap<ObjectId, super::colorspace::ImageColorSpaceInfo>,
+    /// `/JBIG2Globals` segment bytes per image (shared symbol dictionaries).
+    pub jbig2_globals_by_image: HashMap<ObjectId, Vec<u8>>,
 }
 
 /// Shared preparation pass used by both compression entry points: lossless
@@ -661,10 +665,30 @@ where
         }
     }
 
+    // --- JBIG2 globals: shared symbol-dictionary segments referenced via
+    // `/JBIG2Globals` — decoded once per document while it is intact (the
+    // same pre-resolution pattern as the color spaces above). ---
+    let mut jbig2_globals_by_image: HashMap<ObjectId, Vec<u8>> = HashMap::new();
+    for &image_id in &image_object_ids {
+        let Some(Object::Stream(stream)) = document.objects.get(&image_id) else {
+            continue;
+        };
+        let Ok(Object::Reference(globals_id)) = stream.dict.get(b"JBIG2Globals") else {
+            continue;
+        };
+        let Some(Object::Stream(globals)) = document.objects.get(globals_id) else {
+            continue;
+        };
+        if let Ok(bytes) = globals.get_plain_content() {
+            jbig2_globals_by_image.insert(image_id, bytes);
+        }
+    }
+
     Ok(DocumentPreparation {
         image_object_ids,
         shared_smask_ids,
         color_space_by_image,
+        jbig2_globals_by_image,
     })
 }
 
@@ -904,6 +928,7 @@ where
         &preparation.image_object_ids,
         &preparation.shared_smask_ids,
         &preparation.color_space_by_image,
+        &preparation.jbig2_globals_by_image,
     );
     if image_tasks.is_empty() {
         report_progress(ProgressUpdate::new(
@@ -934,6 +959,7 @@ where
                 stream,
                 smask,
                 color_space,
+                jbig2_globals,
                 ..
             } = task;
             let optimization = optimize_image_stream(
@@ -945,6 +971,7 @@ where
                 skip_policy,
                 None,
                 color_space.as_ref(),
+                jbig2_globals.as_deref(),
             )?;
             apply_image_optimization(document, object_id, stream, smask, optimization, stats);
             report_progress_if_needed(
@@ -973,6 +1000,7 @@ where
                 stream,
                 smask,
                 color_space,
+                jbig2_globals,
                 ..
             } = task;
             let result = optimize_image_stream(
@@ -984,6 +1012,7 @@ where
                 skip_policy,
                 None,
                 color_space.as_ref(),
+                jbig2_globals.as_deref(),
             );
             // The borrowed originals travel back with the outcome so
             // the main thread can restore them on skip.
@@ -1034,6 +1063,7 @@ pub(super) fn take_image_tasks(
     image_object_ids: &[ObjectId],
     shared_smask_ids: &HashSet<ObjectId>,
     color_spaces: &HashMap<ObjectId, super::colorspace::ImageColorSpaceInfo>,
+    jbig2_globals: &HashMap<ObjectId, Vec<u8>>,
 ) -> Vec<ImageTask> {
     let mut tasks = Vec::with_capacity(image_object_ids.len());
 
@@ -1080,6 +1110,7 @@ pub(super) fn take_image_tasks(
                     stream,
                     smask,
                     color_space: color_spaces.get(&object_id).cloned(),
+                    jbig2_globals: jbig2_globals.get(&object_id).cloned(),
                     stream_size,
                 });
             }

@@ -69,7 +69,8 @@ const canResetPresets = computed(() => {
     props.settings.stripMetadata !== defaults.stripMetadata ||
     props.settings.grayscale !== defaults.grayscale ||
     props.settings.bilevelCodec !== defaults.bilevelCodec ||
-    props.settings.subsetFonts !== defaults.subsetFonts
+    props.settings.subsetFonts !== defaults.subsetFonts ||
+    props.settings.cmykConversion !== defaults.cmykConversion
   )
 })
 
@@ -115,6 +116,7 @@ async function saveCurrentAsPreset() {
       grayscale: props.settings.grayscale,
       bilevelCodec: props.settings.bilevelCodec,
       subsetFonts: props.settings.subsetFonts,
+      cmykConversion: props.settings.cmykConversion,
     })
     await refreshPresetProfiles()
     emit('preset-config-saved')
@@ -518,6 +520,20 @@ function presetSnapshotLabel(preset: CompressionPreset): string {
               />
             </span>
             <span class="toggle-chip__label">{{ t('settings.subsetFonts') }}</span>
+          </label>
+
+          <label class="toggle-chip" :title="t('settings.cmykConversionHint')">
+            <span class="fd-toggle">
+              <input
+                type="checkbox"
+                :checked="props.settings.cmykConversion"
+                :disabled="props.disabled"
+                @change="
+                  updateSetting('cmykConversion', ($event.target as HTMLInputElement).checked)
+                "
+              />
+            </span>
+            <span class="toggle-chip__label">{{ t('settings.cmykConversion') }}</span>
           </label>
         </div>
       </div>

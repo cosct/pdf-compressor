@@ -50,6 +50,7 @@ const LEGACY_PROFILE_FALLBACK = {
   grayscale: false,
   bilevelCodec: 'jpeg',
   subsetFonts: false,
+  cmykConversion: false,
 } as const
 
 function sanitizePresetProfile(
@@ -76,6 +77,8 @@ function sanitizePresetProfile(
         : (fallback.bilevelCodec ?? LEGACY_PROFILE_FALLBACK.bilevelCodec),
     subsetFonts:
       profile?.subsetFonts ?? fallback.subsetFonts ?? LEGACY_PROFILE_FALLBACK.subsetFonts,
+    cmykConversion:
+      profile?.cmykConversion ?? fallback.cmykConversion ?? LEGACY_PROFILE_FALLBACK.cmykConversion,
   }
 }
 

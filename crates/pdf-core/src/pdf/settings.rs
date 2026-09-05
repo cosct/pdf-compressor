@@ -102,6 +102,15 @@ pub struct CompressionSettings {
     /// Shrink embedded Type0/CIDFontType2 TrueType fonts to the used glyphs
     /// (opt-in; `subset-fonts` feature). Non-eligible fonts are untouched.
     pub subset_fonts: bool,
+    /// Convert CMYK images (ICC N=4, `DeviceCMYK`, CMYK-based Indexed, CMYK
+    /// JPEG, 4-component JPX) to RGB for re-encoding. **Opt-in and default
+    /// off**: the ink-subtraction conversion differs measurably from how
+    /// mainstream renderers color-manage CMYK (poppler baseline ≈7.6 dB on
+    /// proper Adobe fixtures, quality-insensitive), so CMYK images stay
+    /// untouched unless the user asks. Grayscale/G4 requests imply the
+    /// conversion — any color-to-luma collapse is already lossy by intent
+    /// and the CMYK→gray deviation is far below the color one.
+    pub cmyk_conversion: bool,
     pub output_dir: Option<String>,
 }
 
@@ -116,6 +125,7 @@ pub struct CompressionSettingsOverrides {
     pub grayscale: Option<bool>,
     pub bilevel_codec: Option<BilevelCodec>,
     pub subset_fonts: Option<bool>,
+    pub cmyk_conversion: Option<bool>,
     pub output_dir: Option<String>,
 }
 
@@ -133,6 +143,7 @@ impl CompressionSettingsOverrides {
             grayscale: self.grayscale.or(fallback.grayscale),
             bilevel_codec: self.bilevel_codec.or(fallback.bilevel_codec),
             subset_fonts: self.subset_fonts.or(fallback.subset_fonts),
+            cmyk_conversion: self.cmyk_conversion.or(fallback.cmyk_conversion),
             output_dir: self.output_dir.or(fallback.output_dir),
         }
     }
@@ -154,6 +165,9 @@ impl CompressionSettings {
         let payload_strip_metadata = payload.as_ref().and_then(|value| value.strip_metadata);
         let payload_grayscale = payload.as_ref().and_then(|value| value.grayscale);
         let payload_subset_fonts = payload.as_ref().and_then(|value| value.subset_fonts);
+        let payload_cmyk_conversion = payload
+            .as_ref()
+            .and_then(|value| value.cmyk_conversion);
         let payload_bilevel_codec = payload
             .as_ref()
             .and_then(|value| value.bilevel_codec.as_deref())
@@ -193,8 +207,19 @@ impl CompressionSettings {
                 .subset_fonts
                 .or(payload_subset_fonts)
                 .unwrap_or(false),
+            cmyk_conversion: overrides
+                .cmyk_conversion
+                .or(payload_cmyk_conversion)
+                .unwrap_or(false),
             output_dir: overrides.output_dir.or(payload_output_dir),
         }
+    }
+
+    /// Whether CMYK images may be converted for re-encoding under these
+    /// settings: the explicit opt-in, or an implied conversion request
+    /// (grayscale / G4 bilevel output collapses color by design).
+    pub fn converts_cmyk(&self) -> bool {
+        self.cmyk_conversion || self.grayscale || self.bilevel_codec.uses_ccitt()
     }
 }
 
@@ -217,6 +242,7 @@ mod tests {
             grayscale: None,
             bilevel_codec: None,
             subset_fonts: None,
+            cmyk_conversion: None,
             output_dir: None,
         })
     }

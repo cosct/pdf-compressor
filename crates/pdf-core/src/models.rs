@@ -30,6 +30,11 @@ pub struct CompressionSettingsPayload {
     /// Shrink embedded Type0/CIDFontType2 TrueType fonts to the used glyphs.
     #[serde(default)]
     pub subset_fonts: Option<bool>,
+    /// Convert CMYK images to RGB for re-encoding (opt-in, default off —
+    /// the naive ink-subtraction conversion shifts colors measurably
+    /// against color-managed renderers; grayscale requests imply it).
+    #[serde(default)]
+    pub cmyk_conversion: Option<bool>,
     pub output_dir: Option<String>,
 }
 
@@ -110,6 +115,9 @@ pub struct PresetProfilePayload {
     pub bilevel_codec: Option<String>,
     #[serde(default)]
     pub subset_fonts: Option<bool>,
+    /// Opt-in CMYK→RGB conversion for re-encoding (default off).
+    #[serde(default)]
+    pub cmyk_conversion: Option<bool>,
 }
 
 impl Default for PresetProfilePayload {
@@ -123,6 +131,7 @@ impl Default for PresetProfilePayload {
             grayscale: None,
             bilevel_codec: None,
             subset_fonts: None,
+            cmyk_conversion: None,
         }
     }
 }
@@ -175,6 +184,9 @@ pub struct QuickProfilePayload {
     pub bilevel_codec: Option<String>,
     #[serde(default)]
     pub subset_fonts: Option<bool>,
+    /// Opt-in CMYK→RGB conversion for re-encoding (default off).
+    #[serde(default)]
+    pub cmyk_conversion: Option<bool>,
     /// Byte budget for target-size mode; absent means plain compression.
     #[serde(default)]
     pub target_size_bytes: Option<u32>,
@@ -193,6 +205,7 @@ impl Default for QuickProfilePayload {
             grayscale: None,
             bilevel_codec: None,
             subset_fonts: None,
+            cmyk_conversion: None,
             target_size_bytes: None,
         }
     }

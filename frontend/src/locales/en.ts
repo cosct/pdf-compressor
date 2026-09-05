@@ -114,6 +114,9 @@ const en = {
     colorModeBw: 'Black & white (G4)',
     subsetFonts: 'Subset fonts',
     subsetFontsHint: 'Trim embedded fonts to the glyphs the document actually uses',
+    cmykConversion: 'Convert CMYK images',
+    cmykConversionHint:
+      'Re-encode CMYK images as RGB (off by default: the conversion shifts colors slightly compared to color-managed viewers; grayscale mode converts anyway)',
     outputDir: 'Output directory',
     outputDirDefault: 'Same as source',
     outputDirBrowse: 'Browse',

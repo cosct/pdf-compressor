@@ -235,6 +235,19 @@ fn maximum_settings() -> CompressionSettings {
     )
 }
 
+/// Maximum preset with the opt-in CMYK→RGB conversion enabled (the CMYK
+/// transcode tests assert the converted path).
+fn cmyk_settings() -> CompressionSettings {
+    CompressionSettings::from_sources(
+        None,
+        CompressionSettingsOverrides {
+            preset: Some("maximum".to_string()),
+            cmyk_conversion: Some(true),
+            ..Default::default()
+        },
+    )
+}
+
 fn noop_cancel_flag() -> Arc<AtomicBool> {
     Arc::new(AtomicBool::new(false))
 }
@@ -2028,7 +2041,7 @@ fn icc_cmyk_raw_image_transcodes_to_rgb() {
 
     let response = compress_pdf_with_progress(
         path.to_str().unwrap(), None,
-        maximum_settings(),
+        cmyk_settings(),
         noop_cancel_flag(),
         |_| {},
     )
@@ -2097,7 +2110,7 @@ fn device_cmyk_raw_image_transcodes_to_rgb() {
 
     let response = compress_pdf_with_progress(
         path.to_str().unwrap(), None,
-        maximum_settings(),
+        cmyk_settings(),
         noop_cancel_flag(),
         |_| {},
     )
@@ -2176,6 +2189,161 @@ fn cmyk_with_decode_array_stays_untouched() {
         "the CMYK stream must survive untouched"
     );
     assert!(image.dict.get(b"Decode").is_ok(), "the /Decode array must survive");
+}
+
+#[test]
+fn cmyk_images_stay_untouched_without_the_conversion_opt_in() {
+    // The default-fidelity gate: the ink-subtraction conversion deviates
+    // from color-managed renderers, so CMYK keeps its original stream
+    // unless the user opts in (or requests grayscale, see below).
+    let (width, height) = (1200u32, 900u32);
+    let pixels = vec![96u8; (width * height * 4) as usize];
+    let bytes = build_color_space_pdf(
+        ColorSpaceFixture::DirectName {
+            name: Object::Name(b"DeviceCMYK".to_vec()),
+        },
+        width,
+        height,
+        8,
+        pixels,
+    );
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_fixture(dir.path(), "cmyk-default-off.pdf", &bytes);
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(), None,
+        maximum_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+    assert_eq!(response.images_recompressed, 0, "default keeps CMYK untouched");
+
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+    let image = sole_image_stream(&reloaded);
+    assert_eq!(image.dict.get(b"BitsPerComponent").ok(), Some(&Object::Integer(8)));
+}
+
+#[test]
+fn grayscale_request_implies_cmyk_conversion() {
+    // Any color→luma collapse is lossy by intent, so a grayscale request
+    // converts CMYK without the explicit opt-in.
+    let (width, height) = (1200u32, 900u32);
+    let mut pixels = Vec::with_capacity((width * height * 4) as usize);
+    let mut state: u32 = FIXTURE_SEED;
+    for _ in 0..width * height * 4 {
+        state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        pixels.push(((state >> 24) & 0xFF) as u8);
+    }
+    let bytes = build_color_space_pdf(
+        ColorSpaceFixture::DirectName {
+            name: Object::Name(b"DeviceCMYK".to_vec()),
+        },
+        width,
+        height,
+        8,
+        pixels,
+    );
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_fixture(dir.path(), "cmyk-gray.pdf", &bytes);
+
+    let settings = CompressionSettings::from_sources(
+        None,
+        CompressionSettingsOverrides {
+            grayscale: Some(true),
+            ..Default::default()
+        },
+    );
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(), None,
+        settings,
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+    assert!(
+        response.images_recompressed >= 1,
+        "grayscale requests imply the CMYK conversion"
+    );
+
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+    let image = sole_image_stream(&reloaded);
+    assert!(
+        matches!(image.dict.get(b"ColorSpace"), Ok(Object::Name(cs)) if cs.as_slice() == b"DeviceGray"),
+        "the collapsed plane declares DeviceGray, got {:?}",
+        image.dict.get(b"ColorSpace")
+    );
+}
+
+#[test]
+fn cmyk_jpeg_stays_untouched_without_the_opt_in() {
+    // DCT CMYK (silently converted by the JPEG decoder since 0.3) rides the
+    // same gate: without the opt-in the stream is preserved byte-for-byte.
+    let (width, height) = (1400u32, 1050u32);
+    // Deterministic CMYK JPEG: encode via the RGB path is not possible here,
+    // so a gradient DeviceCMYK-flavored JPEG is produced by jpeg-encoding an
+    // RGB gradient — the dict declares CMYK, which is what the gate reads.
+    let jpeg = encode_jpeg(crate::testutil::gradient_rgb_image(width, height, FIXTURE_SEED), 90);
+    let mut doc = Document::with_version("1.5");
+    let pages_id = doc.new_object_id();
+    let image_id = doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Image",
+            "Width" => width as i64,
+            "Height" => height as i64,
+            "ColorSpace" => "DeviceCMYK",
+            "BitsPerComponent" => 8,
+            "Filter" => "DCTDecode",
+        },
+        jpeg.clone(),
+    ));
+    let resources_id = doc.add_object(dictionary! {
+        "XObject" => dictionary! { "Im0" => image_id },
+    });
+    let content_id = doc.add_object(Stream::new(
+        dictionary! {},
+        format!("q {width} 0 0 {height} 0 0 cm /Im0 Do Q").into_bytes(),
+    ));
+    let page_id = doc.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => pages_id,
+        "Contents" => content_id,
+        "Resources" => resources_id,
+        "MediaBox" => vec![0.into(), 0.into(), width.into(), height.into()],
+    });
+    doc.objects.insert(
+        pages_id,
+        Object::Dictionary(dictionary! {
+            "Type" => "Pages",
+            "Kids" => vec![Object::Reference(page_id)],
+            "Count" => 1,
+        }),
+    );
+    let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+    doc.trailer.set("Root", catalog_id);
+    let info_id = doc.add_object(dictionary! {
+        "Producer" => Object::string_literal("gate fixture ".repeat(4000)),
+    });
+    doc.trailer.set("Info", info_id);
+    let mut bytes = Vec::new();
+    doc.save_modern(&mut bytes).expect("save fixture");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_fixture(dir.path(), "cmyk-dct.pdf", &bytes);
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(), None,
+        maximum_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+    assert_eq!(response.images_recompressed, 0, "DCT CMYK must stay untouched by default");
+
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+    let image = sole_image_stream(&reloaded);
+    assert_eq!(image.content, jpeg, "payload must be byte-identical");
 }
 
 #[test]
@@ -2293,7 +2461,7 @@ fn indexed_cmyk_image_expands_palette_and_converts() {
 
     let response = compress_pdf_with_progress(
         path.to_str().unwrap(), None,
-        maximum_settings(),
+        cmyk_settings(),
         noop_cancel_flag(),
         |_| {},
     )
@@ -3477,10 +3645,10 @@ fn analysis_estimate_excludes_undecodable_codecs() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = fresh_fixture(dir.path());
 
-    // Relabel the fixture image as JBIG2Decode — a codec with no safe
-    // re-encode path in any build configuration — so nothing image-based is
-    // actionable anymore. (JPX and CCITT are decodable in their feature
-    // builds and cannot anchor this test.)
+    // Relabel the fixture image as Crypt — a filter with no decode path in
+    // any build configuration — so nothing image-based is actionable
+    // anymore. (JPX, CCITT, and JBIG2 are all decodable now and cannot
+    // anchor this test.)
     let mut document = Document::load(&path).expect("load fixture");
     for object in document.objects.values_mut() {
         if let Object::Stream(stream) = object {
@@ -3491,7 +3659,7 @@ fn analysis_estimate_excludes_undecodable_codecs() {
                 .and_then(|value| value.as_name().ok())
                 == Some(b"Image".as_slice())
             {
-                stream.dict.set("Filter", Object::Name(b"JBIG2Decode".to_vec()));
+                stream.dict.set("Filter", Object::Name(b"Crypt".to_vec()));
             }
         }
     }
@@ -4326,7 +4494,7 @@ fn decoded_image_planes(document: &Document) -> Vec<DynamicImage> {
             Object::Stream(stream)
                 if matches!(stream.dict.get(b"Filter"), Ok(Object::Name(name)) if name.as_slice() == b"JPXDecode") =>
             {
-                super::jpx::decode_jpx_stream(stream).ok()
+                super::jpx::decode_jpx_stream(stream, true).ok()
             }
             _ => None,
         })
@@ -4854,5 +5022,281 @@ fn review_indexed_odd_width_skips_each_rows_padding_nibble() {
         image.get_pixel(0, 1)[0],
         51,
         "a 4-bit row of odd width has a padding nibble, not an extra pixel"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// JBIG2 input decoding (hayro-jbig2, pure Rust)
+// ---------------------------------------------------------------------------
+
+/// Build a one-page PDF whose single embedded image is the committed JBIG2
+/// scan (embedded organization, no `/JBIG2Globals`).
+fn build_jbig2_pdf_bytes() -> Vec<u8> {
+    let (width, height) = crate::testutil::jbig2_scan_dimensions();
+    let mut doc = Document::with_version("1.5");
+    let pages_id = doc.new_object_id();
+    let image_id = doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Image",
+            "Width" => width as i64,
+            "Height" => height as i64,
+            "BitsPerComponent" => 1,
+            "Filter" => "JBIG2Decode",
+        },
+        crate::testutil::JBIG2_SCAN.to_vec(),
+    ));
+    let resources_id = doc.add_object(dictionary! {
+        "XObject" => dictionary! { "Im0" => image_id },
+    });
+    let content_id = doc.add_object(Stream::new(
+        dictionary! {},
+        b"q 400 0 0 400 72 380 cm /Im0 Do Q\n".to_vec(),
+    ));
+    let page_id = doc.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => pages_id,
+        "Contents" => content_id,
+        "Resources" => resources_id,
+        "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+    });
+    doc.objects.insert(
+        pages_id,
+        Object::Dictionary(dictionary! {
+            "Type" => "Pages",
+            "Kids" => vec![Object::Reference(page_id)],
+            "Count" => 1,
+        }),
+    );
+    let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+    doc.trailer.set("Root", catalog_id);
+    // A large compressible Info blob gives the run headroom to win even if
+    // the G4 re-encode lands near the (very compact) JBIG2 original.
+    let info_id = doc.add_object(dictionary! {
+        "Producer" => Object::string_literal("jbig2 fixture ".repeat(4000)),
+    });
+    doc.trailer.set("Info", info_id);
+
+    let mut bytes = Vec::new();
+    doc.save_modern(&mut bytes).expect("save JBIG2 fixture");
+    bytes
+}
+
+/// The committed JBIG2 scan transcodes and renders recognizably under an
+/// independent renderer. There is no license-clean JBIG2 encoder to derive
+/// a pixel reference from, so poppler's rendering of the original is the
+/// fidelity anchor (the same pattern as the G4 polarity gate). The JPEG
+/// outlet is used because a symbol-compressed JBIG2 text page is often
+/// smaller than its G4 re-encoding — the "must beat the original" rule
+/// would otherwise (correctly) refuse to write the G4 output.
+#[test]
+fn jbig2_scan_transcodes_and_renders_identically() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let input = write_fixture(dir.path(), "jbig2.pdf", &build_jbig2_pdf_bytes());
+
+    // Target-size mode always materializes its best result (the plain pass
+    // would correctly refuse to write: a symbol-compressed JBIG2 text page
+    // is often smaller than any safe re-encoding, which is exactly why the
+    // encoder-side JBIG2 door stays shut).
+    let response = compress_pdf_to_target_size(
+        input.to_str().unwrap(),
+        None,
+        32 * 1024,
+        maximum_settings(),
+        noop_cancel_flag(),
+        &mut |_| {},
+    )
+    .expect("target-size search must succeed");
+    assert!(
+        response.images_recompressed >= 1,
+        "the JBIG2 scan must be actionable, notices: {:?}",
+        response.notices
+    );
+
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+    let image = sole_image_stream(&reloaded);
+    assert!(
+        matches!(image.dict.get(b"Filter"), Ok(Object::Name(name)) if name.as_slice() == b"DCTDecode"),
+        "the JBIG2 scan must transcode to JPEG under the maximum preset, got {:?}",
+        image.dict.get(b"Filter")
+    );
+    assert!(
+        image.dict.get(b"JBIG2Globals").is_err(),
+        "the rebuilt stream must not keep the stale globals reference"
+    );
+
+    // Render gate: poppler decodes the original JBIG2 natively, so the
+    // before/after rasters anchor the whole decode→re-encode chain.
+    let render = |pdf: &Path, name: &str| -> Option<DynamicImage> {
+        let prefix = dir.path().join(name);
+        let result = std::process::Command::new("pdftoppm")
+            .args(["-r", "72", "-png"])
+            .arg(pdf)
+            .arg(&prefix)
+            .output()
+            .ok()?;
+        if !result.status.success() {
+            return None;
+        }
+        let png = std::fs::read(prefix.with_extension("-1.png")).ok()?;
+        image::load_from_memory(&png).ok()
+    };
+    let (Some(before), Some(after)) = (
+        render(&input, "jbig2-before"),
+        render(Path::new(&response.output_path), "jbig2-after"),
+    ) else {
+        eprintln!("pdftoppm unavailable or failed — raster check skipped");
+        return;
+    };
+    let psnr = luma_psnr_db(&before, &after).expect("page geometry matches");
+    assert!(
+        psnr >= 22.0,
+        "JBIG2 transcode must keep the page recognizable (PSNR {psnr:.2} dB)"
+    );
+}
+
+/// Garbage in the JBIG2 payload is a skip, never a failure — and the
+/// original bytes survive untouched.
+#[test]
+fn jbig2_with_undecodable_payload_stays_skipped() {
+    let (width, height) = crate::testutil::jbig2_scan_dimensions();
+    let mut doc = Document::with_version("1.5");
+    let pages_id = doc.new_object_id();
+    let payload = b"garbage, not segment data".to_vec();
+    let image_id = doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Image",
+            "Width" => width as i64,
+            "Height" => height as i64,
+            "BitsPerComponent" => 1,
+            "Filter" => "JBIG2Decode",
+        },
+        payload.clone(),
+    ));
+    let resources_id = doc.add_object(dictionary! {
+        "XObject" => dictionary! { "Im0" => image_id },
+    });
+    let content_id = doc.add_object(Stream::new(
+        dictionary! {},
+        b"q 400 0 0 400 72 380 cm /Im0 Do Q\n".to_vec(),
+    ));
+    let page_id = doc.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => pages_id,
+        "Contents" => content_id,
+        "Resources" => resources_id,
+        "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+    });
+    doc.objects.insert(
+        pages_id,
+        Object::Dictionary(dictionary! {
+            "Type" => "Pages",
+            "Kids" => vec![Object::Reference(page_id)],
+            "Count" => 1,
+        }),
+    );
+    let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+    doc.trailer.set("Root", catalog_id);
+    let info_id = doc.add_object(dictionary! {
+        "Producer" => Object::string_literal("jbig2 fixture ".repeat(4000)),
+    });
+    doc.trailer.set("Info", info_id);
+    let mut bytes = Vec::new();
+    doc.save_modern(&mut bytes).expect("save fixture");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let input = write_fixture(dir.path(), "jbig2-garbage.pdf", &bytes);
+
+    let response = compress_pdf_with_progress(
+        input.to_str().unwrap(),
+        None,
+        g4_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+    assert_eq!(response.images_recompressed, 0, "garbage must skip");
+
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+    let image = sole_image_stream(&reloaded);
+    assert_eq!(image.content, payload, "payload must be byte-identical");
+}
+
+/// Flate-mixed JBIG2 chains stay untouched (same rule as CCITT/JPX).
+#[test]
+fn jbig2_flate_mixed_chain_stays_untouched() {
+    use std::io::Write as _;
+
+    let (width, height) = crate::testutil::jbig2_scan_dimensions();
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(crate::testutil::JBIG2_SCAN).unwrap();
+    let compressed = encoder.finish().unwrap();
+
+    let mut doc = Document::with_version("1.5");
+    let pages_id = doc.new_object_id();
+    let image_id = doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Image",
+            "Width" => width as i64,
+            "Height" => height as i64,
+            "BitsPerComponent" => 1,
+            "Filter" => vec![
+                Object::Name(b"FlateDecode".to_vec()),
+                Object::Name(b"JBIG2Decode".to_vec()),
+            ],
+        },
+        compressed,
+    ));
+    let resources_id = doc.add_object(dictionary! {
+        "XObject" => dictionary! { "Im0" => image_id },
+    });
+    let content_id = doc.add_object(Stream::new(
+        dictionary! {},
+        b"q 400 0 0 400 72 380 cm /Im0 Do Q\n".to_vec(),
+    ));
+    let page_id = doc.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => pages_id,
+        "Contents" => content_id,
+        "Resources" => resources_id,
+        "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+    });
+    doc.objects.insert(
+        pages_id,
+        Object::Dictionary(dictionary! {
+            "Type" => "Pages",
+            "Kids" => vec![Object::Reference(page_id)],
+            "Count" => 1,
+        }),
+    );
+    let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+    doc.trailer.set("Root", catalog_id);
+    let info_id = doc.add_object(dictionary! {
+        "Producer" => Object::string_literal("jbig2 chain fixture ".repeat(4000)),
+    });
+    doc.trailer.set("Info", info_id);
+    let mut bytes = Vec::new();
+    doc.save_modern(&mut bytes).expect("save fixture");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let input = write_fixture(dir.path(), "jbig2-mixed.pdf", &bytes);
+
+    let response = compress_pdf_with_progress(
+        input.to_str().unwrap(),
+        None,
+        g4_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+    assert_eq!(response.images_recompressed, 0, "mixed chains must skip");
+
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+    let image = sole_image_stream(&reloaded);
+    assert!(
+        matches!(image.dict.get(b"Filter"), Ok(Object::Array(_))),
+        "the mixed filter chain must survive untouched"
     );
 }

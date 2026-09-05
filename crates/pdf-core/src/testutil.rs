@@ -461,6 +461,25 @@ pub fn jpx_bilevel_reference() -> GrayImage {
     image
 }
 
+// ---------------------------------------------------------------------------
+// JBIG2 input fixture — committed codestream under assets/
+// ---------------------------------------------------------------------------
+
+/// Embedded-organization (Annex D.3, no standalone file header) JBIG2
+/// segments of a real scanned text page, from the JBIG2 conformance corpus
+/// via the hayro assets (`power_jbig2/042_1.jb2`, Apache-2.0 OR MIT).
+/// Regenerate with `scripts/make-jbig2-fixture.sh`. There is no encoder on
+/// the license allow-list to derive an independent pixel reference from, so
+/// fidelity is anchored by the poppler render comparison in the
+/// integration tests.
+pub const JBIG2_SCAN: &[u8] = include_bytes!("../assets/jbig2-scan.bin");
+
+/// Dimensions of the committed JBIG2 scan (A4 at ~200dpi); must stay in
+/// sync with the asset.
+pub fn jbig2_scan_dimensions() -> (u32, u32) {
+    (1728, 2339)
+}
+
 /// Encode a grayscale image as CCITT Group 4 (luma >= 128 → white). Used to
 /// build CCITT *input* fixtures; mirrors the engine's polarity model: the
 /// fax crate's `White` runs are 1-bits, so a `BlackIs1: true` fixture needs

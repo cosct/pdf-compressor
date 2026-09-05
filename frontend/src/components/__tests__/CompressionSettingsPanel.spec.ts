@@ -16,6 +16,7 @@ vi.mock('../../config/presets', () => {
     grayscale: false,
     bilevelCodec: 'jpeg',
     subsetFonts: false,
+    cmykConversion: false,
   }
   const profiles = {
     conservative: { imageQuality: 88, maxImageSizePercent: 100, ...flags },
@@ -53,6 +54,7 @@ function makeSettings(overrides: Partial<CompressionSettings> = {}): Compression
     grayscale: false,
     bilevelCodec: 'jpeg',
     subsetFonts: false,
+    cmykConversion: false,
     outputDir: null,
     targetFileSizeMb: null,
     ...overrides,
@@ -159,6 +161,7 @@ describe('CompressionSettingsPanel', () => {
       grayscale: false,
       bilevelCodec: 'jpeg',
       subsetFonts: false,
+      cmykConversion: false,
     })
 
     const resetButton = wrapper

@@ -79,6 +79,7 @@ function presetParams(preset: PresetMode) {
       grayscale: profile.grayscale ?? false,
       bilevelCodec: profile.bilevelCodec === 'ccitt-g4' ? ('ccitt-g4' as const) : ('jpeg' as const),
       subsetFonts: profile.subsetFonts ?? false,
+      cmykConversion: profile.cmykConversion ?? false,
     }
   }
   const base = ENGINE_FALLBACK[preset === 'custom' ? 'maximum' : preset]
@@ -94,6 +95,7 @@ function presetParams(preset: PresetMode) {
     grayscale: false,
     bilevelCodec: 'jpeg' as const,
     subsetFonts: preset === 'maximum' || preset === 'custom',
+    cmykConversion: false,
   }
 }
 

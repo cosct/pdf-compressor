@@ -437,6 +437,7 @@ pub async fn compress_pdf(
             grayscale: None,
             bilevel_codec: None,
             subset_fonts: None,
+            cmyk_conversion: None,
             output_dir: request.output_dir,
         },
     );
@@ -489,6 +490,7 @@ pub async fn compress_scanned_pdf(
                 .as_deref()
                 .map(|value| BilevelCodec::from_optional_str(Some(value))),
             subset_fonts: None,
+            cmyk_conversion: None,
             strip_metadata: request.strip_metadata.or(request.remove_metadata),
             output_dir: request.output_dir,
         },

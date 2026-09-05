@@ -18,7 +18,8 @@ lopdf = "0.44"
 # The `jpx` feature pulls in the vendored OpenJPEG C code — exactly the
 # unsafe surface the fuzz targets must hammer. cargo-fuzz propagates the
 # sanitizer flags to `cc` builds via CFLAGS, so the C decode path is
-# instrumented and leak/overflow-checked like the Rust code.
+# instrumented and leak/overflow-checked like the Rust code. JBIG2 decoding
+# is pure Rust (hayro-jbig2) and exercises the pipeline target by default.
 [dependencies.pdf-core]
 path = ".."
 features = ["jpx"]

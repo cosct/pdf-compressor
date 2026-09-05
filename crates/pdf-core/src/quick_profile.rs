@@ -105,6 +105,7 @@ pub fn quick_profile_overrides(profile: &QuickProfilePayload) -> CompressionSett
             .as_deref()
             .map(|value| BilevelCodec::from_optional_str(Some(value))),
         subset_fonts: profile.subset_fonts,
+        cmyk_conversion: profile.cmyk_conversion,
         // Quick mode always writes next to the original file.
         output_dir: None,
     }

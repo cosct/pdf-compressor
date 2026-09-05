@@ -37,6 +37,9 @@ export interface CompressionSettings {
   bilevelCodec: BilevelCodec
   /** Shrink embedded CID TrueType fonts to the used glyphs (opt-in). */
   subsetFonts: boolean
+  /** Convert CMYK images to RGB for re-encoding (opt-in; the naive
+   * conversion shifts colors slightly vs color-managed viewers). */
+  cmykConversion: boolean
   outputDir: string | null
   /** Optional target output size in MB — the backend searches quality/edge
    * parameters until the output fits (best effort). `null` disables. */
@@ -52,6 +55,7 @@ export interface PresetDefaults {
   grayscale: boolean
   bilevelCodec: BilevelCodec
   subsetFonts: boolean
+  cmykConversion: boolean
 }
 
 export type PresetProfile = PresetDefaults

@@ -50,10 +50,11 @@ struct ImageDimensionStats {
     /// Bytes in images the compressor can plausibly act on — codec supported
     /// and not skipped by the fast-path heuristics at the recommended edge.
     /// The basis for the savings estimate; over-counting here is exactly how
-    /// "estimated 36%, delivered 1%" happens (e.g. JBIG2-only scans).
+    /// "estimated 36%, delivered 1%" happens (e.g. CMYK-heavy print files).
     actionable_image_bytes: u64,
-    /// Images stored with codecs (JBIG2, JPX, CCITT, Crypt) that no safe
-    /// re-encode path exists for; they are preserved untouched.
+    /// Images stored with codecs (Crypt, or CCITT/JPX/JBIG2 variants outside
+    /// the supported decode shapes) that no safe re-encode path exists for;
+    /// they are preserved untouched.
     unsupported_codec_count: usize,
 }
 
@@ -64,6 +65,9 @@ struct ImageStreamRecord {
     pixels: Option<u64>,
     is_jpeg: bool,
     codec_supported: bool,
+    /// The stream declares CMYK (`/DeviceCMYK` name — analyzer-side proof;
+    /// ICC N=4 and CMYK palettes need the compressor's full resolution).
+    cmyk_declared: bool,
 }
 
 /// Analyze a PDF without producing any output: classify the document
@@ -269,7 +273,7 @@ where
                 "analysis.warning.unsupportedImageCodecs",
                 "warning",
                 format!(
-                    "{} images use codecs (JBIG2, or CCITT/JPX variants outside the \
+                    "{} images use codecs (Crypt, or CCITT/JPX/JBIG2 variants outside the \
                      supported decode shapes) that this version cannot re-encode; they are \
                      preserved as-is and excluded from the estimate.",
                     image_stats.unsupported_codec_count
@@ -429,6 +433,10 @@ fn collect_image_stream_records(document: &Document) -> Vec<ImageStreamRecord> {
             _ => (None, None),
         };
         let (is_jpeg, codec_supported) = super::encode::image_codec_class(stream);
+        let cmyk_declared = matches!(
+            stream.dict.get(b"ColorSpace"),
+            Ok(Object::Name(name)) if name.as_slice() == b"DeviceCMYK"
+        );
 
         records.push(ImageStreamRecord {
             bytes: stream.content.len() as u64,
@@ -436,6 +444,7 @@ fn collect_image_stream_records(document: &Document) -> Vec<ImageStreamRecord> {
             pixels,
             is_jpeg,
             codec_supported,
+            cmyk_declared,
         });
     }
 
@@ -470,6 +479,10 @@ fn summarize_image_records(
             record.pixels,
             recommended_edge,
             skip_policy,
+            // The analyzer runs settings-free, so it mirrors the default
+            // (CMYK conversion off): declared-CMYK images are excluded from
+            // the savings estimate, erring low rather than promising shifts.
+            record.cmyk_declared,
         ) {
             stats.actionable_image_bytes += record.bytes;
         }

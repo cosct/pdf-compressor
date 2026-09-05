@@ -90,6 +90,7 @@ cd crates/pdf-core && cargo mutants          # 本地全量（较慢）
 - **夹具**：用 `crates/pdf-core/src/testutil.rs` 的确定性生成器（`fixture_rgb_image`/`gradient_rgb_image`/`bilevel_scan_image`/`encode_jpeg`/`encode_ccitt_g4`/`encode_ccitt_g3_1d`/`luma_psnr_db`），不要在测试里内联复制生成逻辑
 - **CCITT 形状**：G3/G4 输入夹具的 `DecodeParms` 必须与编码器旗标一致（`encode_ccitt_g3_1d(image, byte_align, with_eol)` 对应字典里的 `EncodedByteAlign`/`EndOfLine`），形状门禁在 `stream_filter_info` 收口
 - **JPX 夹具**：committed 码流在 `crates/pdf-core/assets/jpx-*.j2k/.jp2`（lossless，经 `scripts/make-jpx-fixtures.sh` 用 opj_compress 再生），参考平面是 testutil 的 `jpx_rgb_reference`/`jpx_gray_reference`/`jpx_bilevel_reference`——改图案必须两边同步并重新生成资产。JPX 相关测试一律 `#[cfg(feature = "jpx")]` 门控
+- **JBIG2 夹具**：`assets/jbig2-scan.bin`（conformance 语料真实 A4 扫描页的 embedded 形态，`scripts/make-jbig2-fixture.sh` 再生并打印页尺寸）——换样本必须同步 `jbig2_scan_dimensions()`；无许可可用的编码器派生独立像素真值，保真锚点是 poppler 渲染对比门禁（pdftoppm 缺失时跳过）；JBIG2 无 feature 门控，测试不加 cfg
 - **CFF 字体夹具**：`assets/test-font-cid.cff/.otf`（Source Han Serif CN 的 CID 键控子集，非恒等 charset，`scripts/make-cff-fixture.sh` 再生）——改字形集必须连同 `TEST_CFF_CID_*` 常量一起更新；CFF 子集化测试有 pdftoppm 渲染比对（poppler 缺失时自动跳过）
 - **加密夹具**：`encrypt_fixture(path, owner, user)` 用 lopdf 标准 handler（V1/RC4）；空 user 密码 = owner-only 件
 - **集成测试模式**：`build_pdf_bytes*` 构造 → 写临时目录 → 跑引擎 → `Document::load` 重载断言。断言“输出仍是合法 PDF + 文本保留”是每个改写类测试的底线

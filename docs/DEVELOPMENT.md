@@ -189,7 +189,7 @@ cargo run -p pdf-core --bin pdf-compressor-cli -- quick <file.pdf> --grayscale  
   `ImageTask`/`ImageSearchEntry` 携带。别名表取全部资源字典的并集，同名不同值
   视为歧义弃用。重建流时若通道数匹配则**保留原 ICC 数组**（profile 不丢），
   Indexed 输出声明基色空间；灰度/G4 转换导致通道数变化时回退 Device 名。
-- **CMYK（0.6.0 起支持）**：ICC N=4、`DeviceCMYK` 名、CMYK 基 Indexed 统一经
+- **CMYK（0.6.0 起 opt-in）**：ICC N=4、`DeviceCMYK` 名、CMYK 基 Indexed 统一经
   `DecodeColorSpace::Cmyk` 解析，解码时用共享的油墨减色转换（`colorspace::
   cmyk_to_rgb`，`(1-cmy)×(1-k)`，u16 定点舍入）转成 RGB 平面后走既有 JPEG 管线。
   重建流声明 `DeviceRGB`——**CMYK 的 ICC/profile 永不随行**（通道数已不符，
@@ -197,13 +197,17 @@ cargo run -p pdf-core --bin pdf-compressor-cli -- quick <file.pdf> --grayscale  
   映射数组的 CMYK（名字路径与解析路径都查）保持 skip：映射会重释采样值，朴素
   转换会静默偏色。PDF 原始/JPX 的 CMYK 采样不反转（0=无墨），与 DCT 流内
   Adobe 约定的反相 CMYK 不同——后者由 JPEG 解码器（zune-jpeg）先归一。
-  **色彩保真的已知限制（2026-09 实测）**：朴素减色公式与主流渲染器的 CMS
-  解释存在系统性偏差——以 poppler 为基准，规范 Adobe YCCK 夹具在 conservative
-  档下压缩前后渲染差 ≈7.6 dB（质量档不敏感 → 模型差异而非压缩损失；暗部与
-  饱和色偏差最大）。`CMYK_TRANSCODE_PSNR_FLOOR_DB`（≈46dB）只钉"转换自洽性"
-  （对照同一公式的参考平面），**不能**证明与渲染器一致；真保真需 lcms2 级
-  CMS 转换（见 0.7.0 路线）。DCT CMYK 的朴素转换是 0.3 起的既有行为，0.6.0
-  把它扩展到了 raw/JPX 路径。
+  **色彩保真与 `cmyk_conversion` 开关（2026-09 实测后落定）**：朴素减色公式与
+  主流渲染器的 CMS 解释存在系统性偏差——以 poppler 为基准，规范 Adobe YCCK
+  夹具在 conservative 档下压缩前后渲染差 ≈7.6 dB（质量档不敏感 → 模型差异而
+  非压缩损失；暗部与饱和色偏差最大）。因此 CMYK 转换是 **opt-in**（设置
+  `cmyk_conversion`，CLI `--convert-cmyk`，GUI 设置卡开关，默认关 = 回到 0.5
+  的跳过行为）；**灰度/G4 请求隐式开启**（`settings.converts_cmyk()`）——任何
+  彩色→灰度折叠本身就有损意图，CMYK→灰度偏差远小于彩色偏差。gate 在
+  `optimize_image_stream` 统一拦截 raw/Indexed/DCT/JPX 四条路径
+  （`declares_cmyk`），分析器镜像把 `/DeviceCMYK` 名的图片从预估中剔除
+  （按默认关设置镜像，宁低勿高）。`CMYK_TRANSCODE_PSNR_FLOOR_DB`（≈46dB）只钉
+  "转换自洽性"，不能证明与渲染器一致；真保真（lcms2 CMS）见 0.7.0 路线。
 - **JPX（JPEG 2000）解码**（`jpx.rs`，feature `jpx` **默认关**，保持默认构建纯
   Rust；桌面 release 与 AUR 包开启，src-tauri 经 `--features jpx` 转发）：走
   `jpeg2k` crate（0.10，MIT/Apache）→ `openjpeg-sys` 1.0.x（BSD-2）——**vendored
@@ -221,7 +225,25 @@ cargo run -p pdf-core --bin pdf-compressor-cli -- quick <file.pdf> --grayscale  
   target 无法从随机字节演化出带 JPX 流的合法 PDF）；CI 各跑 45s。夹具码流
   committed 在 `assets/jpx-*.j2k/.jp2`（`scripts/make-jpx-fixtures.sh` 再生，
   lossless，与 testutil 的参考平面逐像素一致）。worker 池内存估计对 JPX 按
-  19 字节/像素（OpenJPEG 每分量 4 字节采样 + 组装平面）计。
+  19 字节/像素（OpenJPEG 每分量 4 字节采样 + 组装平面）计。JPX 的 4 分量
+  （CMYK）解码受 `converts_cmyk()` 门控（`decode_jpx_stream` 的 `allow_cmyk`
+  参数），关时不解、整图保持。
+- **JBIG2（T.88）输入解码**（`jbig2.rs`，**纯 Rust 无 feature 门控**——
+  `hayro-jbig2` 0.3，Apache-2.0 OR MIT，hayro PDF 渲染器同源，T.88/T.30 全
+  量，edition 2024 → rustc 1.85+，本仓库 MSRV 1.88 兼容）：扫描文本页的最后
+  一个输入编解码盲区。门禁照 CCITT/JPX 模式收口于 `stream_filter_info`
+  （单元素链、尺寸 1..=65535、无 DecodeParms/Decode）；`/JBIG2Globals`
+  共享符号字典段在 `prepare_document` 阶段（文档完整时）取出 bytes，经
+  `ImageTask`/`ImageSearchEntry` 随流携带到 worker（与 ICC 色彩空间同款的
+  预解析模式），`Image::new_embedded(data, globals)` 解码。解码走本地
+  push-based sink（`PlaneSink`）直组 8 位灰度平面（黑=0，与 G4 出口同极性），
+  近双级平面自动落 G4/JPEG 出口。**注意**：符号压缩的 JBIG2 文本页常比 G4
+  重编码更小——"不写更大输出"规则会正确拒绝无收益转码（集成测试因此用
+  target-size 模式物化输出做渲染验证）。夹具：conformance 语料的真实 A4 扫描
+  页（sequential 组织）剥去独立文件头转 embedded 形态，committed 于
+  `assets/jbig2-scan.bin`（`scripts/make-jbig2-fixture.sh` 再生并打印页尺寸）；
+  无许可可用的编码器可派生独立像素真值，保真锚点是 poppler 渲染对比门禁。
+  **输出侧维持 JBIG2 门禁结论（2026-08 备忘录）**：G4 仍是唯一双级出口。
 - **线性化（Fast Web View）暂缓**：lopdf 0.44 的 `SaveOptions::linearize` 是**空壳**——
   `save_with_options` 完全忽略该标志（writer 无任何 hint 表/首页分区逻辑，仅
   `object_stream.rs` 里有个“已是线性化文档”的读取侧判断）。自研需按 PDF 32000
@@ -326,47 +348,44 @@ release overlay 而非主配置）。
   `pnpm run tauri dev`。
 - **改了命令签名后前端类型报错**：运行 `cargo test --workspace` 再生成 bindings 并提交。
 - **压缩后文件没变小**：先看分析结果 `documentKind`（text-native 压缩空间有限）、
-  是否无内嵌图片、或图片过滤器不受支持（JBIG2/Crypt 恒跳过；JPX 与 CCITT 仅在
-  feature 开启且形状可解码时处理——默认构建里 JPX 跳过，release/AUR 包已开启）。
+  是否无内嵌图片、或图片不可行动（Crypt 恒跳过；JPX/CCITT/JBIG2 按形状门禁处理，
+  JPX 需 feature——默认构建跳过，release/AUR 包已开启；CMYK 默认保持原样，需
+  开 `cmyk_conversion` 或灰度模式；符号压缩的 JBIG2 文本页可能本来就比 G4
+  重编码更小，"不写更大输出"会正确拒绝）。
 - **目标大小模式未达标**：引擎最多尝试 12 轮（`MAX_ATTEMPTS`），产出“当前可达的最小结果”并返回
   `compress.warning.targetSizeMissed` 提示；前端以警告 toast + 状态卡 notes 呈现。
 - **`cargo bench` 名字冲突**：基准每轮使用独立临时目录，避免 100 次重名上限。
 
-## 8. 版本路线（0.7.0 评估，2026-09）
+## 8. 版本路线（0.7.0 评估，2026-09；P0 开关与 P1 已随 0.6.0 落地）
 
-0.6.0 收口范围：JPX 解码、CMYK 三路径、搜索缓存淘汰与内存护栏、2GiB 友好报错、
-CFF/Type1C 字体子集化。0.7.0 方向按优先级评估如下（P0 有实测证据支撑）。
+0.6.0 收口范围：JPX 解码、CMYK 三路径（opt-in 开关）、搜索缓存淘汰与内存护栏、
+2GiB 友好报错、CFF/Type1C 字体子集化、审查修复 8 项、JBIG2 输入解码。
 
-### P0：CMYK 色彩保真（正确性续接 0.6.0）
+### P0：CMYK 色彩保真（0.6.0 已落开关，0.7.0 做真转换）
 
 - **实测问题**（见上文 CMYK 段）：朴素减色公式与渲染器 CMS 的系统偏差
-  ≈7-9 dB（poppler 基准、质量档不敏感）。影响 0.6.0 的 raw/JPX CMYK 与
-  0.3 起的 DCT CMYK。
-- **两步走**：
-  1. **0.6.0 发布前决策**：`cmyk_conversion` opt-in 开关（默认关 = CMYK 保持
-     原样跳过，回到 0.5 行为；开关覆盖 raw/Indexed/JPX-CMYK，DCT 既有行为
-     可一并纳入）。这是最初路线图预留的决策点，现在有了支持"opt-in"的实证。
-  2. **0.7.0 主体**：lcms2 真转换——`lcms2` crate（kornelski 安全封装，
-     Apache-2.0/MIT，追踪 LCMS 2.19.x；`lcms2-sys` vendored C，同 jpx 的
-     feature 门控模式，默认关保持纯 Rust）。无 profile 用内置默认
-     CMYK→sRGB，有 ICC 用图像自带 profile；以 poppler/PDFium 渲染对比
-     校准目标 profile；渲染比对门禁并入 corpus 快照。
+  ≈7-9 dB（poppler 基准、质量档不敏感）。
+- **0.6.0 已落地**：`cmyk_conversion` opt-in 开关（设置/CLI `--convert-cmyk`/
+  GUI，默认关 = 回到跳过行为；灰度/G4 请求隐式开启；gate 统一拦截
+  raw/Indexed/DCT/JPX；分析器按默认关镜像）。
+- **0.7.0 主体**：lcms2 真转换——`lcms2` crate（kornelski 安全封装，
+  Apache-2.0/MIT，追踪 LCMS 2.19.x；`lcms2-sys` vendored C，同 jpx 的
+  feature 门控模式，默认关保持纯 Rust）。无 profile 用内置默认
+  CMYK→sRGB，有 ICC 用图像自带 profile；以 poppler/PDFium 渲染对比
+  校准目标 profile；渲染比对门禁并入 corpus 快照。转换达标后可评估
+  把默认值翻转为开。
 - 验收：规范 Adobe YCCK/CMYK 夹具上，压缩前后 poppler 渲染差 ≥25 dB
   （当前 ≈7.6 dB）。
 
-### P1：JBIG2 输入解码（覆盖面收官）
+### P1：JBIG2 输入解码（已随 0.6.0 落地）
 
-- 生态已就绪（2026 年新出）：**hayro-jbig2**（Apache-2.0 OR MIT，纯 Rust，
-  1.7M 下载——hayro PDF 渲染器同源，`image` feature 直接出位图；edition
-  2024 → 需 rustc 1.85+，本仓库 MSRV 1.88 兼容；**纯 Rust 无需 feature 门禁**，
-  不像 jpx 需要 C 工具链）。备选 justbig2（MIT/Apache，no_std，较新较小）。
-- 集成照 CCITT/JPX 形状门禁模式：PDF 侧需解析 `/JBIG2Globals` 全局段流
-  （文档级上下文，走 `prepare_document` 的 colorspace 同款预解析）、区分
-  内联符号字典与引用、随机接入段表；解码后平面走既有 G4/JPEG 出口。
-- **输出侧维持 JBIG2 门禁结论**（2026-08 备忘录）：jbig2enc-rs 系许可疑虑
-  未解，G4 仍是唯一双级出口；解码引入不改变这一点。
-- 验收：JBIG2 扫描件夹具（用 jbig2enc C 版生成 committed 夹具，仅测试用，
-  不进依赖）解码转码 + 渲染比对；fuzz target 覆盖。
+- `hayro-jbig2` 0.3（Apache-2.0 OR MIT，纯 Rust，T.88 全量，hayro PDF
+  渲染器同源）已接入，无 feature 门控；形状门禁、`/JBIG2Globals` 预解析
+  管道、poppler 渲染门禁、conformance 语料夹具均已就位（见上文 JBIG2 段）。
+- **输出侧维持 JBIG2 门禁结论**（2026-08 备忘录）：G4 仍是唯一双级出口。
+- 0.7.0 增量：`/JBIG2Globals` 引用的共享字典在**多图共享一个 globals
+  对象**时的去重解码（当前每图各带一份 bytes）；随机接入组织的流内
+  形态（embedded 常见，随机接入罕见）。
 
 ### P2：JPX 边缘补全（搭车项）
 
@@ -387,6 +406,4 @@ CFF/Type1C 字体子集化。0.7.0 方向按优先级评估如下（P0 有实测
 
 ### 节奏建议
 
-0.7.0 主打 P0 + P1（正确性与覆盖面的收官），P2 搭车，P3 按余量取舍。
-0.6.0 发布前的唯一待决：CMYK opt-in 开关是否随 0.6.0 落地（建议落地，
-成本约半天；至少需在 README/CHANGELOG 明示 CMYK 重编码的偏色限制）。
+0.7.0 主打 CMYK 真转换（lcms2）+ P2 搭车，P3 按余量取舍。
