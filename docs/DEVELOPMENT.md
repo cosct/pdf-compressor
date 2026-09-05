@@ -222,26 +222,37 @@ cargo run -p pdf-core --bin pdf-compressor-cli -- quick <file.pdf> --grayscale  
   `object_stream.rs` 里有个“已是线性化文档”的读取侧判断）。自研需按 PDF 32000
   Annex F 实现 hint 流与对象分区，属多周工程；等 lopdf 上游实现或单独立项。
 - **字体子集化**（`fonts.rs`，feature `subset-fonts` 默认开、设置 `subset_fonts`
-  默认关）：仅覆盖 Type0→CIDFontType2→FontFile2（TrueType 轮廓）且编码为
-  Identity-H/V 的字体。typst subsetter 按字形 id 保留并剥离 cmap，故子集只能作
-  CID 字体——**内容流零改写**，新字形编号用生成的 `/CIDToGIDMap` 流桥接（BE u16
-  per CID）；**`/W` 数组保持不动**（宽度以 CID 为键，ISO 32000 表 115，CID 未变
-  则原数组仍然正确——曾按新 GID 重映射，PDFium/Acrobat 系会查表失败，已修正）。
+  默认关）：覆盖 Type0→CIDFontType2→FontFile2（TrueType 轮廓）与
+  Type0→CIDFontType0→FontFile3（CFF 轮廓：`/CIDFontType0C`、被误标的
+  `/Type1C`、`/OpenType` 包装）且编码为 Identity-H/V 的字体。typst
+  subsetter 按字形 id 保留并剥离 cmap，故子集只能作 CID 字体——**内容流零改写**；
+  **`/W` 数组保持不动**（宽度以 CID 为键，ISO 32000 表 115，CID 未变则原数组
+  仍然正确——曾按新 GID 重映射，PDFium/Acrobat 系会查表失败，已修正）。
+  TrueType 侧用生成的 `/CIDToGIDMap` 流桥接新字形编号（BE u16 per CID）；
+  **CFF 侧没有这个键——字体自身的 charset 就是 CID→字形映射**，而 subsetter
+  重建 charset 时用恒等映射且不保留原 CID，故走 `cff.rs` 的桥接：解析原
+  charset 得到 cid↔gid 双向表（重复 CID、解析不出的 CID、SID 键控程序都整个
+  放弃）→ 裸 CFF 包一层最小 OTTO 喂给 subsetter → 从输出的 OpenType 里抽回
+  `CFF ` 表 → 尾部追加 format-0 charset 把每个保留字形的原 CID 还给它 →
+  改写 Top DICT 的 charset 偏移（subsetter 固定写 5 字节整型操作数，改偏移
+  不引起任何位移）→ 以 `/CIDFontType0C` 重嵌。注：subsetter 重写的 ROS 恒为
+  Adobe-Identity-0，字形查找走 charset 不走 ROS，PDF 的 CIDSystemInfo 保持
+  原样（Identity ordering 的字体天然一致；Adobe-Japan1 等非 Identity ordering
+  的 ROS 会变成元数据失配，主流渲染器不据此查字形，属已知取舍）。
   字形收集解析 Tf/Tj/TJ/'/" 操作数（当前字体状态跟踪 + Form 递归）；任一 `Tf`
   名字在当前资源字典解析不到（可能是继承回退）、选中 Type3 字体（其字形程序是
   本模块不遍历的内容流）、页面带 /AP 注解外观流、或字体程序被非候选字体（如
-  简单 TrueType）共享 → **整轮放弃**。共享同一 FontFile2 的多个候选 Type0 字体
-  取字形并集、子集化一次。测试字体 `assets/test-font.ttf` 由 pyftsubset
-  生成（77 字形），gid 常量见 `testutil.rs`；勿手改。
-  **CFF/Type1C 调研结论（2026-09，生态可用，进 0.6.0 尾部或 0.7.0）**：
-  无需引入新依赖——typst `subsetter` 0.2.x 的 README 即声明支持 "TrueType or
-  CFF outlines for embedding in PDFs"，且 SID 键控字体会被转成 CID 键控
-  （identity GID→CID），与现有 Type0/CID 写入路径天然契合（typst 自家的 PDF
-  输出即此用法）。实现路线：扩展 `fonts.rs` 认得 FontFile3（/Type1C、
-  /CIDFontType0C、/OpenType）→ `subsetter::subset` → 从输出的 OpenType 包装里
-  抽 `CFF ` 表作为 FontFile3 流体（裸 CFF 即合法 Type1C 字体程序）。字形收集、
-  共享合并、保守放弃等机制全部复用；许可无障碍（MIT/Apache，已在依赖树内）。
-  老 PFB Type1（FontFile）视收益另议。无 JBIG2 式阻断项。
+  简单 TrueType/Type1）共享（消费映射 FontFile2+FontFile3 都算）→ **整轮放弃**。
+  共享同一字体程序的多个候选 Type0 字体取字形并集、子集化一次。测试字体：
+  `assets/test-font.ttf`（pyftsubset 生成，77 字形，gid 常量见 `testutil.rs`）
+  与 `assets/test-font-cid.cff/.otf`（Source Han Serif CN 的 CID 键控子集，
+  40 字形、刻意非恒等 charset，`scripts/make-cff-fixture.sh` 再生——改字形集
+  必须连同 `TEST_CFF_CID_*` 常量一起改）；勿手改。CFF 路径有 poppler
+  （pdftoppm）渲染比对门禁兜底（工具缺失时跳过）。老 PFB Type1（FontFile）
+  与简单字体 + Type1C（单字节编码经 /Encoding 差异映射，subsetter 转 CID 键控
+  后单字节码不再可用）不支持，保持跳过。
+  （2026-09 调研备注：subsetter 0.2 即支持 CFF 轮廓并把 SID 键控转 CID 键控，
+  无需新依赖、无 JBIG2 式许可障碍，据此把 CFF 子集化提进 0.6.0 实现。）
 
 CI（`.github/workflows/ci.yml`）在每次 push/PR 执行：前端测试+类型检查+构建、
 Rust clippy `-D warnings` + 测试、两个 MSRV 检查、60s 模糊测试、依赖审计

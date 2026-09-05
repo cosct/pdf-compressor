@@ -1483,6 +1483,313 @@ fn font_program_shared_with_simple_font_aborts_subsetting() {
 }
 
 // ---------------------------------------------------------------------------
+// CFF (CIDFontType0) subsetting
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "subset-fonts")]
+fn sole_font_file3(document: &Document) -> (lopdf::ObjectId, &Stream) {
+    document
+        .objects
+        .iter()
+        .find_map(|(id, object)| match object {
+            Object::Stream(stream) if stream.dict.get(b"Subtype").is_ok() => {
+                Some((*id, stream))
+            }
+            _ => None,
+        })
+        .expect("FontFile3 stream must survive")
+}
+
+#[cfg(feature = "subset-fonts")]
+#[test]
+fn subsets_cid_cff_font_to_used_glyphs() {
+    use crate::testutil::{
+        build_type0_cff_pdf_bytes, TEST_CFF_CID_A, TEST_CFF_CID_CE, TEST_CFF_CID_D, TEST_CFF_CID_F,
+        TEST_CFF_CID_P, TEST_CFF_CID_SHI, TEST_CFF_CID_SUO, TEST_CFF_CID_YA, TEST_CFF_FONT,
+    };
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_fixture(dir.path(), "type0-cff.pdf", &build_type0_cff_pdf_bytes());
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(), None,
+        subset_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+    assert!(
+        response
+            .notices
+            .iter()
+            .any(|n| n.code == "compress.note.fontsSubsetted"),
+        "expected a font subsetting notice, got {:?}",
+        response.notices
+    );
+
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+    let (_, font_file) = sole_font_file3(&reloaded);
+    assert!(
+        matches!(font_file.dict.get(b"Subtype"), Ok(Object::Name(sub)) if sub.as_slice() == b"CIDFontType0C"),
+        "rewritten program must be declared bare CIDFontType0C, got {:?}",
+        font_file.dict.get(b"Subtype")
+    );
+    let program = font_file.get_plain_content().expect("program bytes");
+    assert!(program.len() < TEST_CFF_FONT.len(), "subset must shrink the program");
+
+    // The bridged charset hands the kept glyphs their original CIDs back:
+    // every drawn CID must resolve, and the embedded-but-undrawn CID must not.
+    let parsed = super::cff::CffFont::parse(&program).expect("subset program must parse");
+    assert!(parsed.is_cid_keyed());
+    let cids = parsed.cids_by_gid().expect("bridged charset must parse");
+    for used in [
+        TEST_CFF_CID_P,
+        TEST_CFF_CID_D,
+        TEST_CFF_CID_F,
+        TEST_CFF_CID_YA,
+        TEST_CFF_CID_SUO,
+        TEST_CFF_CID_CE,
+        TEST_CFF_CID_SHI,
+    ] {
+        assert!(cids.contains(&used), "CID {used} must stay reachable");
+    }
+    assert!(!cids.contains(&TEST_CFF_CID_A), "undrawn CID must be gone");
+
+    // The descendant keeps its CID-level data untouched — no CIDToGIDMap
+    // exists for CIDFontType0, and /W stays keyed by the original CIDs.
+    let descendant = reloaded
+        .objects
+        .values()
+        .find_map(|object| match object {
+            Object::Dictionary(dict)
+                if matches!(dict.get(b"Subtype"), Ok(Object::Name(sub)) if sub.as_slice() == b"CIDFontType0") =>
+            {
+                Some(dict)
+            }
+            _ => None,
+        })
+        .expect("descendant CIDFontType0 must survive");
+    assert!(
+        descendant.get(b"CIDToGIDMap").is_err(),
+        "CIDFontType0 must not gain a CIDToGIDMap"
+    );
+    let Ok(Object::Array(widths)) = descendant.get(b"W") else {
+        panic!("W array must survive");
+    };
+    assert_eq!(widths.len(), 6, "W entries must stay untouched");
+    assert_eq!(widths[0], Object::Integer(i64::from(TEST_CFF_CID_P)));
+
+    // The content stream's CIDs are untouched — zero-rewrite is the design.
+    let content_bytes = reloaded
+        .objects
+        .values()
+        .find_map(|object| match object {
+            Object::Stream(stream) => {
+                let plain = stream.get_plain_content().ok()?;
+                plain
+                    .starts_with(b"BT /F1")
+                    .then_some(plain)
+            }
+            _ => None,
+        })
+        .expect("page content stream must survive");
+    let expected_hex = format!(
+        "<{:04X}{:04X}{:04X}{:04X}{:04X}{:04X}{:04X}{:04X}>",
+        TEST_CFF_CID_P,
+        TEST_CFF_CID_D,
+        TEST_CFF_CID_F,
+        TEST_CFF_CID_YA,
+        TEST_CFF_CID_SUO,
+        TEST_CFF_CID_CE,
+        TEST_CFF_CID_SHI,
+        TEST_CFF_CID_SHI,
+    );
+    assert!(
+        String::from_utf8_lossy(&content_bytes).contains(&expected_hex),
+        "content CIDs must be byte-identical"
+    );
+}
+
+#[cfg(feature = "subset-fonts")]
+#[test]
+fn subsets_opentype_wrapped_cff_font() {
+    use crate::testutil::{build_type0_cff_pdf_bytes_ext, TEST_CFF_FONT_OTF};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_fixture(
+        dir.path(),
+        "type0-cff-otf.pdf",
+        &build_type0_cff_pdf_bytes_ext(TEST_CFF_FONT_OTF, b"OpenType"),
+    );
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(), None,
+        subset_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+    let (_, font_file) = sole_font_file3(&reloaded);
+    assert!(
+        matches!(font_file.dict.get(b"Subtype"), Ok(Object::Name(sub)) if sub.as_slice() == b"CIDFontType0C"),
+        "OpenType input must re-embed as bare CIDFontType0C"
+    );
+    let program = font_file.get_plain_content().expect("program bytes");
+    assert!(program.len() < TEST_CFF_FONT_OTF.len(), "must shrink");
+    assert!(
+        super::cff::CffFont::parse(&program).is_some_and(|font| font.cids_by_gid().is_some()),
+        "rewritten program must stay a parseable CID-keyed CFF"
+    );
+    let _ = response;
+}
+
+#[cfg(feature = "subset-fonts")]
+#[test]
+fn malformed_cff_program_stays_untouched() {
+    use crate::testutil::build_type0_cff_pdf_bytes_ext;
+
+    // A large compressible-but-unparseable program: big enough that the run
+    // still writes an output (stream compression wins), bogus enough that
+    // the CFF parser must refuse it.
+    let garbage = vec![b'A'; 200_000];
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_fixture(
+        dir.path(),
+        "type0-cff-garbage.pdf",
+        &build_type0_cff_pdf_bytes_ext(&garbage, b"CIDFontType0C"),
+    );
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(), None,
+        subset_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+    let (_, font_file) = sole_font_file3(&reloaded);
+    assert_eq!(
+        font_file.get_plain_content().expect("bytes"),
+        garbage,
+        "an unparseable program must survive byte-identically"
+    );
+    let _ = response;
+}
+
+#[cfg(feature = "subset-fonts")]
+#[test]
+fn cff_cid_unknown_to_charset_aborts_subsetting() {
+    use crate::testutil::{build_type0_cff_pdf_bytes, TEST_CFF_FONT};
+
+    // Rewrite the drawn string to a CID the charset cannot resolve — the
+    // original program must stay so that CID keeps rendering.
+    let mut doc = Document::load_mem(&build_type0_cff_pdf_bytes()).expect("fixture loads");
+    for object in doc.objects.values_mut() {
+        if let Object::Stream(stream) = object {
+            if stream.dict.get(b"Length").is_ok() && stream.dict.get(b"Subtype").is_err() {
+                let plain = stream.get_plain_content().unwrap_or_default();
+                if plain.starts_with(b"BT /F1") {
+                    stream.set_content(b"BT /F1 24 Tf 72 720 Td <EA60> Tj ET\n".to_vec());
+                }
+            }
+        }
+    }
+    let mut bytes = Vec::new();
+    doc.save_modern(&mut bytes).expect("save mutated fixture");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_fixture(dir.path(), "type0-cff-unknown-cid.pdf", &bytes);
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(), None,
+        subset_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+    assert!(
+        !response
+            .notices
+            .iter()
+            .any(|n| n.code == "compress.note.fontsSubsetted"),
+        "a font with an unresolvable CID must not be subset"
+    );
+
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+    let (_, font_file) = sole_font_file3(&reloaded);
+    assert_eq!(
+        font_file.get_plain_content().expect("bytes"),
+        TEST_CFF_FONT,
+        "the original program must survive byte-identically"
+    );
+}
+
+/// Render the fixture before and after subsetting with poppler and compare
+/// the rasters — the strongest available check that the bridged charset
+/// really selects the same glyphs. Best-effort: skipped when `pdftoppm` is
+/// not installed (CI images carry poppler-utils).
+#[cfg(feature = "subset-fonts")]
+#[test]
+fn cff_subset_renders_identically() {
+    use crate::testutil::build_type0_cff_pdf_bytes;
+    use std::process::Command;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_fixture(dir.path(), "type0-cff-render.pdf", &build_type0_cff_pdf_bytes());
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(), None,
+        subset_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+    if !response
+        .notices
+        .iter()
+        .any(|n| n.code == "compress.note.fontsSubsetted")
+    {
+        panic!("expected the font to be subset");
+    }
+
+    let render = |pdf: &Path, prefix: &str| -> Option<Vec<u8>> {
+        let output = Command::new("pdftoppm")
+            .arg("-r")
+            .arg("120")
+            .arg("-png")
+            .arg(pdf)
+            .arg(dir.path().join(prefix))
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let png = dir.path().join(format!("{prefix}-1.png"));
+        std::fs::read(png).ok()
+    };
+
+    let (Some(before), Some(after)) = (
+        render(&path, "before"),
+        render(Path::new(&response.output_path), "after"),
+    ) else {
+        eprintln!("pdftoppm unavailable or failed — skipping the raster check");
+        return;
+    };
+
+    let before = image::load_from_memory(&before).expect("raster decodes");
+    let after = image::load_from_memory(&after).expect("raster decodes");
+    assert_eq!(before.dimensions(), after.dimensions(), "page geometry");
+    let psnr = luma_psnr_db(&before, &after).expect("dimensions match");
+    assert!(
+        psnr >= 40.0,
+        "subsetting must not change the rendered glyphs (PSNR {psnr:.2} dB)"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Color-space support (ICC / Indexed / aliases)
 // ---------------------------------------------------------------------------
 

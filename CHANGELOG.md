@@ -10,7 +10,8 @@
 - **CMYK 图片支持**：ICC N=4、`DeviceCMYK`、CMYK 基 Indexed 的图片经油墨减色转换（`(1-cmy)×(1-k)`）转为 RGB 后走既有 JPEG 管线；重建流声明 `DeviceRGB`（CMYK profile 不随行）；带 `/Decode` 映射数组的 CMYK 保持跳过（防静默偏色）。保真度由 PSNR 门禁钉住（梯度夹具实测 ≈46dB）
 - **2GiB 输入上限的友好提示**：专用错误码 `error.inputTooLarge`（GUI 双语文案就位），携带人性化体积（如 "2.1 GB"）而非原始字节数
 - **内存护栏**：目标大小搜索的缓存预算核算扩展到 alpha/G4 产物（原先只算彩色平面），超限两级淘汰；多图大文档搜索的进程内存峰值测试护栏（Linux，实测 ≈390MB / 上限 2GB）；worker 池按编解码真实内存占用估算并发数（JPX 19 字节/像素、CMYK 7 字节/像素）
-- 字体子集化 CFF/Type1C 路线调研结论：现有依赖 typst `subsetter` 0.2 即支持 CFF 轮廓并转 CID 键控，无需新依赖、无许可障碍（详见开发文档备忘录；实现进 0.6.0 尾部或 0.7.0）
+- **CFF 字体子集化**：Type0→CIDFontType0（CFF 轮廓，现代 PDF 内嵌字体主流）现可裁剪——FontFile3 的 `/CIDFontType0C`、误标 `/Type1C` 与 `/OpenType` 包装输入均支持。内容流 CID 零改写：subsetter 输出的恒等 charset 经"尾部追加 format-0 charset + 改 Top DICT 偏移"桥接回原 CID；`/W` 保持不动。含最小 CFF 解析器（`pdf/cff.rs`，fail-closed）、poppler 渲染比对门禁（工具缺失时跳过）、fuzz 目标开启字体路径。TrueType（CIDFontType2）子集化行为不变
+- 字体子集化 CFF/Type1C 路线调研结论：现有依赖 typst `subsetter` 0.2 即支持 CFF 轮廓并转 CID 键控，无需新依赖、无许可障碍（详见开发文档备忘录；本次据此实现）
 
 ### 变更
 

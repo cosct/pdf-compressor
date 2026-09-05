@@ -71,7 +71,7 @@ cargo +nightly fuzz run pipeline -- -max_total_time=600     # 本地长跑
 cargo +nightly fuzz run jpx -- -max_total_time=600          # JPX C 解码路径长跑
 ```
 
-`pipeline` 目标把任意输入字节写盘后依次跑 analyze → compress → target-size 搜索。不变量：**任何输入都不 panic、不挂起**；损坏图片只产生 skip。
+`pipeline` 目标把任意输入字节写盘后依次跑 analyze → compress（含字体子集化——内嵌字体程序解析器与图片编解码同属对抗性输入面）→ target-size 搜索。不变量：**任何输入都不 panic、不挂起**；损坏图片/字体只产生 skip。
 
 `jpx` 目标（feature `jpx` 已在 fuzz crate 强制启用）把任意字节包成最小合法 PDF 的 JPXDecode 流、并填充到小流跳过阈值之上，保证每次迭代都进入 vendored OpenJPEG 的 C 解码——这是 unsafe 面的专职硬化（通用 pipeline 目标无法从随机字节演化出带 JPX 流的合法 PDF）。本地 3 分钟 ≈ 35k 次迭代无崩溃为基线。崩溃现场在 `fuzz/artifacts/`，用 `cargo +nightly fuzz fmt` 还原最小用例后加进 `pdf/tests.rs` 的变异语料测试。
 
@@ -90,6 +90,7 @@ cd crates/pdf-core && cargo mutants          # 本地全量（较慢）
 - **夹具**：用 `crates/pdf-core/src/testutil.rs` 的确定性生成器（`fixture_rgb_image`/`gradient_rgb_image`/`bilevel_scan_image`/`encode_jpeg`/`encode_ccitt_g4`/`encode_ccitt_g3_1d`/`luma_psnr_db`），不要在测试里内联复制生成逻辑
 - **CCITT 形状**：G3/G4 输入夹具的 `DecodeParms` 必须与编码器旗标一致（`encode_ccitt_g3_1d(image, byte_align, with_eol)` 对应字典里的 `EncodedByteAlign`/`EndOfLine`），形状门禁在 `stream_filter_info` 收口
 - **JPX 夹具**：committed 码流在 `crates/pdf-core/assets/jpx-*.j2k/.jp2`（lossless，经 `scripts/make-jpx-fixtures.sh` 用 opj_compress 再生），参考平面是 testutil 的 `jpx_rgb_reference`/`jpx_gray_reference`/`jpx_bilevel_reference`——改图案必须两边同步并重新生成资产。JPX 相关测试一律 `#[cfg(feature = "jpx")]` 门控
+- **CFF 字体夹具**：`assets/test-font-cid.cff/.otf`（Source Han Serif CN 的 CID 键控子集，非恒等 charset，`scripts/make-cff-fixture.sh` 再生）——改字形集必须连同 `TEST_CFF_CID_*` 常量一起更新；CFF 子集化测试有 pdftoppm 渲染比对（poppler 缺失时自动跳过）
 - **加密夹具**：`encrypt_fixture(path, owner, user)` 用 lopdf 标准 handler（V1/RC4）；空 user 密码 = owner-only 件
 - **集成测试模式**：`build_pdf_bytes*` 构造 → 写临时目录 → 跑引擎 → `Document::load` 重载断言。断言“输出仍是合法 PDF + 文本保留”是每个改写类测试的底线
 - **前端**：新增 locale key 必须同时进 `en.ts` 与 `zh-CN.ts`（`locales.spec.ts` 强制 key 树一致）；改命令签名后跑 `cargo test --workspace` 再生成 bindings 并提交

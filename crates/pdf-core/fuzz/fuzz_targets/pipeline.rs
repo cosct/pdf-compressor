@@ -28,7 +28,16 @@ fuzz_target!(|data: &[u8]| {
 
     let _ = analyze_pdf_with_progress(&path_str, None, |_| {});
 
-    let settings = CompressionSettings::from_sources(None, CompressionSettingsOverrides::default());
+    // Font subsetting on: its embedded-program parsers (TrueType via the
+    // subsetter, CFF via pdf/cff.rs) face the same hostile input surface as
+    // the image codecs and must never panic.
+    let settings = CompressionSettings::from_sources(
+        None,
+        CompressionSettingsOverrides {
+            subset_fonts: Some(true),
+            ..Default::default()
+        },
+    );
     let _ = compress_pdf_with_progress(
         &path_str,
         None,

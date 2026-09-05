@@ -20,6 +20,138 @@ pub const TEST_FONT_GID_D: u16 = 22;
 pub const TEST_FONT_GID_F: u16 = 24;
 pub const TEST_FONT_GID_P: u16 = 34;
 
+// ---------------------------------------------------------------------------
+// CID-keyed CFF fixture (CIDFontType0 subsetting)
+// ---------------------------------------------------------------------------
+
+/// The committed CID-keyed CFF program — a pyftsubset'd Source Han Serif CN
+/// (40 glyphs, deliberately non-identity charset; see
+/// scripts/make-cff-fixture.sh). Regenerating changes the exact CIDs, so the
+/// constants below and the script's `--text` must move together.
+pub const TEST_CFF_FONT: &[u8] = include_bytes!("../assets/test-font-cid.cff");
+/// The same program in its OpenType (OTTO) wrapper, for `/OpenType`
+/// FontFile3 inputs.
+pub const TEST_CFF_FONT_OTF: &[u8] = include_bytes!("../assets/test-font-cid.otf");
+
+/// CIDs of the glyphs the CFF fixture draws ("PDF压缩测试"); A is embedded but
+/// never drawn (the unused-glyph probe).
+pub const TEST_CFF_CID_P: u16 = 49;
+pub const TEST_CFF_CID_D: u16 = 37;
+pub const TEST_CFF_CID_F: u16 = 39;
+pub const TEST_CFF_CID_A: u16 = 34;
+pub const TEST_CFF_CID_YA: u16 = 11_760; // 压
+pub const TEST_CFF_CID_SUO: u16 = 31_694; // 缩
+pub const TEST_CFF_CID_CE: u16 = 23_326; // 测
+pub const TEST_CFF_CID_SHI: u16 = 38_497; // 试
+
+/// One page drawing "PDF压缩测试" through a Type0/CIDFontType0 font with the
+/// full CID-keyed CFF program embedded as FontFile3/CIDFontType0C — the CFF
+/// subsetting fixture.
+pub fn build_type0_cff_pdf_bytes() -> Vec<u8> {
+    build_type0_cff_pdf_bytes_ext(TEST_CFF_FONT, b"CIDFontType0C")
+}
+
+/// `build_type0_cff_pdf_bytes` with caller-supplied program bytes and
+/// FontFile3 subtype (the `/OpenType` variant rides the OTTO-wrapped asset).
+pub fn build_type0_cff_pdf_bytes_ext(program: &[u8], subtype: &[u8]) -> Vec<u8> {
+    let mut doc = lopdf::Document::with_version("1.5");
+    let pages_id = doc.new_object_id();
+
+    let font_file_id = doc.add_object(Stream::new(
+        dictionary! {
+            "Length" => (program.len() as i64),
+            "Subtype" => Object::Name(subtype.to_vec()),
+        },
+        program.to_vec(),
+    ));
+    let descriptor_id = doc.add_object(dictionary! {
+        "Type" => "FontDescriptor",
+        "FontName" => "TestCidFont",
+        "Flags" => 4,
+        "FontBBox" => vec![
+            Object::Integer(-500),
+            Object::Integer(-500),
+            Object::Integer(500),
+            Object::Integer(1000),
+        ],
+        "ItalicAngle" => 0,
+        "Ascent" => 880,
+        "Descent" => Object::Integer(-120),
+        "CapHeight" => 730,
+        "StemV" => 80,
+        "FontFile3" => font_file_id,
+    });
+
+    // Distinct per-CID widths so a /W regression is observable.
+    let widths: Vec<Object> = vec![
+        Object::Integer(i64::from(TEST_CFF_CID_P)),
+        Object::Array(vec![700.into()]),
+        Object::Integer(i64::from(TEST_CFF_CID_D)),
+        Object::Array(vec![600.into()]),
+        Object::Integer(i64::from(TEST_CFF_CID_YA)),
+        Object::Array(vec![1000.into()]),
+    ];
+    let descendant_id = doc.add_object(dictionary! {
+        "Type" => "Font",
+        "Subtype" => "CIDFontType0",
+        "BaseFont" => "TestCidFont",
+        "CIDSystemInfo" => dictionary! {
+            "Registry" => Object::string_literal("Adobe"),
+            "Ordering" => Object::string_literal("Identity"),
+            "Supplement" => 0,
+        },
+        "FontDescriptor" => descriptor_id,
+        "DW" => 1000,
+        "W" => widths,
+    });
+
+    let type0_id = doc.add_object(dictionary! {
+        "Type" => "Font",
+        "Subtype" => "Type0",
+        "BaseFont" => "TestCidFont",
+        "Encoding" => "Identity-H",
+        "DescendantFonts" => vec![Object::Reference(descendant_id)],
+    });
+
+    let resources_id = doc.add_object(dictionary! {
+        "Font" => dictionary! { "F1" => type0_id },
+    });
+    // Hex string with the drawn CIDs: P D F 压 缩 测 试.
+    let content = format!(
+        "BT /F1 24 Tf 72 720 Td <{:04X}{:04X}{:04X}{:04X}{:04X}{:04X}{:04X}{:04X}> Tj ET\n",
+        TEST_CFF_CID_P,
+        TEST_CFF_CID_D,
+        TEST_CFF_CID_F,
+        TEST_CFF_CID_YA,
+        TEST_CFF_CID_SUO,
+        TEST_CFF_CID_CE,
+        TEST_CFF_CID_SHI,
+        TEST_CFF_CID_SHI,
+    );
+    let content_id = doc.add_object(Stream::new(dictionary! {}, content.into_bytes()));
+    let page_id = doc.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => pages_id,
+        "Contents" => content_id,
+        "Resources" => resources_id,
+        "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+    });
+    doc.objects.insert(
+        pages_id,
+        Object::Dictionary(dictionary! {
+            "Type" => "Pages",
+            "Kids" => vec![Object::Reference(page_id)],
+            "Count" => 1,
+        }),
+    );
+    let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+    doc.trailer.set("Root", catalog_id);
+
+    let mut bytes = Vec::new();
+    doc.save_modern(&mut bytes).expect("save fixture");
+    bytes
+}
+
 /// Peak signal-to-noise ratio (dB) between two same-sized images on the luma
 /// channel. `None` when the dimensions differ; `INFINITY` for identical
 /// planes. The quality-regression gates compare a fixture's source plane
