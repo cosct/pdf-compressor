@@ -136,6 +136,14 @@ struct CompressionRuntime<'a> {
 
 /// Compress a PDF file according to the given settings, reporting progress via
 /// the provided callback. Returns detailed statistics on what was optimized.
+///
+/// Encrypted inputs: owner-password-only files unlock automatically (the
+/// output is plain, reported via a notice); files that need an open password
+/// fail with `AppError::PasswordRequired` (no password given) or
+/// `AppError::WrongPassword`; DRM-encrypted files fail with
+/// `AppError::Encrypted`. An optimization that would not beat the original
+/// writes nothing and reports it.
+/// 按设置压缩 PDF 并回报进度与统计；加密文档矩阵与“不写更大输出”语义见上。
 pub fn compress_pdf_with_progress<F>(
     path: &str,
     password: Option<&str>,

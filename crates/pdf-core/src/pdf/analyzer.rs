@@ -66,6 +66,15 @@ struct ImageStreamRecord {
     codec_supported: bool,
 }
 
+/// Analyze a PDF without producing any output: classify the document
+/// (text-native / mixed / scan-heavy), estimate achievable savings, and
+/// recommend a preset. Samples up to 24 pages for the text/image signals and
+/// mirrors the compressor's skip heuristics so the estimate only counts
+/// images the compressor can actually act on.
+///
+/// `password` unlocks open-password-encrypted files; see
+/// [`crate::pdf::compress_pdf_with_progress`] for the encrypted-input matrix.
+/// 分析 PDF：分类文档、估算可节省比例并推荐预设，不产生任何输出。
 pub fn analyze_pdf_with_progress<F>(
     path: &str,
     password: Option<&str>,

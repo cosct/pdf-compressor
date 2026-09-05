@@ -61,6 +61,13 @@ const MIN_SEARCH_EDGE: u16 = 400;
 ///
 /// Probes run in memory (see the module docs); when the budget cannot be met,
 /// the smallest achievable result is produced with a warning notice.
+/// Compress `path` so the output fits within `target_bytes` when possible.
+///
+/// Probes run in memory (see the module docs); when the budget cannot be met,
+/// the smallest achievable result is produced with a warning notice.
+/// Search rounds apply per-image quality allocation by content detail —
+/// the probe estimate and the materialized bytes stay byte-identical.
+/// 密码与加密语义同 `compress_pdf_with_progress`。
 pub fn compress_pdf_to_target_size<F>(
     path: &str,
     password: Option<&str>,

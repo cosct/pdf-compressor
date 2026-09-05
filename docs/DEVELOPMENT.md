@@ -1,7 +1,10 @@
 # 开发指南 / Development Guide
 
-本文面向贡献者，覆盖环境搭建、架构总览、测试体系、代码规范与构建打包。
+本文面向贡献者，覆盖环境搭建、架构总览、代码规范与构建打包。
 For contributors: setup, architecture, testing, conventions, and packaging.
+
+> 文档地图：用户功能与用法见 [用户指南](USER-GUIDE.zh-CN.md)；测试体系与质量门禁见
+> [测试指南](TESTING.md)；版本历史见 [更新日志](../CHANGELOG.md)。
 
 ## 1. 环境要求
 
@@ -89,22 +92,21 @@ cargo run -p pdf-core --bin pdf-compressor-cli -- quick <file.pdf> --grayscale  
 
 ## 4. 测试体系
 
-| 层 | 命令 | 覆盖内容 |
-| --- | --- | --- |
-| 前端单元 | `pnpm test` | 队列/调度/取消（usePdfCompressor）、通知计时（useErrorToasts）、右键菜单键盘可达性、设置面板（预设/校验/应用到全部）、App 装配冒烟、en/zh-CN key 树一致性 |
-| 引擎单元 | `cargo test -p pdf-core --lib` | 设置夹紧与优先级、分析推荐公式、JPEG 头解析、worker 数量界、resize 行为、目标大小搜索调度数学（质量二分/边长收缩/边界重置） |
-| 引擎集成 | `cargo test -p pdf-core --lib`（`pdf/tests.rs`） | 真实 lopdf 构造的 PDF：往返保文本且缩减>50%、去重、SMask、灰度、目标大小、96 用例变异语料不 panic、真加密拒绝/owner-only 解锁、多图小流解除跳过、灰度强制重编码、不写更大输出、预估排除不可解码编码器 |
-| CLI 单元 | `cargo test -p pdf-core --bin pdf-compressor-cli` | `parse_size`/`flag_value`/`split_quick_inputs` 参数解析、quick 通知文案（en/zh） |
-| 桌面壳单元 | `cargo test -p app --lib` | 任务注册表（注册/取消/注销）、输出路径白名单（含规范化）、预设配置原子写/读回/清除/损坏 JSON、`existing_paths` 过滤 |
-| Bindings | `cargo test --workspace`（含 `export_bindings`） | 由 Rust 签名再生成 `frontend/src/lib/bindings.ts` —— **命令签名变更后必须运行并提交再生成结果** |
-| 基准 | `cargo bench -p pdf-core` | 全管线各预设、编码器对比（jpeg-encoder vs image crate）；夹具生成器共享自 `testutil` |
-| 变异测试 | `cargo mutants`（在 `crates/pdf-core` 下，配置 `.cargo/mutants.toml`） | 每周一 CI 自动跑（`.github/workflows/mutants.yml`），报告在 `mutants.out/` |
-| 模糊测试 | `cd crates/pdf-core && cargo +nightly fuzz run pipeline` | 任意字节跑 analyze+compress+目标大小搜索；CI 每次 push 冒烟 60s |
-| 质量门禁 | `cargo test -p pdf-core --lib preset_quality` | 1200×900 噪声夹具（PSNR 最坏情形）逐预设解码比对源平面：conservative ≥ 28 dB、balanced ≥ 25.5、maximum ≥ 22.5，且单调；防"同质量号变糊"回归 |
-| 真实语料快照 | `PDF_COMPRESSOR_QUALITY_CORPUS=<dir> cargo test -p pdf-core --lib real_corpus` | 首跑写 `<dir>/quality-baseline.json`（逐文件逐预设的体积比 + 平均 PSNR），后续跑对基线回归告警（体积比 +5% 或 PSNR −1dB）；未设变量时 no-op，CI 保持离线确定性 |
+完整的测试金字塔、质量门禁（PSNR 下限/真实语料快照）、模糊与变异测试的运行方式和新测试约定，见 **[测试指南](TESTING.md)**。速查：
 
-夹具共享：`crates/pdf-core/src/testutil.rs` 提供确定性图片/JPEG 生成器
-（`deterministic_rgb_image`/`gradient_rgb_image`/`fixture_rgb_image`/`encode_jpeg`），由 `testutil` feature
+| 层 | 命令 |
+| --- | --- |
+| 前端单元 + lint/类型 | `pnpm test` / `pnpm run check` |
+| 引擎单元 + 集成 + CLI + 桌面壳 + bindings 再生成 | `cargo test --workspace` |
+| 基准 | `cargo bench -p pdf-core` |
+| 模糊测试 | `cd crates/pdf-core && cargo +nightly fuzz run pipeline` |
+| 变异测试 | `cd crates/pdf-core && cargo mutants` |
+| PSNR 质量门禁 | `cargo test -p pdf-core --lib preset_quality` |
+| 真实语料快照 | `PDF_COMPRESSOR_QUALITY_CORPUS=<dir> cargo test -p pdf-core --lib real_corpus` |
+
+夹具共享：`crates/pdf-core/src/testutil.rs` 提供确定性图片/JPEG/CCITT 生成器
+（`deterministic_rgb_image`/`gradient_rgb_image`/`fixture_rgb_image`/`encode_jpeg`/
+`encode_ccitt_g4`/`encode_ccitt_g3_1d`/`luma_psnr_db`），由 `testutil` feature
 控制，经 crate 对自身的 dev-dependency 只在测试/基准/示例中启用（resolver = "2"
 保证不泄漏进正常构建）。集成测试、两个 bench 与 `examples/make_fixture.rs` 共用它，
 不要在各处复制生成器。
