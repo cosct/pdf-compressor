@@ -1,6 +1,6 @@
 [package]
 name = "pdf-core"
-version = "0.5.0"
+version = "0.6.0"
 description = "Pure-Rust PDF analysis and selective compression engine"
 authors = ["cosct"]
 license = "MIT"
