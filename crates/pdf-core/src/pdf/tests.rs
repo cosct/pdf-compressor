@@ -1270,7 +1270,14 @@ fn subsets_cid_truetype_font_to_used_glyphs() {
                 })
                 .collect::<Vec<_>>()
         })
-        .flat_map(|bytes| bytes.chunks_exact(2).map(|pair| format!("{:02x}{:02x}", pair[0], pair[1])).collect::<Vec<_>>())
+        .flat_map(|bytes| {
+            bytes
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|pair| format!("{:02x}{:02x}", pair[0], pair[1]))
+                .collect::<Vec<_>>()
+        })
         .collect();
     assert!(
         text_operands.contains(&"0022".to_string())

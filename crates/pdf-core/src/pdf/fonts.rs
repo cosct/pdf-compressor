@@ -712,7 +712,7 @@ fn collect_context_cids(
 
 fn record_cid_bytes(bytes: &[u8], font_id: ObjectId, used_cids: &mut HashMap<ObjectId, HashSet<u16>>) {
     let entry = used_cids.entry(font_id).or_default();
-    for pair in bytes.chunks_exact(2) {
+    for pair in bytes.as_chunks::<2>().0 {
         entry.insert(u16::from_be_bytes([pair[0], pair[1]]));
     }
 }

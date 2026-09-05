@@ -1105,7 +1105,7 @@ fn cmyk_bytes_to_rgb_image(
     decoded: Vec<u8>,
 ) -> Result<DynamicImage, AppError> {
     let mut pixels = Vec::with_capacity(decoded.len() / 4 * 3);
-    for sample in decoded.chunks_exact(4) {
+    for sample in decoded.as_chunks::<4>().0 {
         let [red, green, blue] =
             super::colorspace::cmyk_to_rgb(sample[0], sample[1], sample[2], sample[3]);
         pixels.extend_from_slice(&[red, green, blue]);
@@ -1543,27 +1543,20 @@ fn encode_gray_as_ccitt_g4(plane: &image::GrayImage) -> Vec<u8> {
 /// midtone pixels on the luma channel against a small fraction of the total.
 #[cfg(feature = "ccitt")]
 fn plane_is_near_bilevel(plane: &DynamicImage) -> bool {
-    let midtones;
-    let total;
-    match plane {
-        DynamicImage::ImageLuma8(gray) => {
-            total = gray.len();
-            midtones = gray
-                .pixels()
-                .filter(|p| p[0] > BILEVEL_EXTREME_BAND && p[0] < 255 - BILEVEL_EXTREME_BAND)
-                .count();
-        }
+    let count_midtones = |luma: &image::GrayImage| {
+        luma.pixels()
+            .filter(|p| p[0] > BILEVEL_EXTREME_BAND && p[0] < 255 - BILEVEL_EXTREME_BAND)
+            .count()
+    };
+    // The `other` arm is only reachable when the caller skipped the
+    // pre-resize luma conversion; compute luma on the fly for the check.
+    let (total, midtones) = match plane {
+        DynamicImage::ImageLuma8(gray) => (gray.len(), count_midtones(gray)),
         other => {
-            // Only reachable when the caller skipped the pre-resize luma
-            // conversion; compute luma on the fly for the check.
             let luma = other.to_luma8();
-            total = luma.len();
-            midtones = luma
-                .pixels()
-                .filter(|p| p[0] > BILEVEL_EXTREME_BAND && p[0] < 255 - BILEVEL_EXTREME_BAND)
-                .count();
+            (luma.len(), count_midtones(&luma))
         }
-    }
+    };
     (midtones as f64) <= (total as f64) * NEAR_BILEVEL_MIDTONE_FRACTION
 }
 
