@@ -106,6 +106,12 @@ jobs:
           prefix-key: msrv
           workspaces: ${{ matrix.crate }}
 
+      # `tauri::generate_context!` panics when `frontendDist` is absent, and
+      # this job compiles without the frontend ever being built.
+      - name: Provide a placeholder frontend dist
+        if: matrix.crate == 'src-tauri'
+        run: mkdir -p frontend/dist
+
       - name: cargo check --locked at declared MSRV
         working-directory: ${{ matrix.crate }}
         run: cargo check --locked ${{ matrix.features }}
