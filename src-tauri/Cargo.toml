@@ -37,7 +37,7 @@ tauri-build = { version = "2.5.6", features = [] }
 [dependencies]
 pdf-core = { path = "../crates/pdf-core", features = ["specta"] }
 dirs-next = "2.0"
-opener = { version = "0.7", features = ["reveal"] }
+opener = { version = "0.8", features = ["reveal"] }
 log = "0.4"
 serde_json = "1.0"
 tauri-plugin-log = "2"
