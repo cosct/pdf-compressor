@@ -166,6 +166,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # `gh` resolves the repo via git, and the workspace is owned by
+          # `builder` after the packaging step while this step runs as root.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           version="${GITHUB_REF_NAME#v}"
           zst="target/release/bundle/archlinux/pdf-compressor_${version}_amd64.pkg.tar.zst"
           gh release upload "${GITHUB_REF_NAME}" "$zst" --clobber
