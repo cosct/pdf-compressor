@@ -46,6 +46,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev librsvg2-dev patchelf
 
+      # The engine's fidelity gates rasterize through poppler; the strict
+      # renderer gate (testutil::render_poppler_png) only skips when the
+      # binary is absent, so CI must guarantee it is present.
+      - name: Install poppler for the renderer gates
+        run: sudo apt-get install -y poppler-utils
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy

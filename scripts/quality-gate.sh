@@ -15,6 +15,12 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 log "cargo test（workspace）"
 cargo test --workspace --locked
 
+log "cargo clippy（pdf-core 可选特性 jpx,cmyk-cms，-D warnings）"
+cargo clippy -p pdf-core --all-targets --locked --features jpx,cmyk-cms -- -D warnings
+
+log "cargo test（pdf-core 可选特性 jpx,cmyk-cms）"
+cargo test -p pdf-core --locked --features jpx,cmyk-cms
+
 log "前端格式化 + lint + 类型检查（vp check：oxfmt/oxlint/tsgo）"
 pnpm run check
 

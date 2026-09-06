@@ -228,6 +228,7 @@ fn build_transform(profile_bytes: &[u8]) -> Option<lcms2::Transform<u8, u8>> {
 pub(super) fn decode_dct_cmyk_stream(
     content: &[u8],
     icc_profile: Option<&[u8]>,
+    cmyk_decodes: Option<&[super::colorspace::ChannelDecode]>,
 ) -> Option<image::DynamicImage> {
     use image::DynamicImage;
     use zune_jpeg::zune_core::bytestream::ZCursor;
@@ -251,6 +252,19 @@ pub(super) fn decode_dct_cmyk_stream(
 
     if input == ColorSpace::YCCK {
         ycck_to_cmyk(&mut samples);
+    }
+
+    // A four-channel /Decode remaps the CMYK components before any
+    // conversion — the inversion does not commute with the CMS transform,
+    // so it applies here, on the raw samples.
+    if let Some(decodes) = cmyk_decodes {
+        for pixel in samples.as_chunks_mut::<4>().0 {
+            for (channel, decode) in pixel.iter_mut().zip(decodes) {
+                if matches!(decode, super::colorspace::ChannelDecode::Invert) {
+                    *channel = 255 - *channel;
+                }
+            }
+        }
     }
 
     let rgb = cmyk_samples_to_rgb(&samples, icc_profile);

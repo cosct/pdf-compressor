@@ -71,6 +71,16 @@ package() {
   install -Dm644 "\$root/README.zh-CN.md" "\$pkgdir/usr/share/doc/\$pkgname/README.zh-CN.md"
   install -Dm644 "\$root/packaging/pdf-compressor.desktop" "\$pkgdir/usr/share/applications/pdf-compressor.desktop"
   install -Dm644 "\$root/packaging/servicemenus/pdf-compressor.desktop" "\$pkgdir/usr/share/kio/servicemenus/pdf-compressor.desktop"
+
+  # GNOME Nautilus / Nemo "Scripts" menu entries. The Scripts folder is
+  # per-user by design — copy these into ~/.local/share/nautilus/scripts/
+  # (run packaging/nautilus/install.sh from a source checkout for the
+  # automatic variant). The user guide promises this path ships with the
+  # package, so the bundle must carry it.
+  install -dm755 "\$pkgdir/usr/share/\$pkgname/nautilus"
+  for _script in "\$root"/packaging/nautilus/compress-*.sh; do
+    install -m755 "\$_script" "\$pkgdir/usr/share/\$pkgname/nautilus/"
+  done
 }
 EOF
 
@@ -83,4 +93,28 @@ pkg=$(ls -t "$stage"/pdf-compressor-*.pkg.tar.zst | grep -v -- '-debug-' | head 
 # the AUR -bin PKGBUILD's source URL points at this file.
 asset="$outdir/pdf-compressor_${version}_amd64.pkg.tar.zst"
 cp "$pkg" "$asset"
+
+# The published zst is what AUR users install — verify the manifest carries
+# every path the documentation promises before the asset leaves this machine
+# (a missing install line would otherwise only surface on user machines).
+required=(
+  usr/bin/pdf-compressor
+  usr/bin/pdf-compressor-cli
+  usr/share/applications/pdf-compressor.desktop
+  usr/share/kio/servicemenus/pdf-compressor.desktop
+  usr/share/pdf-compressor/nautilus/compress-maximum.sh
+  usr/share/pdf-compressor/nautilus/compress-scanned-g4.sh
+  usr/share/pdf-compressor/nautilus/compress-scanned-grayscale.sh
+  usr/share/pdf-compressor/nautilus/compress-settings.sh
+  usr/share/pdf-compressor/nautilus/compress-target-5mb.sh
+)
+missing=0
+for want in "${required[@]}"; do
+  if ! tar -tf "$asset" | grep -qx "$want"; then
+    echo "error: packaged zst is missing $want" >&2
+    missing=1
+  fi
+done
+(( missing == 0 )) || exit 1
+
 echo "==> $asset"

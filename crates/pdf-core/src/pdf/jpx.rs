@@ -21,13 +21,17 @@
 //! dictionary `/ColorSpace` is advisory when the codestream carries its own
 //! (via the JP2 header box). The decoder therefore trusts the decoded
 //! component count — 1 → gray, 3 → RGB, 4 → CMYK (converted to RGB at decode
-//! time through the shared calibrated path in `cmyk`). OpenJPEG
-//! has already applied any codestream-internal multi-component transform
-//! before the components reach us, matching how `opj_decompress` renders.
+//! time through the shared calibrated path in `cmyk`) — with one exception:
+//! an Indexed `/ColorSpace` reinterprets a single component as palette
+//! indices, expanded through the resolved lookup table before anything
+//! else. OpenJPEG has already applied any codestream-internal
+//! multi-component transform before the components reach us, matching how
+//! `opj_decompress` renders.
 
 use image::DynamicImage;
 use lopdf::Stream;
 
+use super::colorspace::{DecodeColorSpace, ImageColorSpaceInfo};
 use super::optional_integer;
 use crate::error::AppError;
 
@@ -81,7 +85,18 @@ pub(super) fn jpx_input_shape(stream: &Stream) -> Option<JpxInputShape> {
 /// conversion, but only
 /// when `allow_cmyk` is set (the compressor's opt-in gate); otherwise they
 /// fail cleanly so the image keeps its original stream.
-pub(super) fn decode_jpx_stream(stream: &Stream, allow_cmyk: bool) -> Result<DynamicImage, AppError> {
+///
+/// `color_space` carries the PDF-level `/ColorSpace` resolution. An Indexed
+/// declaration overrides the codestream's component interpretation (spec
+/// 8.9.5.1): a single component holds palette indices, which expand through
+/// the resolved lookup table exactly like a raw indexed plane. Any other
+/// declaration leaves the codestream authoritative, matching the historical
+/// behavior.
+pub(super) fn decode_jpx_stream(
+    stream: &Stream,
+    allow_cmyk: bool,
+    color_space: Option<&ImageColorSpaceInfo>,
+) -> Result<DynamicImage, AppError> {
     let shape = jpx_input_shape(stream)
         .ok_or_else(|| AppError::PdfBuild("JPX stream does not use a supported decode shape".into()))?;
     let image = jpeg2k::Image::from_bytes(&stream.content).map_err(|error| {
@@ -121,6 +136,46 @@ pub(super) fn decode_jpx_stream(stream: &Stream, allow_cmyk: bool) -> Result<Dyn
         .collect();
 
     let mismatched_buffer = || AppError::PdfBuild("JPX decode produced mismatched buffer".into());
+
+    // The PDF /ColorSpace reinterprets the samples when it declares an
+    // Indexed palette: a single component carries indices, not gray levels.
+    if let Some(info) = color_space {
+        if let DecodeColorSpace::Indexed {
+            base_channels,
+            palette,
+            base_icc,
+        } = &info.decode
+        {
+            let [component] = components else {
+                return Err(AppError::PdfBuild(
+                    "Indexed JPX stream must carry exactly one component".into(),
+                ));
+            };
+            if component.precision() > 8 {
+                return Err(AppError::PdfBuild(
+                    "Indexed JPX indices above 8 bits are unsupported".into(),
+                ));
+            }
+            let indices = component_plane(component, width, height);
+            let pixels = super::colorspace::expand_indexed_samples(&indices, *base_channels, palette)
+                .map_err(AppError::PdfBuild)?;
+            return match *base_channels {
+                1 => image::GrayImage::from_raw(width, height, pixels)
+                    .map(DynamicImage::ImageLuma8)
+                    .ok_or_else(mismatched_buffer),
+                3 => image::RgbImage::from_raw(width, height, pixels)
+                    .map(DynamicImage::ImageRgb8)
+                    .ok_or_else(mismatched_buffer),
+                _ => super::encode::cmyk_bytes_to_rgb_image(
+                    width,
+                    height,
+                    pixels,
+                    base_icc.as_deref().map(|v| v.as_slice()),
+                ),
+            };
+        }
+    }
+
     match planes.as_slice() {
         [gray] => image::GrayImage::from_raw(width, height, gray.clone())
             .map(DynamicImage::ImageLuma8)
@@ -271,7 +326,7 @@ mod tests {
             ("bilevel-j2k", JPX_BILEVEL_J2K, true, 1),
         ] {
             let stream = fixture_stream(content, bilevel);
-            let plane = decode_jpx_stream(&stream, true)
+            let plane = decode_jpx_stream(&stream, true, None)
                 .unwrap_or_else(|error| panic!("{name}: {error}"));
             assert_eq!(plane.dimensions(), fixture_dims(bilevel), "{name} dimensions");
             let bytes = plane.as_bytes();
@@ -289,26 +344,26 @@ mod tests {
     /// planes).
     #[test]
     fn lossless_codestreams_round_trip_exactly() {
-        let rgb = decode_jpx_stream(&fixture_stream(JPX_RGB_J2K, false), true).expect("rgb j2k");
+        let rgb = decode_jpx_stream(&fixture_stream(JPX_RGB_J2K, false), true, None).expect("rgb j2k");
         assert_eq!(
             rgb.to_rgb8().as_raw(),
             jpx_rgb_reference().as_raw(),
             "RGB codestream must decode to the reference plane"
         );
-        let rgb_jp2 = decode_jpx_stream(&fixture_stream(JPX_RGB_JP2, false), true).expect("rgb jp2");
+        let rgb_jp2 = decode_jpx_stream(&fixture_stream(JPX_RGB_JP2, false), true, None).expect("rgb jp2");
         assert_eq!(
             rgb_jp2.to_rgb8().as_raw(),
             jpx_rgb_reference().as_raw(),
             "JP2 container must yield the same pixels as the raw codestream"
         );
-        let gray = decode_jpx_stream(&fixture_stream(JPX_GRAY_J2K, false), true).expect("gray j2k");
+        let gray = decode_jpx_stream(&fixture_stream(JPX_GRAY_J2K, false), true, None).expect("gray j2k");
         assert_eq!(
             gray.to_luma8().as_raw(),
             jpx_gray_reference().as_raw(),
             "grayscale codestream must decode to the reference plane"
         );
         let bilevel =
-            decode_jpx_stream(&fixture_stream(JPX_BILEVEL_J2K, true), true).expect("bilevel");
+            decode_jpx_stream(&fixture_stream(JPX_BILEVEL_J2K, true), true, None).expect("bilevel");
         assert_eq!(
             bilevel.to_luma8().as_raw(),
             jpx_bilevel_reference().as_raw(),
@@ -328,7 +383,7 @@ mod tests {
             i64::from(JPX_SUB420_WIDTH),
             i64::from(JPX_SUB420_HEIGHT),
         );
-        let plane = decode_jpx_stream(&stream, true).expect("subsampled jp2 decodes");
+        let plane = decode_jpx_stream(&stream, true, None).expect("subsampled jp2 decodes");
         let rgb = plane.to_rgb8();
         assert_eq!(rgb.dimensions(), (JPX_SUB420_WIDTH, JPX_SUB420_HEIGHT));
 
@@ -352,7 +407,7 @@ mod tests {
             i64::from(JPX_PLANE_WIDTH) + 32,
             i64::from(JPX_PLANE_HEIGHT),
         );
-        assert!(decode_jpx_stream(&stream, true).is_err());
+        assert!(decode_jpx_stream(&stream, true, None).is_err());
     }
 
     #[test]
@@ -380,8 +435,8 @@ mod tests {
         let width = i64::from(JPX_PLANE_WIDTH);
         let height = i64::from(JPX_PLANE_HEIGHT);
         let stream = jpx_stream(b"not a codestream at all", width, height);
-        assert!(decode_jpx_stream(&stream, true).is_err());
+        assert!(decode_jpx_stream(&stream, true, None).is_err());
         let empty = jpx_stream(&[], width, height);
-        assert!(decode_jpx_stream(&empty, true).is_err());
+        assert!(decode_jpx_stream(&empty, true, None).is_err());
     }
 }

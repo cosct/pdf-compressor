@@ -1,6 +1,6 @@
 {
   "name": "pdf-compressor",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "private": true,
   "description": "A desktop-first PDF compressor built with Vue, Tauri, and Rust.",
   "license": "MIT",

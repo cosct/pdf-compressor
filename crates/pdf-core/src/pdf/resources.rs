@@ -21,12 +21,57 @@ use lopdf::{Dictionary, Document, Object, ObjectId};
 
 /// Identifies which object's `/Resources` dictionary a usage set belongs to.
 /// Pages with an inline (direct) resources dictionary own their entry; pages
-/// sharing one indirect resources object are grouped under that object.
+/// sharing one indirect resources object are grouped under that object; a
+/// page-tree node's inline dictionary is the owner for every page that
+/// inherits it (spec 7.7.2 — `/Resources` is inheritable).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum ResourcesOwner {
     Page(ObjectId),
+    PageTree(ObjectId),
     SharedResources(ObjectId),
     Form(ObjectId),
+}
+
+/// Where a page's `/Resources` actually lives after inheritance.
+#[derive(Debug, Clone, Copy)]
+enum PageResources {
+    /// An indirect resources object — every referencing page shares it.
+    Shared(ObjectId),
+    /// A dictionary carried inline by `holder`: the page itself, or the
+    /// ancestor page-tree node an inherited entry was found on.
+    Inline { holder: ObjectId },
+}
+
+/// Resolve the `/Resources` a page's names resolve against, climbing `/Parent`
+/// for inherited entries (mirrors `fonts::effective_page_resources`). Pages
+/// whose chain resolves to nothing are not resource users at all.
+fn resolve_page_resources(document: &Document, page_id: ObjectId) -> Option<PageResources> {
+    let mut current = page_id;
+    let mut hops = 0;
+    loop {
+        let Object::Dictionary(page_dict) = document.objects.get(&current)? else {
+            return None;
+        };
+        match page_dict.get(b"Resources") {
+            Ok(Object::Reference(resources_id)) => {
+                return Some(PageResources::Shared(*resources_id));
+            }
+            Ok(Object::Dictionary(_)) => {
+                return Some(PageResources::Inline { holder: current });
+            }
+            _ => {
+                let parent = page_dict
+                    .get(b"Parent")
+                    .ok()
+                    .and_then(|entry| entry.as_reference().ok())?;
+                current = parent;
+                hops += 1;
+                if hops > 64 {
+                    return None;
+                }
+            }
+        }
+    }
 }
 
 /// Names referenced by `Tf` / `Do` operators within one resource context.
@@ -49,54 +94,60 @@ pub(crate) fn remove_unused_resources(document: &mut Document) -> usize {
     // Pages that passed every probe and completed their content walk.
     let mut processed_pages: HashSet<ObjectId> = HashSet::new();
 
-    // Pages sharing one indirect /Resources object stand or fall together:
-    // a sibling whose usage cannot be proven (failed safety probe,
-    // undecodable content, …) must veto cleaning for the whole group —
-    // its untracked references may resolve against the same dictionary.
-    let mut shared_pages: HashMap<ObjectId, Vec<ObjectId>> = HashMap::new();
-    for page_id in pages.values().copied() {
-        let Some(Object::Dictionary(page_dict)) = document.objects.get(&page_id) else {
-            continue;
-        };
-        if let Ok(Object::Reference(resources_id)) = page_dict.get(b"Resources") {
-            shared_pages.entry(*resources_id).or_default().push(page_id);
-        }
-    }
+    // Pages sharing one resources owner stand or fall together: a sibling
+    // whose usage cannot be proven (failed safety probe, undecodable
+    // content, …) must veto cleaning for the whole group — its untracked
+    // references resolve against the same dictionary. Owners keyed by the
+    // resolved location, so inherited resources count every inheriting page.
+    let mut pages_by_owner: HashMap<ResourcesOwner, Vec<ObjectId>> = HashMap::new();
 
-    // Forms referenced by pages that could not be walked may share a
-    // resources object with walked forms — those objects stay untouched.
-    let mut blocked_shared_resources: HashSet<ObjectId> = HashSet::new();
+    // Resources owners that a not-provably-safe page reached — directly or
+    // through forms — must keep everything.
+    let mut blocked_owners: HashSet<ResourcesOwner> = HashSet::new();
 
     for page_id in pages.values().copied() {
         let Some(Object::Dictionary(page_dict)) = document.objects.get(&page_id) else {
             continue;
         };
 
-        // Only clean a page's own resources — an inherited (absent)
-        // /Resources belongs to the parent page tree.
-        let resources_entry = match page_dict.get(b"Resources") {
-            Ok(entry) => entry,
-            Err(_) => continue,
-        };
-
-        if !page_is_safe(document, page_dict) {
-            block_page_form_resources(document, page_dict, &mut blocked_shared_resources);
-            continue;
-        }
-
-        let (owner, resources_dict) = match resources_entry {
-            Object::Reference(resources_id) => {
-                match document.objects.get(resources_id) {
-                    Some(Object::Dictionary(dict)) => (
-                        ResourcesOwner::SharedResources(*resources_id),
-                        dict,
-                    ),
+        // Inheritable `/Resources`: a page without its own entry resolves
+        // against the nearest ancestor's (spec 7.7.2). Such a page is a full
+        // user of that dictionary — its walk must run, and a failed walk must
+        // veto cleaning exactly like a referencing sibling's.
+        let (owner, resources_dict) = match resolve_page_resources(document, page_id) {
+            Some(PageResources::Shared(resources_id)) => {
+                match document.objects.get(&resources_id) {
+                    Some(Object::Dictionary(dict)) => {
+                        (ResourcesOwner::SharedResources(resources_id), dict)
+                    }
                     _ => continue,
                 }
             }
-            Object::Dictionary(dict) => (ResourcesOwner::Page(page_id), dict),
-            _ => continue,
+            Some(PageResources::Inline { holder }) => {
+                let Some(Object::Dictionary(holder_dict)) = document.objects.get(&holder) else {
+                    continue;
+                };
+                let Ok(Object::Dictionary(dict)) = holder_dict.get(b"Resources") else {
+                    continue;
+                };
+                (
+                    if holder == page_id {
+                        ResourcesOwner::Page(page_id)
+                    } else {
+                        ResourcesOwner::PageTree(holder)
+                    },
+                    dict,
+                )
+            }
+            None => continue,
         };
+        pages_by_owner.entry(owner).or_default().push(page_id);
+
+        if !page_is_safe(document, page_dict, resources_dict) {
+            blocked_owners.insert(owner);
+            block_page_form_resources(document, resources_dict, &mut blocked_owners);
+            continue;
+        }
 
         // A page can only be cleaned when its whole content tree resolves.
         let mut page_usage = UsedNames::default();
@@ -105,7 +156,8 @@ pub(crate) fn remove_unused_resources(document: &mut Document) -> usize {
         let content = match document.get_and_decode_page_content(page_id) {
             Ok(content) => content,
             Err(_) => {
-                block_page_form_resources(document, page_dict, &mut blocked_shared_resources);
+                blocked_owners.insert(owner);
+                block_page_form_resources(document, resources_dict, &mut blocked_owners);
                 continue;
             }
         };
@@ -118,7 +170,8 @@ pub(crate) fn remove_unused_resources(document: &mut Document) -> usize {
             &mut visited_forms,
             &mut form_usage,
         ) {
-            block_page_form_resources(document, page_dict, &mut blocked_shared_resources);
+            blocked_owners.insert(owner);
+            block_page_form_resources(document, resources_dict, &mut blocked_owners);
             continue;
         }
 
@@ -139,20 +192,27 @@ pub(crate) fn remove_unused_resources(document: &mut Document) -> usize {
     // object, or one form walked from several pages) — dedupe before the
     // mutable pass, and only clean owners every visitor proved safe.
     cleanable.sort_unstable_by_key(|owner| match owner {
-        ResourcesOwner::Page(id) | ResourcesOwner::SharedResources(id) | ResourcesOwner::Form(id) => *id,
+        ResourcesOwner::Page(id)
+        | ResourcesOwner::PageTree(id)
+        | ResourcesOwner::SharedResources(id)
+        | ResourcesOwner::Form(id) => *id,
     });
     cleanable.dedup();
-    // A shared resources object is cleaned only when every page referencing
-    // it was fully processed — one unproven sibling (or a sibling's
-    // unwalked form) vetoes the group.
-    cleanable.retain(|owner| match owner {
-        ResourcesOwner::SharedResources(resources_id) => {
-            !blocked_shared_resources.contains(resources_id)
-                && shared_pages
-                    .get(resources_id)
-                    .is_some_and(|ids| ids.iter().all(|id| processed_pages.contains(id)))
+    // A page-resource owner is cleaned only when every page using it —
+    // referencing or inheriting — was fully processed; one unproven page (or
+    // a form only that page reaches) vetoes the group. Form owners entered
+    // `cleanable` only through a completed walk of their own content, and an
+    // inline dictionary nothing walked is never cleaned in the first place.
+    cleanable.retain(|owner| {
+        if blocked_owners.contains(owner) {
+            return false;
         }
-        _ => true,
+        match owner {
+            ResourcesOwner::Form(_) => true,
+            _ => pages_by_owner
+                .get(owner)
+                .is_some_and(|ids| ids.iter().all(|id| processed_pages.contains(id))),
+        }
     });
 
     let mut removed_entries = 0;
@@ -178,20 +238,14 @@ fn merge_usage(target: &mut HashMap<ResourcesOwner, UsedNames>, owner: Resources
 
 /// Block the shared resources objects reachable from a page that could not
 /// be proven safe: every form in its `/XObject` category may draw names the
-/// failed walk never recorded, so any `/Resources` those forms reference
-/// indirectly must keep everything.
+/// failed walk never recorded, and so may every form those forms draw — the
+/// walk recurses, because an unwalked chain at any depth can resolve against
+/// a dictionary another page wants to clean.
 fn block_page_form_resources(
     document: &Document,
-    page_dict: &Dictionary,
-    blocked: &mut HashSet<ObjectId>,
+    resources_dict: &Dictionary,
+    blocked: &mut HashSet<ResourcesOwner>,
 ) {
-    let Some(resources_dict) = page_dict
-        .get(b"Resources")
-        .ok()
-        .and_then(|entry| dereference_dictionary(document, entry))
-    else {
-        return;
-    };
     let Some(xobject_dict) = resources_dict
         .get(b"XObject")
         .ok()
@@ -199,22 +253,64 @@ fn block_page_form_resources(
     else {
         return;
     };
+    let mut visited: HashSet<ObjectId> = HashSet::new();
     for entry in xobject_dict.iter() {
         let Object::Reference(form_id) = entry.1 else {
             continue;
         };
-        let Some(Object::Stream(form)) = document.objects.get(form_id) else {
+        block_form_resources(document, *form_id, blocked, &mut visited);
+    }
+}
+
+/// Block the shared resources of one form and everything it can reach.
+fn block_form_resources(
+    document: &Document,
+    form_id: ObjectId,
+    blocked: &mut HashSet<ResourcesOwner>,
+    visited: &mut HashSet<ObjectId>,
+) {
+    if !visited.insert(form_id) {
+        return;
+    }
+    let Some(Object::Stream(form)) = document.objects.get(&form_id) else {
+        return;
+    };
+    if !matches!(form.dict.get(b"Subtype"), Ok(Object::Name(subtype)) if subtype.as_slice() == b"Form")
+    {
+        return;
+    }
+    let Some(form_resources) = form
+        .dict
+        .get(b"Resources")
+        .ok()
+        .and_then(|entry| dereference_dictionary(document, entry))
+    else {
+        return;
+    };
+    if let Ok(Object::Reference(resources_id)) = form.dict.get(b"Resources") {
+        blocked.insert(ResourcesOwner::SharedResources(*resources_id));
+    }
+    // An inline form dictionary only becomes cleanable through a completed
+    // walk of its own content, so there is nothing to block for it here.
+    let Some(xobject_dict) = form_resources
+        .get(b"XObject")
+        .ok()
+        .and_then(|entry| dereference_dictionary(document, entry))
+    else {
+        return;
+    };
+    for entry in xobject_dict.iter() {
+        let Object::Reference(nested_id) = entry.1 else {
             continue;
         };
-        if let Ok(Object::Reference(resources_id)) = form.dict.get(b"Resources") {
-            blocked.insert(*resources_id);
-        }
+        block_form_resources(document, *nested_id, blocked, visited);
     }
 }
 
 /// Whole-page safety probes for patterns whose resource usage cannot be
-/// derived from the page content tree alone.
-fn page_is_safe(document: &Document, page_dict: &Dictionary) -> bool {
+/// derived from the page content tree alone. `resources_dict` is the
+/// page's effective (possibly inherited) resources dictionary.
+fn page_is_safe(document: &Document, page_dict: &Dictionary, resources_dict: &Dictionary) -> bool {
     // Annotation appearance streams carry their own content that may fall
     // back to the page's resources — annotations with /AP opt the page out.
     if let Ok(Object::Array(annotations)) = page_dict.get(b"Annots") {
@@ -237,17 +333,36 @@ fn page_is_safe(document: &Document, page_dict: &Dictionary) -> bool {
 
     // Tiling patterns are content streams too; their resource usage is out
     // of scope here, so any pattern resource opts the page out.
-    if let Some(resources_dict) = page_dict
-        .get(b"Resources")
+    if let Some(pattern_dict) = resources_dict
+        .get(b"Pattern")
         .ok()
         .and_then(|entry| dereference_dictionary(document, entry))
     {
-        if let Some(pattern_dict) = resources_dict
-            .get(b"Pattern")
-            .ok()
-            .and_then(|entry| dereference_dictionary(document, entry))
-        {
-            if !pattern_dict.is_empty() {
+        if !pattern_dict.is_empty() {
+            return false;
+        }
+    }
+
+    resources_prove_safe(document, resources_dict)
+}
+
+/// Probes shared by the page gate and the form walk: usage patterns the
+/// `Tf`/`Do` interpretation below cannot see.
+fn resources_prove_safe(document: &Document, resources_dict: &Dictionary) -> bool {
+    // ExtGState `/Font` entries select fonts by direct object reference
+    // (PDF 8.4.5) — a font used only through `gs` never appears as a `Tf`
+    // operand, so its resource entry must not be judged unused. Out of
+    // scope, opt out.
+    if let Some(extgstate_dict) = resources_dict
+        .get(b"ExtGState")
+        .ok()
+        .and_then(|entry| dereference_dictionary(document, entry))
+    {
+        for entry in extgstate_dict.iter() {
+            let Some(state_dict) = dereference_dictionary(document, entry.1) else {
+                continue;
+            };
+            if state_dict.get(b"Font").is_ok() {
                 return false;
             }
         }
@@ -292,6 +407,12 @@ fn collect_used_names(
         .get(b"XObject")
         .ok()
         .and_then(|entry| dereference_dictionary(document, entry));
+
+    // The same ExtGState/tiling-pattern probes as the page gate: a form's
+    // resources may carry them just as well.
+    if !resources_prove_safe(document, resources_dict) {
+        return false;
+    }
 
     for operation in &content.operations {
         match operation.operator.as_str() {
@@ -408,58 +529,66 @@ fn decode_form_content(document: &Document, form_id: ObjectId) -> Option<Content
 
 /// Remove unused `/Font` and `/XObject` entries from one owner's resources.
 fn clean_owner_resources(document: &mut Document, owner: ResourcesOwner, usage: &UsedNames) -> usize {
-    // Locate the resources dictionary for the owner, mutably.
-    let resources_object_id: Option<ObjectId> = match owner {
-        ResourcesOwner::Page(page_id) => {
-            let Some(Object::Dictionary(page_dict)) = document.objects.get(&page_id) else {
+    // Where the owner's dictionary lives: an indirect resources object, or
+    // an inline entry carried by a holder (the page itself, a page-tree
+    // node for inherited resources, or a form XObject).
+    enum DictionaryLocation {
+        Shared(ObjectId),
+        Inline(ObjectId),
+    }
+
+    let location = match owner {
+        ResourcesOwner::Page(page_id) | ResourcesOwner::PageTree(page_id) => {
+            let Some(Object::Dictionary(holder_dict)) = document.objects.get(&page_id) else {
                 return 0;
             };
-            match page_dict.get(b"Resources") {
-                Ok(Object::Reference(resources_id)) => Some(*resources_id),
-                _ => None, // inline dict — mutate through the page below
+            match holder_dict.get(b"Resources") {
+                Ok(Object::Reference(resources_id)) => DictionaryLocation::Shared(*resources_id),
+                Ok(Object::Dictionary(_)) => DictionaryLocation::Inline(page_id),
+                _ => return 0,
             }
         }
-        ResourcesOwner::SharedResources(resources_id) => Some(resources_id),
+        ResourcesOwner::SharedResources(resources_id) => {
+            DictionaryLocation::Shared(resources_id)
+        }
         ResourcesOwner::Form(form_id) => {
             let Some(Object::Stream(form)) = document.objects.get(&form_id) else {
                 return 0;
             };
             match form.dict.get(b"Resources") {
-                Ok(Object::Reference(resources_id)) => Some(*resources_id),
-                _ => None, // inline dict — mutate through the form below
+                Ok(Object::Reference(resources_id)) => DictionaryLocation::Shared(*resources_id),
+                Ok(Object::Dictionary(_)) => DictionaryLocation::Inline(form_id),
+                _ => return 0,
             }
         }
     };
 
-    if let Some(resources_id) = resources_object_id {
-        let Some(Object::Dictionary(resources_dict)) = document.objects.get_mut(&resources_id)
-        else {
-            return 0;
-        };
-        return clean_resource_dictionary(resources_dict, usage);
-    }
-
-    // Inline resources: mutate through the owning page / form object.
-    match owner {
-        ResourcesOwner::Page(page_id) => {
-            let Some(Object::Dictionary(page_dict)) = document.objects.get_mut(&page_id) else {
-                return 0;
-            };
-            let Ok(Object::Dictionary(resources_dict)) = page_dict.get_mut(b"Resources") else {
+    match location {
+        DictionaryLocation::Shared(resources_id) => {
+            let Some(Object::Dictionary(resources_dict)) = document.objects.get_mut(&resources_id)
+            else {
                 return 0;
             };
             clean_resource_dictionary(resources_dict, usage)
         }
-        ResourcesOwner::Form(form_id) => {
-            let Some(Object::Stream(form)) = document.objects.get_mut(&form_id) else {
-                return 0;
-            };
-            let Ok(Object::Dictionary(resources_dict)) = form.dict.get_mut(b"Resources") else {
-                return 0;
-            };
-            clean_resource_dictionary(resources_dict, usage)
-        }
-        ResourcesOwner::SharedResources(_) => 0,
+        // Inline resources: mutate through the object carrying the entry.
+        DictionaryLocation::Inline(holder_id) => match document.objects.get_mut(&holder_id) {
+            Some(Object::Dictionary(holder_dict)) => {
+                let Ok(Object::Dictionary(resources_dict)) = holder_dict.get_mut(b"Resources")
+                else {
+                    return 0;
+                };
+                clean_resource_dictionary(resources_dict, usage)
+            }
+            Some(Object::Stream(form)) => {
+                let Ok(Object::Dictionary(resources_dict)) = form.dict.get_mut(b"Resources")
+                else {
+                    return 0;
+                };
+                clean_resource_dictionary(resources_dict, usage)
+            }
+            _ => 0,
+        },
     }
 }
 

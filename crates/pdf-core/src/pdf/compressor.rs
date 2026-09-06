@@ -667,21 +667,47 @@ where
 
     // --- JBIG2 globals: shared symbol-dictionary segments referenced via
     // `/JBIG2Globals` — decoded once per document while it is intact (the
-    // same pre-resolution pattern as the color spaces above). ---
+    // same pre-resolution pattern as the color spaces above). The standard
+    // location is `/DecodeParms << /JBIG2Globals N 0 R >>` (spec: filter
+    // parameters); the stream-dictionary top level is kept as a fallback
+    // for nonstandard producers. Multiple images typically share one
+    // globals object, so the bytes decompress once per object. ---
     let mut jbig2_globals_by_image: HashMap<ObjectId, Vec<u8>> = HashMap::new();
+    let mut globals_bytes_by_object: HashMap<ObjectId, std::sync::Arc<Vec<u8>>> = HashMap::new();
     for &image_id in &image_object_ids {
         let Some(Object::Stream(stream)) = document.objects.get(&image_id) else {
             continue;
         };
-        let Ok(Object::Reference(globals_id)) = stream.dict.get(b"JBIG2Globals") else {
+        let globals_id = match stream.dict.get(b"DecodeParms") {
+            Ok(Object::Dictionary(parms)) => match parms.get(b"JBIG2Globals") {
+                Ok(Object::Reference(globals_id)) => Some(*globals_id),
+                _ => None,
+            },
+            _ => match stream.dict.get(b"JBIG2Globals") {
+                Ok(Object::Reference(globals_id)) => Some(*globals_id),
+                _ => None,
+            },
+        };
+        let Some(globals_id) = globals_id else {
             continue;
         };
-        let Some(Object::Stream(globals)) = document.objects.get(globals_id) else {
-            continue;
+        let bytes = match globals_bytes_by_object.get(&globals_id) {
+            Some(cached) => cached.clone(),
+            None => {
+                let Some(Object::Stream(globals)) = document.objects.get(&globals_id) else {
+                    continue;
+                };
+                match globals.get_plain_content() {
+                    Ok(bytes) => {
+                        let bytes = std::sync::Arc::new(bytes);
+                        globals_bytes_by_object.insert(globals_id, bytes.clone());
+                        bytes
+                    }
+                    Err(_) => continue,
+                }
+            }
         };
-        if let Ok(bytes) = globals.get_plain_content() {
-            jbig2_globals_by_image.insert(image_id, bytes);
-        }
+        jbig2_globals_by_image.insert(image_id, (*bytes).clone());
     }
 
     Ok(DocumentPreparation {

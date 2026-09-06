@@ -7,12 +7,15 @@
 //!
 //! Gate discipline mirrors the CCITT/JPX shape gates: `jbig2_input_shape`
 //! decides decodability from the stream dictionary alone (single-element
-//! filter chain, plain dimensions, no `/DecodeParms`, no `/Decode`), and
+//! filter chain, plain dimensions, a `/DecodeParms` restricted to the one
+//! parameter JBIG2Decode defines — `/JBIG2Globals` — and no `/Decode`), and
 //! the shared `stream_filter_info` + analyzer mirror pick it up. The
 //! document-level context is the `/JBIG2Globals` segment stream: it is
-//! resolved once in `prepare_document` (while the document is intact) and
-//! carried to the decoder alongside the stream — the same
-//! pre-resolution pattern the ICC color spaces use.
+//! resolved once in `prepare_document` (while the document is intact) from
+//! `/DecodeParms` — the standard location (spec Table 8/ISO 32000-2) — with
+//! the stream-dictionary top level as a nonstandard fallback, and carried
+//! to the decoder alongside the stream — the same pre-resolution pattern
+//! the ICC color spaces use.
 //!
 //! The decoder feeds a local push-based sink that assembles an 8-bit luma
 //! plane directly (black = 0, white = 255 — matching DeviceGray semantics
@@ -20,7 +23,7 @@
 //! `image` integration would allocate.
 
 use image::DynamicImage;
-use lopdf::Stream;
+use lopdf::{Object, Stream};
 
 use super::optional_integer;
 use crate::error::AppError;
@@ -34,9 +37,11 @@ pub(super) struct Jbig2InputShape {
 
 /// Validate that a JBIG2 stream uses a shape this engine can decode.
 /// Rejected: missing/oversized dimensions (the ceiling matches the JPEG
-/// format limit the re-encoder enforces), `/DecodeParms` (not defined for
-/// JBIG2Decode in the PDF spec), `/Decode` component mappings, and
-/// non-single-element filter chains (the caller checks the chain).
+/// format limit the re-encoder enforces), a `/DecodeParms` carrying anything
+/// beyond the one parameter JBIG2Decode defines — `/JBIG2Globals` as a
+/// stream reference (spec Table 8; an empty dict is legal and parameter-
+/// less) —, `/Decode` component mappings, and non-single-element filter
+/// chains (the caller checks the chain).
 pub(super) fn jbig2_input_shape(stream: &Stream) -> Option<Jbig2InputShape> {
     let width = optional_integer(stream, b"Width")?;
     let height = optional_integer(stream, b"Height")?;
@@ -45,8 +50,18 @@ pub(super) fn jbig2_input_shape(stream: &Stream) -> Option<Jbig2InputShape> {
     if !(1..=65_535).contains(&width) || !(1..=65_535).contains(&height) {
         return None;
     }
-    if stream.dict.get(b"DecodeParms").is_ok() {
-        return None;
+    if let Ok(parms) = stream.dict.get(b"DecodeParms") {
+        let Object::Dictionary(parms) = &parms else {
+            return None;
+        };
+        for (key, value) in parms {
+            if key.as_slice() != b"JBIG2Globals" {
+                return None;
+            }
+            if !matches!(value, Object::Reference(_) | Object::Stream(_)) {
+                return None;
+            }
+        }
     }
     if stream.dict.get(b"Decode").is_ok() {
         return None;

@@ -179,6 +179,46 @@ pub fn luma_psnr_db(left: &DynamicImage, right: &DynamicImage) -> Option<f64> {
     Some(10.0 * (255.0f64 * 255.0 / mean_squared_error).log10())
 }
 
+/// Rasterize a PDF with poppler (`pdftoppm`) and return the PNG bytes.
+///
+/// Strict about *why* no raster came back: an executable that is not
+/// installed yields `None` so the caller can skip the optional check with a
+/// notice, but a renderer that **ran and failed** panics with its stderr —
+/// a failed render means the document under test is broken, and silently
+/// downgrading it to "skipped" would turn a fidelity gate into a false
+/// pass. CI installs poppler-utils, so the skip branch never fires there.
+/// `expect_png` is the raster path the given `options` make pdftoppm write
+/// (`{prefix}-1.png` by default, `{prefix}.png` with `-singlefile`).
+pub fn render_poppler_png(
+    pdf: &std::path::Path,
+    prefix: &std::path::Path,
+    options: &[&str],
+    expect_png: &std::path::Path,
+) -> Option<Vec<u8>> {
+    let output = match std::process::Command::new("pdftoppm")
+        .args(options)
+        .arg(pdf)
+        .arg(prefix)
+        .output()
+    {
+        Ok(output) => output,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!("pdftoppm is not installed — skipping the poppler raster check");
+            return None;
+        }
+        Err(error) => panic!("failed to execute pdftoppm: {error}"),
+    };
+    if !output.status.success() {
+        panic!(
+            "pdftoppm failed for {} (status {:?}): {}",
+            pdf.display(),
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Some(std::fs::read(expect_png).expect("pdftoppm must produce the expected raster"))
+}
+
 /// One page drawing "PDF" (gids 34/22/24) through a Type0/CIDFontType2 font
 /// with the full 77-glyph test font embedded as FontFile2 — the font
 /// subsetting fixture.

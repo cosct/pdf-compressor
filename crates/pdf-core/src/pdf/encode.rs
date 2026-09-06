@@ -372,6 +372,19 @@ pub(super) fn optimize_image_stream(
             reason: "soft mask could not be resolved for a safe rewrite".into(),
         });
     }
+    if let Some(mask) = smask {
+        // /Matte declares the mask premultiplied against a backdrop color.
+        // A faithful rewrite would have to un-premultiply before the color
+        // conversion and re-matte after — anything less composites the
+        // already-matted samples a second time and washes the colors out.
+        if mask.dict.get(b"Matte").is_ok() {
+            return Ok(ImageOptimization::Skipped {
+                reason: "soft mask carries /Matte premultiplication this rewrite would \
+                         composite twice"
+                    .into(),
+            });
+        }
+    }
 
     let filter_info = stream_filter_info(stream);
 
@@ -460,6 +473,35 @@ pub(super) fn optimize_image_stream(
         return Ok(ImageOptimization::Skipped { reason });
     }
 
+    // --- /Decode normalization context ---
+    // A /Decode array reinterprets samples before rendering; the rewrite
+    // must either fold the mapping into the decoded samples (identity /
+    // inversion per channel — CMYK before its conversion, gray/RGB after
+    // decode) or keep the image untouched. Anything else stays skipped.
+    let channel_decodes = match super::colorspace::stream_channel_decodes(stream) {
+        Ok(decodes) => decodes,
+        Err(reason) => {
+            return Ok(ImageOptimization::Skipped {
+                reason: format!("image carries a /Decode array {reason}"),
+            });
+        }
+    };
+    let (cmyk_decodes, plane_decodes) = match channel_decodes {
+        None => (None, None),
+        Some(decodes) => {
+            if declares_cmyk(stream, color_space) {
+                if decodes.len() != 4 {
+                    return Ok(ImageOptimization::Skipped {
+                        reason: "/Decode does not cover the four CMYK components".into(),
+                    });
+                }
+                (Some(decodes), None)
+            } else {
+                (None, Some(decodes))
+            }
+        }
+    };
+
     let original_len = stream.content.len();
 
     // --- Decode the color plane (or take it back from the search cache) ---
@@ -481,7 +523,7 @@ pub(super) fn optimize_image_stream(
                 return Ok(ImageOptimization::Skipped { reason });
             }
             let decoded = if filter_info.has_jpeg {
-                decode_jpeg_stream(stream, color_space)
+                decode_jpeg_stream(stream, color_space, cmyk_decodes.as_deref())
             } else if filter_info.has_ccitt {
                 #[cfg(feature = "ccitt")]
                 {
@@ -496,7 +538,7 @@ pub(super) fn optimize_image_stream(
             } else if filter_info.has_jpx {
                 #[cfg(feature = "jpx")]
                 {
-                    super::jpx::decode_jpx_stream(stream, settings.converts_cmyk())
+                    super::jpx::decode_jpx_stream(stream, settings.converts_cmyk(), color_space)
                         .map_err(|e| format!("failed to decode JPX image stream: {e}"))
                 }
                 #[cfg(not(feature = "jpx"))]
@@ -511,6 +553,15 @@ pub(super) fn optimize_image_stream(
                 decode_raw_image_stream(stream, color_space)
                     .map_err(|e| format!("failed to decode raw image stream: {e}"))
             };
+            // Fold any per-channel /Decode mapping into the decoded samples
+            // so the rebuilt stream (which never carries /Decode) renders
+            // identically. CMYK mappings were applied inside the decode, on
+            // the samples before their conversion.
+            let decoded =
+                decoded.and_then(|image| match plane_decodes.as_deref() {
+                    Some(decodes) => apply_channel_decodes(image, decodes),
+                    None => Ok(image),
+                });
             match decoded {
                 Ok(image) => {
                     // Grayscale conversion happens before resizing: it is
@@ -651,6 +702,10 @@ pub(super) fn optimize_image_stream(
             .dict
             .set("Filter", Object::Name(b"DCTDecode".to_vec()));
         rebuilt.dict.remove(b"DecodeParms");
+        // Samples reached the plane through their /Decode mapping already
+        // (see `apply_channel_decodes` / the CMYK decode path); an inherited
+        // array would re-map the normalized — and differently sized — plane.
+        rebuilt.dict.remove(b"Decode");
         rebuilt.dict.set("BitsPerComponent", Object::Integer(8));
         match restored_color_space {
             Some((object, _)) => rebuilt.dict.set("ColorSpace", object.clone()),
@@ -758,6 +813,13 @@ fn decode_smask_gray(smask: &Stream) -> Option<image::GrayImage> {
         if color_space.as_slice() != b"DeviceGray" {
             return None;
         }
+    }
+
+    // Matte premultiplication has no un-premultiply step in this rewrite —
+    // the whole image stays untouched instead (the round-level gate normally
+    // fires first; this is defense in depth for other callers).
+    if smask.dict.get(b"Matte").is_ok() {
+        return None;
     }
 
     let inverted = match smask.dict.get(b"Decode") {
@@ -1088,14 +1150,12 @@ pub(super) fn decode_raw_image_stream(
                         "Indexed image uses an unsupported index bit depth.".into(),
                     )
                 })?;
-                let mut pixels = Vec::with_capacity(indices.len() * channels);
-                for index in indices {
-                    let offset = index as usize * channels;
-                    let entry = palette
-                        .get(offset..offset + channels)
-                        .ok_or_else(|| AppError::PdfBuild("Indexed palette lookup out of range.".into()))?;
-                    pixels.extend_from_slice(entry);
-                }
+                let pixels = super::colorspace::expand_indexed_samples(
+                    &indices,
+                    *base_channels,
+                    palette,
+                )
+                .map_err(AppError::PdfBuild)?;
                 if channels == 1 {
                     image::GrayImage::from_raw(width, height, pixels)
                         .map(DynamicImage::ImageLuma8)
@@ -1146,8 +1206,9 @@ pub(super) fn decode_raw_image_stream(
 /// Convert interleaved 8-bit CMYK bytes into an RGB plane through the
 /// shared calibrated conversion (see `cmyk::cmyk_samples_to_rgb`). A length
 /// that is not an exact `width × height × 4` fails the `from_raw` shape
-/// check, matching the gray/RGB paths' dimension strictness.
-fn cmyk_bytes_to_rgb_image(
+/// check, matching the gray/RGB paths' dimension strictness. Shared with
+/// the JPX decoder, whose indexed base spaces may resolve to CMYK.
+pub(super) fn cmyk_bytes_to_rgb_image(
     width: u32,
     height: u32,
     decoded: Vec<u8>,
@@ -1168,23 +1229,83 @@ fn cmyk_bytes_to_rgb_image(
 /// Adobe CMYK into RGB with its own naive formula before the plane is
 /// visible — `cmyk::decode_dct_cmyk_stream` replaces that fold); everything
 /// else, and any 4-component stream that path cannot handle, goes through
-/// the generic decode unchanged.
+/// the generic decode unchanged. `cmyk_decodes` carries a four-channel
+/// `/Decode` mapping for CMYK streams — it is applied to the raw samples
+/// before their conversion, and a stream carrying one that this decoder
+/// cannot normalize fails instead of decoding misread samples.
 fn decode_jpeg_stream(
     stream: &Stream,
     color_space: Option<&ImageColorSpaceInfo>,
+    cmyk_decodes: Option<&[super::colorspace::ChannelDecode]>,
 ) -> Result<DynamicImage, String> {
     #[cfg(feature = "cmyk-cms")]
-    if declares_cmyk(stream, color_space) {
-        if let Some(image) =
-            super::cmyk::decode_dct_cmyk_stream(&stream.content, cmyk_icc_bytes(color_space))
-        {
-            return Ok(image);
+    {
+        if declares_cmyk(stream, color_space) {
+            if let Some(image) = super::cmyk::decode_dct_cmyk_stream(
+                &stream.content,
+                cmyk_icc_bytes(color_space),
+                cmyk_decodes,
+            ) {
+                return Ok(image);
+            }
         }
+    }
+    if cmyk_decodes.is_some() {
+        // The calibrated path did not (or cannot) run; the generic fold
+        // would consume remapped CMYK samples unnormalized — keep the
+        // original stream instead.
+        return Err(
+            "CMYK JPEG with a /Decode mapping needs the calibrated decode path".into(),
+        );
     }
     #[cfg(not(feature = "cmyk-cms"))]
     let _ = color_space;
     image::load_from_memory(&stream.content)
         .map_err(|e| format!("failed to decode JPEG image stream: {e}"))
+}
+
+/// Fold a per-channel `/Decode` mapping into a decoded gray/RGB plane so the
+/// rebuilt stream (which never carries `/Decode`) renders identically. A
+/// channel-count mismatch means the array does not describe this plane — an
+/// error, not a best-effort reinterpretation.
+fn apply_channel_decodes(
+    image: DynamicImage,
+    decodes: &[super::colorspace::ChannelDecode],
+) -> Result<DynamicImage, String> {
+    let plane_channels: usize = if image.color().has_color() { 3 } else { 1 };
+    if decodes.len() != plane_channels {
+        return Err(format!(
+            "/Decode declares {} channels but the decoded plane carries {plane_channels}",
+            decodes.len()
+        ));
+    }
+    if !decodes
+        .iter()
+        .any(|decode| matches!(decode, super::colorspace::ChannelDecode::Invert))
+    {
+        return Ok(image);
+    }
+    match image {
+        DynamicImage::ImageLuma8(mut gray) => {
+            if matches!(decodes[0], super::colorspace::ChannelDecode::Invert) {
+                for sample in gray.pixels_mut() {
+                    sample.0[0] = 255 - sample.0[0];
+                }
+            }
+            Ok(DynamicImage::ImageLuma8(gray))
+        }
+        DynamicImage::ImageRgb8(mut rgb) => {
+            for pixel in rgb.pixels_mut() {
+                for (channel, decode) in pixel.0.iter_mut().zip(decodes) {
+                    if matches!(decode, super::colorspace::ChannelDecode::Invert) {
+                        *channel = 255 - *channel;
+                    }
+                }
+            }
+            Ok(DynamicImage::ImageRgb8(rgb))
+        }
+        _ => Err("decoded plane layout does not match a per-channel /Decode".into()),
+    }
 }
 
 /// The ICC profile bytes a CMYK conversion should use, when the resolved

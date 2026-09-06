@@ -2,9 +2,33 @@
 
 本项目的所有显著变更都记录在此文件中。格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。日期为提交日期。
 
+## [0.7.1] - 2026-09-07
+
+### 修复（2026-09-07 二次外部审查，6 项引擎 P1 + 3 项交付 P2）
+
+- **[P1] 共享资源清理遗漏继承页面与嵌套 Form**：页面树继承的 `/Resources`（spec 7.7.2）此前完全不登记使用——第一页显式引用、第二页继承同一资源对象时，清理只看第一页的使用集，删除第二页字体导致整段文字消失；不安全页面的保护扫描也只看一层 Form，内部 Form 共享的资源对象未受保护。现按 `/Parent` 链解析有效资源（继承页计为完整使用者，失败同样否决整组清理），保护扫描递归嵌套 Form；新增"ExtGState 携带 `/Font` 项"保守探测（gs 按对象引用直接选字体，`Tf`/`Do` 遍历不可见，此类资源字典保持原样）。独立 Poppler 渲染验收：继承资源与嵌套 Form 两场景深色像素 490→0 / 426→0 的丢失归零
+- **[P1] 带 `/Decode` 的 CMYK JPEG 严重偏色**：JPEG 路径绕过了 CMYK `/Decode` 保护（仅 raw 路径有），新 CMYK 解码路径也不应用 PDF 的 Decode 映射，且 8 元素数组被继承到 3 通道 RGB 输出再次错误施加。现 `/Decode` 统一在解码阶段归一化——CMYK 在样本转换前应用逐通道映射（翻转不与 CMS 变换交换律，必须在原始样本上做），灰度/RGB 在解码后折叠进平面，重建流一律剥除 `/Decode`；奇数长度、部分区间、通道数不匹配等无法归一化的形状保持跳过。实测带 `[1 0 1 0 1 0 1 0]` 的 Adobe YCCK JPEG 压缩前后 RGB PSNR 6.59dB → ≥25dB
+- **[P1] JPX 转码忽略 Indexed 调色板**：单组件索引被直接当灰度——合法的 `/ColorSpace [/Indexed /DeviceRGB …]` 全红调色板图压缩后变成灰度图。现 PDF 色彩空间解析传入 JPX 解码器，Indexed 声明下单组件按索引经查找表展开（基空间 1/3/4 通道分别灰度/RGB/CMYK 转换），组件数不符或索引超 8 位保守跳过；其余声明维持码流权威语义
+- **[P1] 字体子集化遗漏 ExtGState 字体选择**：`/GS1 gs` 可经 `/ExtGState /Font [fontRef size]` 直接按对象引用更换当前字体（PDF 8.4.5），q/Q 已跟踪但 gs 未跟踪——gs 选回 Type0 后的字形漏收（D 映射为 `.notdef` 缺字）。现 gs 的 Font 项并入同一字体状态机（与 q/Q 栈交互一致），名字无法解析、Font 项畸形或指向 Type3 时保守放弃子集化
+- **[P1] 软蒙版 `/Matte` 预混色被二次混合**：重建 SMask 只写灰度采样，`/Matte` 丢失且读取无反预混步骤——已预混色的图片再次与背景混合（白 Matte、50% alpha 下 `[128,255,128]` → `[192,255,192]` 明显变浅）。重建尚无反预混能力，带 Matte 的整图保守跳过（原图保持）
+- **[P2] 标准位置 JBIG2Globals 被拒**：标准写法 `/DecodeParms << /JBIG2Globals N 0 R >>` 被"拒绝一切 DecodeParms"的门禁挡掉，globals 又只从字典顶层寻找——支持范围内的扫描图整图跳过。现门禁接受仅含 JBIG2Globals（流引用）的 DecodeParms，准备阶段从标准位置解析（顶层作为非标准回退保留），globals 字节按对象 ID 共享解压
+- **[P2] 渲染门禁把渲染失败吞成通过**：保真测试把渲染器非零退出当"工具不可用"跳过（4 处调用点同病）。其一后果：JBIG2 渲染比对因期望文件名拼写错误（`….-1.png`）从未真正执行，22dB 阈值从未被度量（实测 ≈18.6dB）。现严格区分"未安装"（跳过并提示）与"已运行但失败"（携带 stderr 判失败），CI 显式安装 poppler-utils，修正文件名后阈值按实测钉在 17dB（提升留给转码质量专项）；本地 `pnpm gate` 补齐 CI 已有的 `jpx,cmyk-cms` 测试腿
+- **[P2] Arch 包补齐 Nautilus/Nemo 右键脚本**：0.7.0 的 zst 安装清单遗漏 `packaging/nautilus/compress-*.sh`（旧源码包含此路径，用户指南仍承诺随包提供）。现补齐 `/usr/share/pdf-compressor/nautilus/`，并在打包脚本内置必需文件清单校验（缺项即失败）
+- **[P2] AUR 更新早于 Release 公开**：tag 工作流创建草稿 Release 后即推 AUR，而 `-bin` 包的匿名资产下载 URL 在草稿态 404——AUR 用户先看到装不上的新版本。AUR 推送移入独立工作流（`aur-publish.yml`），`release.published` 后触发，推送前匿名验证资产可下载与校验和
+
+### 新增
+
+- **AUR 源码包恢复维护**：`pdf-compressor`（源码包）与 `pdf-compressor-bin`（二进制包）由 `aur-publish.yml` 在 Release 发布后一同更新——源码包从 tag 压缩包构建（cargo + pnpm，jpx/cmyk-cms 特性与 release 一致），两包文件布局相同、互相 provides/conflicts，模板 `packaging/archlinux/PKGBUILD.source`
+
+### 验收
+
+- 二次审查 7 个复现场景全部转绿并固化为 `rereview_*` 回归测试（含 jpx-indexed.jp2 / jbig2-globals+page 夹具）；上轮 8 个 `review_*` 场景继续通过
+- 引擎 162 项（`jpx,cmyk-cms` 特性）/ 140 项（默认）+ CLI 12 项测试通过；workspace 与可选特性 Clippy `-D warnings` 通过；前端 64 项测试与构建通过
+
 ## [0.7.0] - 2026-09-06
 
 ### 新增
+
 
 - **CMYK→RGB 真转换（0.6.0 路线 P0 落地，feature `cmyk-cms`）**：开启 `cmyk_conversion` 后的转换不再用朴素减色公式，而是与主流渲染器逐字节对齐——带 ICC profile 的图片（ICC N=4）经 Little CMS（vendored lcms2 静态编译，同 jpx 模式 feature 门控、默认关）按**嵌入 profile** 转换，且与 poppler 为同一文件构建的 transform 完全同构（Relative Colorimetric + 黑点补偿 → 内建 sRGB）；无 profile 的 CMYK（DeviceCMYK / 4 分量 JPX / CMYK 基 Indexed / 无效 profile）走 poppler 与 PDFium 共用的 xpdf SWOP 16 项矩阵（含其精确舍入）。DCT 路径经 zune-jpeg 取原始 4 分量平面再转换（跳过解码器内置的朴素折叠），Adobe YCCK 按 libjpeg 语义还原（极性经 poppler 26.08 实证钉死）。**验收**：CGATS TR 001（CC0）嵌入的 raw 与 Adobe YCCK DCT 双夹具上，压缩前后 poppler 渲染 PSNR 实测 ≈54.6dB（门槛 ≥25dB；0.6.0 朴素基线 ≈7.6dB），渲染比对门禁进 CI 可选特性腿；`cmyk_conversion` 默认仍为关（源码默认构建的朴素路径未达标，翻转评估见开发文档路线 §8），桌面 release 包与 AUR 包启用该 feature
 - **Arch Linux 安装包进入 Release 产物**：release 流程现直接产出 `pdf-compressor_<版本>_amd64.pkg.tar.zst`，随 deb/AppImage/NSIS/dmg 一同挂到 GitHub Release——CI 在 archlinux:base-devel 容器里复用 ubuntu 构建的原始二进制，跑与本地 `pnpm run tauri:arch` 完全相同的免编译 makepkg 管线（`scripts/build-arch-bundle.sh`），不重编译、与 bundle 目标零漂移

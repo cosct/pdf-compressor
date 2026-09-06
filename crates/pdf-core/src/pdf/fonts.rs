@@ -619,6 +619,67 @@ fn collect_context_cids(
                     }
                 }
             }
+            "gs" => {
+                // An ExtGState `/Font [fontRef size]` entry re-selects the
+                // current font by direct object reference (PDF 8.4.5) — the
+                // same graphics-state slot `Tf` writes, so it must reach the
+                // subsetter the same way (and interacts with q/Q identically).
+                let Some(Object::Name(name)) = operation.operands.first() else {
+                    continue;
+                };
+                let Some(extgstate_dict) = resources
+                    .get(b"ExtGState")
+                    .ok()
+                    .and_then(|entry| match entry {
+                        Object::Dictionary(dict) => Some(dict),
+                        Object::Reference(dict_id) => match document.objects.get(dict_id) {
+                            Some(Object::Dictionary(dict)) => Some(dict),
+                            _ => None,
+                        },
+                        _ => None,
+                    })
+                else {
+                    return Ok(false);
+                };
+                let Ok(state_entry) = extgstate_dict.get(name.as_slice()) else {
+                    // A name that does not resolve here may reach a state
+                    // dictionary through inheritance — keep the fonts whole.
+                    return Ok(false);
+                };
+                let state_dict = match state_entry {
+                    Object::Reference(state_id) => match document.objects.get(state_id) {
+                        Some(Object::Dictionary(dict)) => Some(dict),
+                        _ => None,
+                    },
+                    Object::Dictionary(dict) => Some(dict),
+                    _ => None,
+                };
+                let Some(state_dict) = state_dict else {
+                    return Ok(false);
+                };
+                match state_dict.get(b"Font") {
+                    Ok(Object::Array(items)) if items.len() == 2 => {
+                        let Object::Reference(font_id) = &items[0] else {
+                            return Ok(false);
+                        };
+                        // Same Type3 guard as the Tf branch.
+                        if let Some(Object::Dictionary(font)) = document.objects.get(font_id) {
+                            if matches!(
+                                font.get(b"Subtype"),
+                                Ok(Object::Name(subtype)) if subtype.as_slice() == b"Type3"
+                            ) {
+                                return Ok(false);
+                            }
+                        }
+                        current_type0 = candidates.contains_key(font_id).then_some(*font_id);
+                    }
+                    // A malformed Font entry cannot be tracked — keep the
+                    // fonts whole rather than mis-size the subsets.
+                    Ok(_) => return Ok(false),
+                    // States without /Font leave the selection unchanged.
+                    Err(_) => {}
+                }
+            }
             "Tj" | "'" | "\"" | "TJ" => {
                 let Some(font_id) = current_type0 else {
                     continue;

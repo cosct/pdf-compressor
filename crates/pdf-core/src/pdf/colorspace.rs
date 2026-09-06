@@ -349,3 +349,75 @@ pub(crate) fn unpack_indices(data: &[u8], bits: i64, width: u32) -> Option<Vec<u
         _ => None,
     }
 }
+
+/// Expand palette index bytes into base-space samples. `palette` holds
+/// `base_channels` bytes per entry; out-of-range indices are an error (the
+/// dictionary does not describe the samples it claims to decode).
+pub(crate) fn expand_indexed_samples(
+    indices: &[u8],
+    base_channels: u8,
+    palette: &[u8],
+) -> Result<Vec<u8>, String> {
+    let channels = usize::from(base_channels);
+    if !matches!(channels, 1 | 3 | 4) {
+        return Err("Indexed image uses an unsupported base color space.".into());
+    }
+    let mut pixels = Vec::with_capacity(indices.len() * channels);
+    for index in indices {
+        let offset = usize::from(*index) * channels;
+        let entry = palette
+            .get(offset..offset + channels)
+            .ok_or_else(|| "Indexed palette lookup out of range.".to_string())?;
+        pixels.extend_from_slice(entry);
+    }
+    Ok(pixels)
+}
+
+/// Per-channel interpretation of a stream's `/Decode` array. Only the two
+/// full-range mappings are representable — identity `(0, 1)` and inversion
+/// `(1, 0)`; partial ranges rescale the ramp and stay unsupported.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ChannelDecode {
+    Identity,
+    Invert,
+}
+
+/// Parse a stream's `/Decode` array into per-channel mappings.
+///
+/// * `Ok(None)` — no `/Decode` entry; samples map straight through.
+/// * `Ok(Some(decodes))` — every pair is a full-range identity or inversion.
+/// * `Err(reason)` — the array exists but uses a shape this engine cannot
+///   normalize (odd length, non-numeric entries, partial ranges); the caller
+///   must keep the image untouched rather than misread its samples.
+pub(crate) fn stream_channel_decodes(
+    stream: &Stream,
+) -> Result<Option<Vec<ChannelDecode>>, String> {
+    let entry = match stream.dict.get(b"Decode") {
+        Ok(entry) => entry,
+        Err(_) => return Ok(None),
+    };
+    let Object::Array(items) = &entry else {
+        return Err("/Decode is not an array".into());
+    };
+    if items.is_empty() || items.len() % 2 != 0 {
+        return Err(format!("/Decode has an odd length: {}", items.len()));
+    }
+    let as_number = |item: &Object| match item {
+        Object::Integer(value) => Some(*value as f64),
+        Object::Real(value) => Some(f64::from(*value)),
+        _ => None,
+    };
+    let mut decodes = Vec::with_capacity(items.len() / 2);
+    for [first, second] in items.as_chunks::<2>().0 {
+        match (as_number(first), as_number(second)) {
+            (Some(0.0), Some(1.0)) => decodes.push(ChannelDecode::Identity),
+            (Some(1.0), Some(0.0)) => decodes.push(ChannelDecode::Invert),
+            _ => {
+                return Err(
+                    "/Decode uses a partial range this engine cannot normalize".into(),
+                );
+            }
+        }
+    }
+    Ok(Some(decodes))
+}

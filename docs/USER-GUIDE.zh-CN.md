@@ -28,10 +28,10 @@
 ### Arch Linux
 
 ```bash
-yay -S pdf-compressor-bin     # 或 paru -S pdf-compressor-bin
+yay -S pdf-compressor-bin     # 二进制包；或 yay -S pdf-compressor（源码包）
 ```
 
-AUR 二进制包（无需 Rust/Node 工具链），内容与 GitHub Release 的 zst 完全一致：GUI（`pdf-compressor`）、命令行（`pdf-compressor-cli`）、KDE Dolphin 右键菜单；GNOME/Nemo 脚本随包放在 `/usr/share/pdf-compressor/nautilus/`。0.7.0 之前的源码包 `pdf-compressor` 已停止更新，安装 `-bin` 包会自动替换。
+AUR 二进制包（无需 Rust/Node 工具链），内容与 GitHub Release 的 zst 完全一致：GUI（`pdf-compressor`）、命令行（`pdf-compressor-cli`）、KDE Dolphin 右键菜单；GNOME/Nemo 脚本随包放在 `/usr/share/pdf-compressor/nautilus/`。源码包 `pdf-compressor` 从同一 Release 自动更新（cargo + pnpm 从源码构建），两者文件布局一致，互相 provides/conflicts，切换时会自动替换。
 
 自行构建 zst：`pnpm run tauri:arch`（详见 [`packaging/archlinux/README.md`](../packaging/archlinux/README.md)）。
 

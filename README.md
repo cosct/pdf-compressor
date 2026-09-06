@@ -20,7 +20,7 @@ A local-first desktop app that makes PDFs smaller — without breaking what matt
 
 | Platform | Source |
 | --- | --- |
-| Arch Linux | AUR: `yay -S pdf-compressor-bin` (binary package built from [Releases](https://github.com/cosct/pdf-compressor/releases) assets; or `pnpm run tauri:arch` for a local zst) |
+| Arch Linux | AUR: `yay -S pdf-compressor-bin` (binary package built from [Releases](https://github.com/cosct/pdf-compressor/releases) assets) or `yay -S pdf-compressor` (source package); or `pnpm run tauri:arch` for a local zst |
 | Windows | NSIS installer from [Releases](https://github.com/cosct/pdf-compressor/releases) (ships the CLI and an Explorer context menu) |
 | macOS | `.dmg` from [Releases](https://github.com/cosct/pdf-compressor/releases) (+ optional Finder Quick Action, see user guide) |
 | Any | Build from source: `pnpm install && pnpm run tauri build` (Rust 1.93+, Node 22+) |
