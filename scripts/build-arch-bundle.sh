@@ -26,10 +26,13 @@ version=$(sed -n 's/^version = "\(.*\)"$/\1/p' src-tauri/Cargo.toml | head -1)
 # shared target (build.target-dir in ~/.cargo/config.toml) redirects it. The
 # CI packaging container has no Rust toolchain; the release workflow lays the
 # binaries out at ./target there, so fall back to that when cargo is absent.
+# Always absolute: makepkg runs package() from its own staging directory, so
+# a relative path would resolve against $srcdir and miss the binaries.
 if command -v cargo >/dev/null 2>&1; then
   target=$(cargo metadata --format-version 1 --no-deps | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')
 fi
-target=${target:-target}
+[[ -n "${target:-}" ]] || target="$PWD/target"
+case "$target" in /*) ;; *) target="$PWD/$target" ;; esac
 
 for bin in app pdf-compressor-cli; do
   [[ -x "$target/release/$bin" ]] || {
