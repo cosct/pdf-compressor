@@ -99,7 +99,7 @@ jobs:
       # (scripts/build-arch-bundle.sh) — no recompilation, no drift.
       - name: Export the release binaries for the Arch package job
         if: matrix.os == 'ubuntu-22.04'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: linux-release-binaries
           path: |
