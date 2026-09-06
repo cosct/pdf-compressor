@@ -10,7 +10,7 @@
 # and pushes this file (with a regenerated .SRCINFO) to the AUR.
 
 pkgname=pdf-compressor-bin
-pkgver=0.6.0
+pkgver=0.7.0
 pkgrel=1
 pkgdesc='Local-first desktop PDF compressor built with Vue, Tauri, and Rust (GUI + headless CLI)'
 arch=('x86_64')
