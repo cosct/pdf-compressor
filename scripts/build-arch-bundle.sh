@@ -97,6 +97,10 @@ cp "$pkg" "$asset"
 # The published zst is what AUR users install — verify the manifest carries
 # every path the documentation promises before the asset leaves this machine
 # (a missing install line would otherwise only surface on user machines).
+# The listing is read in full first: piping `tar | grep -q` directly lets
+# grep's early exit SIGPIPE the tar/zstd pair, which `set -o pipefail` would
+# misread as a broken archive (entries near the list start fail, later ones
+# pass).
 required=(
   usr/bin/pdf-compressor
   usr/bin/pdf-compressor-cli
@@ -108,9 +112,12 @@ required=(
   usr/share/pdf-compressor/nautilus/compress-settings.sh
   usr/share/pdf-compressor/nautilus/compress-target-5mb.sh
 )
+listing=$(tar -tf "$asset")
 missing=0
 for want in "${required[@]}"; do
-  if ! tar -tf "$asset" | grep -qx "$want"; then
+  # No -q: grep must consume the whole listing so no writer ever sees
+  # SIGPIPE under pipefail.
+  if ! grep -x "$want" <<<"$listing" >/dev/null; then
     echo "error: packaged zst is missing $want" >&2
     missing=1
   fi
