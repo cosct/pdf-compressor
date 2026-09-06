@@ -18,14 +18,13 @@
 //! dictionary `/ColorSpace` is advisory when the codestream carries its own
 //! (via the JP2 header box). The decoder therefore trusts the decoded
 //! component count — 1 → gray, 3 → RGB, 4 → CMYK (converted to RGB at decode
-//! time through the shared ink-subtraction path in `colorspace`). OpenJPEG
+//! time through the shared calibrated path in `cmyk`). OpenJPEG
 //! has already applied any codestream-internal multi-component transform
 //! before the components reach us, matching how `opj_decompress` renders.
 
 use image::DynamicImage;
 use lopdf::Stream;
 
-use super::colorspace::cmyk_to_rgb;
 use super::optional_integer;
 use crate::error::AppError;
 
@@ -67,7 +66,8 @@ pub(super) fn jpx_input_shape(stream: &Stream) -> Option<JpxInputShape> {
 /// Decode a JPX image stream into an RGB or grayscale plane. The codestream
 /// may be a raw J2K codestream or a JP2 file — `from_bytes` auto-detects —
 /// because both forms appear inside PDFs. Four-component (CMYK) codestreams
-/// come back as RGB via the shared ink-subtraction conversion, but only
+/// come back as RGB via the shared calibrated conversion (`cmyk` module),
+/// but only
 /// when `allow_cmyk` is set (the compressor's opt-in gate); otherwise they
 /// fail cleanly so the image keeps its original stream.
 pub(super) fn decode_jpx_stream(stream: &Stream, allow_cmyk: bool) -> Result<DynamicImage, AppError> {
@@ -123,14 +123,18 @@ pub(super) fn decode_jpx_stream(stream: &Stream, allow_cmyk: bool) -> Result<Dyn
                 .ok_or_else(|| AppError::PdfBuild("JPX decode produced mismatched buffer".into()))
         }
         [cyan, magenta, yellow, key] if allow_cmyk => {
-            let mut pixels = Vec::with_capacity(width as usize * height as usize * 3);
+            // Assemble the packed CMYK plane first, then convert through the
+            // shared chokepoint. JPX codestreams carry no PDF-level ICC
+            // profile, so the calibrated SWOP matrix applies (0 = no ink,
+            // same polarity as the raw planes).
+            let mut plane = Vec::with_capacity(width as usize * height as usize * 4);
             for (c, (m, (y, k))) in cyan
                 .data_u8()
                 .zip(magenta.data_u8().zip(yellow.data_u8().zip(key.data_u8())))
             {
-                let [r, g, b] = cmyk_to_rgb(c, m, y, k);
-                pixels.extend_from_slice(&[r, g, b]);
+                plane.extend_from_slice(&[c, m, y, k]);
             }
+            let pixels = super::cmyk::cmyk_samples_to_rgb(&plane, None);
             image::RgbImage::from_raw(width, height, pixels)
                 .map(DynamicImage::ImageRgb8)
                 .ok_or_else(|| AppError::PdfBuild("JPX decode produced mismatched buffer".into()))

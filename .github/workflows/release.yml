@@ -63,15 +63,15 @@ jobs:
         run: |
           if [ "${{ runner.os }}" = "macOS" ]; then
             rustup target add aarch64-apple-darwin x86_64-apple-darwin
-            cargo build --release --locked -p pdf-core --bin pdf-compressor-cli --features jpx --target aarch64-apple-darwin
-            cargo build --release --locked -p pdf-core --bin pdf-compressor-cli --features jpx --target x86_64-apple-darwin
+            cargo build --release --locked -p pdf-core --bin pdf-compressor-cli --features jpx,cmyk-cms --target aarch64-apple-darwin
+            cargo build --release --locked -p pdf-core --bin pdf-compressor-cli --features jpx,cmyk-cms --target x86_64-apple-darwin
             mkdir -p src-tauri/binaries
             lipo -create \
               target/aarch64-apple-darwin/release/pdf-compressor-cli \
               target/x86_64-apple-darwin/release/pdf-compressor-cli \
               -output src-tauri/binaries/pdf-compressor-cli
           else
-            cargo build --release --locked -p pdf-core --bin pdf-compressor-cli --features jpx
+            cargo build --release --locked -p pdf-core --bin pdf-compressor-cli --features jpx,cmyk-cms
             mkdir -p src-tauri/binaries
             cp target/release/pdf-compressor-cli* src-tauri/binaries/
           fi
@@ -89,9 +89,10 @@ jobs:
           releaseName: 'PDF Compressor ${{ github.ref_name }}'
           releaseDraft: true
           prerelease: false
-          # `--features jpx` turns on JPEG 2000 decode (vendored OpenJPEG,
-          # statically linked) in the shipped desktop binaries.
-          args: ${{ matrix.args }} --features jpx
+          # `--features jpx,cmyk-cms` turn on JPEG 2000 decode (vendored
+          # OpenJPEG, statically linked) and real CMYK color management
+          # (vendored lcms2) in the shipped desktop binaries.
+          args: ${{ matrix.args }} --features jpx,cmyk-cms
 
       # The Arch package job rebuilds the .pkg.tar.zst from these raw release
       # binaries via the same makepkg pipeline as a local `pnpm run tauri:arch`

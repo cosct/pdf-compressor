@@ -58,11 +58,11 @@ jobs:
       - name: Tests
         run: cargo test --workspace
 
-      - name: Clippy with the jpx feature
-        run: cargo clippy -p pdf-core --all-targets --features jpx -- -D warnings
+      - name: Clippy with the optional features
+        run: cargo clippy -p pdf-core --all-targets --features jpx,cmyk-cms -- -D warnings
 
-      - name: Tests with the jpx feature
-        run: cargo test -p pdf-core --features jpx
+      - name: Tests with the optional features
+        run: cargo test -p pdf-core --features jpx,cmyk-cms
 
   msrv:
     name: MSRV check (${{ matrix.crate }})

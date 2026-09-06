@@ -189,25 +189,34 @@ cargo run -p pdf-core --bin pdf-compressor-cli -- quick <file.pdf> --grayscale  
   `ImageTask`/`ImageSearchEntry` 携带。别名表取全部资源字典的并集，同名不同值
   视为歧义弃用。重建流时若通道数匹配则**保留原 ICC 数组**（profile 不丢），
   Indexed 输出声明基色空间；灰度/G4 转换导致通道数变化时回退 Device 名。
-- **CMYK（0.6.0 起 opt-in）**：ICC N=4、`DeviceCMYK` 名、CMYK 基 Indexed 统一经
-  `DecodeColorSpace::Cmyk` 解析，解码时用共享的油墨减色转换（`colorspace::
-  cmyk_to_rgb`，`(1-cmy)×(1-k)`，u16 定点舍入）转成 RGB 平面后走既有 JPEG 管线。
-  重建流声明 `DeviceRGB`——**CMYK 的 ICC/profile 永不随行**（通道数已不符，
-  `rebuild_color_space` 对 Cmyk 恒 None，Indexed 的 CMYK 基同理）。带 `/Decode`
-  映射数组的 CMYK（名字路径与解析路径都查）保持 skip：映射会重释采样值，朴素
-  转换会静默偏色。PDF 原始/JPX 的 CMYK 采样不反转（0=无墨），与 DCT 流内
-  Adobe 约定的反相 CMYK 不同——后者由 JPEG 解码器（zune-jpeg）先归一。
-  **色彩保真与 `cmyk_conversion` 开关（2026-09 实测后落定）**：朴素减色公式与
-  主流渲染器的 CMS 解释存在系统性偏差——以 poppler 为基准，规范 Adobe YCCK
-  夹具在 conservative 档下压缩前后渲染差 ≈7.6 dB（质量档不敏感 → 模型差异而
-  非压缩损失；暗部与饱和色偏差最大）。因此 CMYK 转换是 **opt-in**（设置
-  `cmyk_conversion`，CLI `--convert-cmyk`，GUI 设置卡开关，默认关 = 回到 0.5
-  的跳过行为）；**灰度/G4 请求隐式开启**（`settings.converts_cmyk()`）——任何
-  彩色→灰度折叠本身就有损意图，CMYK→灰度偏差远小于彩色偏差。gate 在
-  `optimize_image_stream` 统一拦截 raw/Indexed/DCT/JPX 四条路径
-  （`declares_cmyk`），分析器镜像把 `/DeviceCMYK` 名的图片从预估中剔除
-  （按默认关设置镜像，宁低勿高）。`CMYK_TRANSCODE_PSNR_FLOOR_DB`（≈46dB）只钉
-  "转换自洽性"，不能证明与渲染器一致；真保真（lcms2 CMS）见 0.7.0 路线。
+- **CMYK（0.6.0 起 opt-in；0.7.0 起为渲染器校准的真转换）**：ICC N=4、`DeviceCMYK`
+  名、CMYK 基 Indexed 统一经 `DecodeColorSpace::Cmyk` 解析，四条路径（raw/Indexed/
+  DCT/JPX）汇入同一转换 chokepoint `cmyk::cmyk_samples_to_rgb`：
+  - **`cmyk-cms` feature 开启**（release/AUR 包）：带 ICC 的图经 Little CMS 按嵌入
+    profile 转换——与 poppler 为同一文件构建的 transform 完全同构（profile→内建
+    sRGB，Relative Colorimetric + 黑点补偿，`Transform` 按线程缓存）；无 profile
+    （DeviceCMYK 名、JPX、CMYK 基 Indexed）与无效 profile 回退到 **xpdf 系 16 项
+    SWOP 近似矩阵**——poppler（`GfxDeviceCMYKColorSpace`，未配置 default CMYK
+    profile 的 pdftoppm 默认态）与 PDFium 的逐样本解释，含其“截断后 clip”的舍入。
+    矩阵参考值已用 poppler 26.08 计算钉死在测试里。
+  - **feature 关闭**（默认构建）：朴素减色公式（0.6.0 行为），与渲染器 CMS 解释
+    存在 ≈7.6dB 系统偏差（Adobe YCCK 夹具实测）。
+  - **DCT 极性（2026-09 实证）**：poppler/PDFium 把 4 分量 DCT 解码输出直接当
+    0=无墨消费——transform-0 样本透传、YCCK 按 libjpeg `ycck_cmyk_convert` 语义
+    （`cmy = 255 − YCbCr⁻¹(stored)`，K 透传）；历史上的"Adobe 反相"读法并不被
+    渲染器应用。`decode_dct_cmyk_stream` 以 zune-jpeg 原始平面（输出色彩空间设为
+    与输入相同即跳过其内置 CMYK→RGB 折叠）+ 上述极性还原实现。
+  - **验收门禁**（`cmyk_fidelity_matches_poppler_render`，cms 门控 + pdftoppm 存在
+    时）：CGATS TR 001（CC0，`assets/cgats001-cmyk.icc`）嵌入 ICC N=4 的 raw 与
+    Adobe YCCK DCT 双夹具，conservative 档 + 开关开启压缩，poppler 渲染前后
+    PSNR ≥25dB；实测 ≈54.6dB（0.6.0 朴素基线 ≈7.6dB）。
+  - **开关与预估**：`cmyk_conversion`（CLI `--convert-cmyk`、GUI 设置卡）仍默认
+    关——feature-off 构建的朴素转换未达标，翻转默认值推迟（见路线 §8）；灰度/G4
+    请求隐式开启（`settings.converts_cmyk()`）；gate 在 `optimize_image_stream`
+  统一拦截 raw/Indexed/DCT/JPX（`declares_cmyk`），带 `/Decode` 的 CMYK 保持
+  skip，分析器按默认关镜像（宁低勿高）。重建流声明 `DeviceRGB`，CMYK 的 ICC
+  profile 不随行（通道数已不符），但 ICC 字节在解析阶段提取随 `ImageTask` 携带
+  到 worker（与 JBIG2 globals 同款预解析模式，仅 cms 构建提取，4MiB 上限）。
 - **JPX（JPEG 2000）解码**（`jpx.rs`，feature `jpx` **默认关**，保持默认构建纯
   Rust；桌面 release 与 AUR 包开启，src-tauri 经 `--features jpx` 转发）：走
   `jpeg2k` crate（0.10，MIT/Apache）→ `openjpeg-sys` 1.0.x（BSD-2）——**vendored
@@ -218,7 +227,7 @@ cargo run -p pdf-core --bin pdf-compressor-cli -- quick <file.pdf> --grayscale  
   （尺寸 1..=65535、无 DecodeParms/Decode、单元素过滤链），分析器经
   `stream_filter_info::jpx_decodable` 自动跟随；解码侧再校验码流尺寸与字典一致、
   分量无子采样/无 alpha/精度 ≤16。分量数决定色彩：1→灰、3→RGB、4→CMYK（走
-  上面的减色转换）；码流自带的 MCT 已被 OpenJPEG 逆变换，按 `opj_decompress`
+  上面 CMYK 段的校准转换，JPX 无 PDF 级 ICC 时用 SWOP 矩阵）；码流自带的 MCT 已被 OpenJPEG 逆变换，按 `opj_decompress`
   的口径对待。`/DecodeParms`（规范未定义）与 `/Decode` 数组保持 skip。
   **fuzz 强化**：`fuzz_targets/jpx.rs` 把任意字节包成最小合法 PDF 的 JPXDecode
   流并填充到小流跳过阈值之上，确保每次迭代都真正进入 C 解码（通用 pipeline
@@ -354,7 +363,8 @@ release overlay 而非主配置）。
 - **压缩后文件没变小**：先看分析结果 `documentKind`（text-native 压缩空间有限）、
   是否无内嵌图片、或图片不可行动（Crypt 恒跳过；JPX/CCITT/JBIG2 按形状门禁处理，
   JPX 需 feature——默认构建跳过，release/AUR 包已开启；CMYK 默认保持原样，需
-  开 `cmyk_conversion` 或灰度模式；符号压缩的 JBIG2 文本页可能本来就比 G4
+  开 `cmyk_conversion` 或灰度模式（release 包开启后经 lcms/矩阵校准转换，源码
+  默认构建为朴素公式）；符号压缩的 JBIG2 文本页可能本来就比 G4
   重编码更小，"不写更大输出"会正确拒绝）。
 - **目标大小模式未达标**：引擎最多尝试 12 轮（`MAX_ATTEMPTS`），产出“当前可达的最小结果”并返回
   `compress.warning.targetSizeMissed` 提示；前端以警告 toast + 状态卡 notes 呈现。
@@ -365,21 +375,22 @@ release overlay 而非主配置）。
 0.6.0 收口范围：JPX 解码、CMYK 三路径（opt-in 开关）、搜索缓存淘汰与内存护栏、
 2GiB 友好报错、CFF/Type1C 字体子集化、审查修复 8 项、JBIG2 输入解码。
 
-### P0：CMYK 色彩保真（0.6.0 已落开关，0.7.0 做真转换）
+### P0：CMYK 色彩保真（✅ 0.7.0 已落地）
 
 - **实测问题**（见上文 CMYK 段）：朴素减色公式与渲染器 CMS 的系统偏差
   ≈7-9 dB（poppler 基准、质量档不敏感）。
-- **0.6.0 已落地**：`cmyk_conversion` opt-in 开关（设置/CLI `--convert-cmyk`/
-  GUI，默认关 = 回到跳过行为；灰度/G4 请求隐式开启；gate 统一拦截
-  raw/Indexed/DCT/JPX；分析器按默认关镜像）。
-- **0.7.0 主体**：lcms2 真转换——`lcms2` crate（kornelski 安全封装，
-  Apache-2.0/MIT，追踪 LCMS 2.19.x；`lcms2-sys` vendored C，同 jpx 的
-  feature 门控模式，默认关保持纯 Rust）。无 profile 用内置默认
-  CMYK→sRGB，有 ICC 用图像自带 profile；以 poppler/PDFium 渲染对比
-  校准目标 profile；渲染比对门禁并入 corpus 快照。转换达标后可评估
-  把默认值翻转为开。
-- 验收：规范 Adobe YCCK/CMYK 夹具上，压缩前后 poppler 渲染差 ≥25 dB
-  （当前 ≈7.6 dB）。
+- **0.7.0 落地**：`cmyk-cms` feature（`lcms2` crate 6.2，Apache-2.0/MIT，
+  `lcms2-sys` vendored C 经 `cc` 静态编译，同 jpx 门控模式，默认关保持依赖轻量；
+  另加直依赖 `zune-jpeg` 取 DCT 原始 CMYK 平面）。有 ICC 用图像自带 profile
+  （lcms，与 poppler transform 同构）；无 profile 用 xpdf SWOP 矩阵（poppler/
+  PDFium 的 DeviceCMYK 解释，比"找一个校准 profile"更准——它们的默认态根本
+  不走 CMS）。验收实测 ≈54.6dB（门槛 ≥25dB，0.6.0 基线 ≈7.6dB），渲染比对
+  门禁 `cmyk_fidelity_matches_poppler_render` 进 CI 可选特性腿。
+- **默认值翻转评估（2026-09）**：cms 构建下转换已达标，但 `cmyk_conversion`
+  默认仍为**关**——默认构建（feature 关）的朴素转换未达标，翻转会让源码自建
+  用户静默得到偏色输出。翻转条件：release 产物稳定启用 cmyk-cms 一个版本
+  （0.7.x）后，若改默认开，朴素路径应直接跳过而非转换（宁可不压不偏色），
+  于 0.8 评估。
 
 ### P1：JBIG2 输入解码（已随 0.6.0 落地）
 

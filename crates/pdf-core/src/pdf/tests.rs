@@ -1816,8 +1816,12 @@ fn cff_subset_renders_identically() {
 /// How the fixture's single raw image declares its color space.
 enum ColorSpaceFixture {
     /// Image dict carries `[/ICCBased <icc stream>]`; the profile stream is
-    /// created with the given `/N`.
-    DirectIcc { n: i64 },
+    /// created with the given `/N` and content — the 4-byte dummy by
+    /// default, or real profile bytes for CMYK fidelity fixtures.
+    DirectIcc {
+        n: i64,
+        profile: Option<Vec<u8>>,
+    },
     /// Image dict carries `[/Indexed <base> <hival> <lookup string>]`.
     DirectIndexed { base: Object, hival: i64 },
     /// Image dict carries the plain name `/CS0`; the page resources map
@@ -1835,6 +1839,21 @@ fn build_color_space_pdf(
     height: u32,
     bits_per_component: i64,
     pixels: Vec<u8>,
+) -> Vec<u8> {
+    build_color_space_pdf_ex(fixture, width, height, bits_per_component, pixels, false)
+}
+
+/// [`build_color_space_pdf`] with a `DCTDecode` twist: `content` is raw JPEG
+/// bytes and the stream is stored uncompressed (the JPEG payload is its own
+/// compression).
+#[allow(clippy::too_many_arguments)]
+fn build_color_space_pdf_ex(
+    fixture: ColorSpaceFixture,
+    width: u32,
+    height: u32,
+    bits_per_component: i64,
+    content: Vec<u8>,
+    dct: bool,
 ) -> Vec<u8> {
     let mut doc = Document::with_version("1.5");
     let info_id = doc.add_object(dictionary! {
@@ -1873,7 +1892,19 @@ fn build_color_space_pdf(
 
     let mut alias_entry: Option<Object> = None;
     let color_space_value: Object = match fixture {
-        ColorSpaceFixture::DirectIcc { n } | ColorSpaceFixture::AliasIcc { n } => {
+        ColorSpaceFixture::DirectIcc { n, profile } => {
+            let bytes =
+                profile.unwrap_or_else(|| vec![0x01, 0x02, 0x03, 0x04]);
+            let icc_id = doc.add_object(Stream::new(
+                dictionary! { "N" => n, "Length" => bytes.len() as i64 },
+                bytes,
+            ));
+            Object::Array(vec![
+                Object::Name(b"ICCBased".to_vec()),
+                Object::Reference(icc_id),
+            ])
+        }
+        ColorSpaceFixture::AliasIcc { n } => {
             let icc_id = doc.add_object(Stream::new(
                 dictionary! { "N" => n, "Length" => 4 },
                 vec![0x01, 0x02, 0x03, 0x04],
@@ -1882,12 +1913,8 @@ fn build_color_space_pdf(
                 Object::Name(b"ICCBased".to_vec()),
                 Object::Reference(icc_id),
             ]);
-            if matches!(fixture, ColorSpaceFixture::AliasIcc { .. }) {
-                alias_entry = Some(array);
-                Object::Name(b"CS0".to_vec())
-            } else {
-                array
-            }
+            alias_entry = Some(array);
+            Object::Name(b"CS0".to_vec())
         }
         ColorSpaceFixture::DirectIndexed { base, hival } => Object::Array(vec![
             Object::Name(b"Indexed".to_vec()),
@@ -1907,9 +1934,15 @@ fn build_color_space_pdf(
             "ColorSpace" => color_space_value,
             "BitsPerComponent" => bits_per_component,
         },
-        pixels,
+        content,
     );
-    let _ = image_stream.compress();
+    if dct {
+        image_stream
+            .dict
+            .set("Filter", Object::Name(b"DCTDecode".to_vec()));
+    } else {
+        let _ = image_stream.compress();
+    }
     let image_id = doc.add_object(image_stream);
 
     let mut resources = dictionary! {
@@ -1971,7 +2004,7 @@ fn sole_image_stream(document: &Document) -> &Stream {
 fn icc_rgb_raw_image_recompresses_and_keeps_profile() {
     let rgb = crate::testutil::gradient_rgb_image(2000, 1500, FIXTURE_SEED).into_raw();
     let bytes = build_color_space_pdf(
-        ColorSpaceFixture::DirectIcc { n: 3 },
+        ColorSpaceFixture::DirectIcc { n: 3, profile: None },
         2000,
         1500,
         8,
@@ -2017,27 +2050,31 @@ fn icc_rgb_raw_image_recompresses_and_keeps_profile() {
 #[test]
 fn icc_cmyk_raw_image_transcodes_to_rgb() {
     // CMYK plane: 4 channels of gradient, with the RGB reference computed
-    // through the same ink-subtraction conversion the engine applies. Sized
-    // below every preset's edge so the transcode never resizes.
+    // through the same conversion the engine applies. The fixture's 4-byte
+    // "profile" fails ICC parsing, so engine and reference both take the
+    // calibrated default (or the naive formula without `cmyk-cms`) — the
+    // test stays self-consistent in either build. Sized below every preset's
+    // edge so the transcode never resizes.
     let (width, height) = (1200u32, 900u32);
     let mut pixels = Vec::with_capacity((width * height * 4) as usize);
-    let mut reference = image::RgbImage::new(width, height);
     for y in 0..height {
         for x in 0..width {
-            let cmyk = [
+            pixels.extend_from_slice(&[
                 (x % 256) as u8,
                 (y % 256) as u8,
                 ((x + y) % 256) as u8,
                 64,
-            ];
-            let [red, green, blue] =
-                super::colorspace::cmyk_to_rgb(cmyk[0], cmyk[1], cmyk[2], cmyk[3]);
-            reference.put_pixel(x, y, image::Rgb([red, green, blue]));
-            pixels.extend_from_slice(&cmyk);
+            ]);
         }
     }
+    let reference = image::RgbImage::from_raw(
+        width,
+        height,
+        super::cmyk::cmyk_samples_to_rgb(&pixels, Some(&[0x01, 0x02, 0x03, 0x04])),
+    )
+    .expect("reference plane shape");
     let bytes = build_color_space_pdf(
-        ColorSpaceFixture::DirectIcc { n: 4 },
+        ColorSpaceFixture::DirectIcc { n: 4, profile: None },
         width,
         height,
         8,
@@ -2088,21 +2125,24 @@ const CMYK_TRANSCODE_PSNR_FLOOR_DB: f64 = 40.0;
 fn device_cmyk_raw_image_transcodes_to_rgb() {
     let (width, height) = (1200u32, 900u32);
     let mut pixels = Vec::with_capacity((width * height * 4) as usize);
-    let mut reference = image::RgbImage::new(width, height);
     for y in 0..height {
         for x in 0..width {
-            let cmyk = [
+            pixels.extend_from_slice(&[
                 ((x * 255 / width) as u8),
                 ((y * 255 / height) as u8),
                 (((x + y) % 256) as u8),
                 ((x / 8) % 256) as u8,
-            ];
-            let [red, green, blue] =
-                super::colorspace::cmyk_to_rgb(cmyk[0], cmyk[1], cmyk[2], cmyk[3]);
-            reference.put_pixel(x, y, image::Rgb([red, green, blue]));
-            pixels.extend_from_slice(&cmyk);
+            ]);
         }
     }
+    // DeviceCMYK carries no profile: reference through the same
+    // profile-less chokepoint the engine uses.
+    let reference = image::RgbImage::from_raw(
+        width,
+        height,
+        super::cmyk::cmyk_samples_to_rgb(&pixels, None),
+    )
+    .expect("reference plane shape");
     let bytes = build_color_space_pdf(
         ColorSpaceFixture::DirectName {
             name: Object::Name(b"DeviceCMYK".to_vec()),
@@ -2144,6 +2184,183 @@ fn device_cmyk_raw_image_transcodes_to_rgb() {
         "DeviceCMYK transcode fidelity {psnr:.2} dB fell below the floor"
     );
 }
+
+/// A photographic-ish CMYK test plane (0 = no ink): smooth ramps over all
+/// four channels — saturated darks included, where the naive formula and a
+/// real CMS disagree the most.
+#[cfg(feature = "cmyk-cms")]
+fn cmyk_fidelity_plane(width: u32, height: u32) -> Vec<u8> {
+    let mut plane = Vec::with_capacity((width * height * 4) as usize);
+    for y in 0..height {
+        for x in 0..width {
+            let cyan = (x * 255 / width.max(1)) as u8;
+            let magenta = (y * 255 / height.max(1)) as u8;
+            let yellow = (cyan / 2).wrapping_add(magenta / 3);
+            let key = ((x + y) % 256) as u8;
+            plane.extend_from_slice(&[cyan, magenta, yellow, key]);
+        }
+    }
+    plane
+}
+
+/// Encode a CMYK plane (0 = no ink) as an Adobe YCCK JPEG — the shape
+/// Photoshop writes (APP14 transform 2). The encoder takes inverted
+/// samples per the Adobe convention.
+#[cfg(feature = "cmyk-cms")]
+fn encode_adobe_ycck_jpeg(plane: &[u8], width: u32, height: u32, quality: u8) -> Vec<u8> {
+    let inverted: Vec<u8> = plane.iter().map(|byte| 255 - byte).collect();
+    let mut output = Vec::new();
+    let encoder = jpeg_encoder::Encoder::new(&mut output, quality);
+    encoder
+        .encode(
+            &inverted,
+            width as u16,
+            height as u16,
+            jpeg_encoder::ColorType::CmykAsYcck,
+        )
+        .expect("encode YCCK JPEG");
+    output
+}
+
+/// The DCT CMYK path must recover the original CMYK samples (polarity and
+/// YCCK inverse) before converting — a mishandled Adobe inversion would
+/// tank this far below the floor.
+#[cfg(feature = "cmyk-cms")]
+#[test]
+fn dct_ycck_stream_decodes_with_correct_polarity() {
+    let (width, height) = (320u32, 240u32);
+    let plane = cmyk_fidelity_plane(width, height);
+    let jpeg = encode_adobe_ycck_jpeg(&plane, width, height, 95);
+
+    let decoded = super::cmyk::decode_dct_cmyk_stream(&jpeg, None)
+        .expect("YCCK JPEG must decode through the raw-plane path");
+    assert_eq!(decoded.dimensions(), (width, height));
+
+    let reference = image::RgbImage::from_raw(
+        width,
+        height,
+        super::cmyk::cmyk_samples_to_rgb(&plane, None),
+    )
+    .expect("reference plane shape");
+    let psnr = luma_psnr_db(&decoded, &DynamicImage::ImageRgb8(reference))
+        .expect("dimensions must match");
+    assert!(
+        psnr >= 35.0,
+        "YCCK polarity/inverse chain is off: {psnr:.2} dB"
+    );
+}
+
+/// The 0.7.0 acceptance gate (roadmap P0): after compression with real
+/// color management, poppler's rendering of input and output must agree to
+/// ≥25 dB PSNR (the 0.6.0 naive baseline measured ≈7.6 dB on the YCCK
+/// fixture). Runs both an ICC N=4 raw plane and an Adobe YCCK DCT stream
+/// over the embedded CGATS TR 001 profile — the exact transform poppler
+/// builds. Best-effort: skipped when `pdftoppm` is not installed.
+#[cfg(feature = "cmyk-cms")]
+#[test]
+fn cmyk_fidelity_matches_poppler_render() {
+    use std::process::Command;
+
+    const ACCEPTANCE_FLOOR_DB: f64 = 25.0;
+    let profile: &[u8] = include_bytes!("../../assets/cgats001-cmyk.icc");
+
+    let (width, height) = (1200u32, 900u32);
+    let plane = cmyk_fidelity_plane(width, height);
+    let fixtures: [(&str, Vec<u8>); 2] = [
+        (
+            "icc-raw",
+            build_color_space_pdf_ex(
+                ColorSpaceFixture::DirectIcc {
+                    n: 4,
+                    profile: Some(profile.to_vec()),
+                },
+                width,
+                height,
+                8,
+                plane.clone(),
+                false,
+            ),
+        ),
+        (
+            "icc-ycck-dct",
+            build_color_space_pdf_ex(
+                ColorSpaceFixture::DirectIcc {
+                    n: 4,
+                    profile: Some(profile.to_vec()),
+                },
+                width,
+                height,
+                8,
+                encode_adobe_ycck_jpeg(&plane, width, height, 95),
+                true,
+            ),
+        ),
+    ];
+
+    for (name, bytes) in fixtures {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file_name = format!("cmyk-fidelity-{name}.pdf");
+        let path = write_fixture(dir.path(), &file_name, &bytes);
+
+        let response = compress_pdf_with_progress(
+            path.to_str().unwrap(),
+            None,
+            cmyk_conservative_settings(),
+            noop_cancel_flag(),
+            |_| {},
+        )
+        .expect("compression must succeed");
+        assert!(response.images_recompressed >= 1, "{name}: CMYK must transcode");
+
+        let render = |pdf: &Path, prefix: &str| -> Option<Vec<u8>> {
+            let output = Command::new("pdftoppm")
+                .arg("-r")
+                .arg("120")
+                .arg("-png")
+                .arg(pdf)
+                .arg(dir.path().join(prefix))
+                .output()
+                .ok()?;
+            if !output.status.success() {
+                return None;
+            }
+            std::fs::read(dir.path().join(format!("{prefix}-1.png"))).ok()
+        };
+        let (Some(before), Some(after)) = (
+            render(&path, "before"),
+            render(Path::new(&response.output_path), "after"),
+        ) else {
+            eprintln!("pdftoppm unavailable or failed — skipping the {name} raster check");
+            return;
+        };
+
+        let before = image::load_from_memory(&before).expect("raster decodes");
+        let after = image::load_from_memory(&after).expect("raster decodes");
+        assert_eq!(before.dimensions(), after.dimensions(), "{name}: page geometry");
+        let psnr = luma_psnr_db(&before, &after).expect("dimensions match");
+        eprintln!("{name}: poppler fidelity {psnr:.2} dB (acceptance ≥{ACCEPTANCE_FLOOR_DB} dB)");
+        assert!(
+            psnr >= ACCEPTANCE_FLOOR_DB,
+            "{name}: CMYK fidelity vs poppler {psnr:.2} dB fell below the \
+             {ACCEPTANCE_FLOOR_DB} dB acceptance floor (0.6.0 naive ≈7.6 dB)"
+        );
+    }
+}
+
+/// Conservative preset + CMYK conversion — the acceptance settings. The
+/// higher JPEG quality isolates conversion fidelity from re-encode loss.
+#[cfg(feature = "cmyk-cms")]
+fn cmyk_conservative_settings() -> CompressionSettings {
+    CompressionSettings::from_sources(
+        None,
+        CompressionSettingsOverrides {
+            preset: Some("conservative".to_string()),
+            cmyk_conversion: Some(true),
+            ..Default::default()
+        },
+    )
+}
+
 
 #[test]
 fn cmyk_with_decode_array_stays_untouched() {
@@ -2488,12 +2705,20 @@ fn indexed_cmyk_image_expands_palette_and_converts() {
     );
 
     // Pixel fidelity: decode the output and compare against the palette
-    // expansion + conversion computed here.
+    // expansion + conversion computed here (DeviceCMYK base → the
+    // profile-less chokepoint, same as the engine).
+    let palette_cmyk: Vec<u8> = (0..=255u8)
+        .flat_map(|index| [index, 255 - index, (index / 2) + 64, (255 - index) / 2])
+        .collect();
+    let palette_rgb = super::cmyk::cmyk_samples_to_rgb(&palette_cmyk, None);
     let mut reference = image::RgbImage::new(width, height);
     for (index, pixel) in indices.into_iter().zip(reference.pixels_mut()) {
-        let [red, green, blue] =
-            super::colorspace::cmyk_to_rgb(index, 255 - index, (index / 2) + 64, (255 - index) / 2);
-        *pixel = image::Rgb([red, green, blue]);
+        let offset = index as usize * 3;
+        *pixel = image::Rgb([
+            palette_rgb[offset],
+            palette_rgb[offset + 1],
+            palette_rgb[offset + 2],
+        ]);
     }
     let decoded = image::load_from_memory(&image.content).expect("output JPEG must decode");
     let psnr = luma_psnr_db(&decoded, &DynamicImage::ImageRgb8(reference))
@@ -5019,6 +5244,7 @@ fn review_indexed_odd_width_skips_each_rows_padding_nibble() {
         decode: super::colorspace::DecodeColorSpace::Indexed {
             base_channels: 1,
             palette: (0..=15u8).map(|i| i * 17).collect(),
+            base_icc: None,
         },
         rebuild_color_space: None,
     };

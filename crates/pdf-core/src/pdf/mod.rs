@@ -4,6 +4,7 @@
 mod analyzer;
 #[cfg(feature = "subset-fonts")]
 mod cff;
+mod cmyk;
 mod colorspace;
 mod compressor;
 mod encode;

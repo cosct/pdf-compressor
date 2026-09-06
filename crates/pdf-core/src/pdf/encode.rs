@@ -443,12 +443,13 @@ pub(super) fn optimize_image_stream(
     }
 
     // --- CMYK fidelity gate (opt-in conversion) ---
-    // The naive ink-subtraction conversion deviates measurably from how
-    // color-managed renderers interpret CMYK, so CMYK images stay untouched
-    // unless the user opted in (or requested a grayscale/G4 collapse, where
-    // the deviation is far below the intent's own loss). Applies to every
-    // path: raw and indexed planes here, CMYK JPEGs (the JPEG decoder
-    // silently converts), and 4-component JPX codestreams at decode.
+    // With `cmyk-cms` the conversion matches how color-managed renderers
+    // interpret CMYK (see `cmyk`), but feature-off builds still carry the
+    // naive ink-subtraction formula, so CMYK images stay untouched unless
+    // the user opted in (or requested a grayscale/G4 collapse, where the
+    // deviation is far below the intent's own loss). Applies to every
+    // path: raw and indexed planes here, CMYK JPEGs, and 4-component JPX
+    // codestreams at decode.
     if declares_cmyk(stream, color_space) && !settings.converts_cmyk() {
         return Ok(ImageOptimization::Skipped {
             reason: "CMYK image kept untouched (enable the CMYK conversion setting to re-encode)".into(),
@@ -480,8 +481,7 @@ pub(super) fn optimize_image_stream(
                 return Ok(ImageOptimization::Skipped { reason });
             }
             let decoded = if filter_info.has_jpeg {
-                image::load_from_memory(&stream.content)
-                    .map_err(|e| format!("failed to decode JPEG image stream: {e}"))
+                decode_jpeg_stream(stream, color_space)
             } else if filter_info.has_ccitt {
                 #[cfg(feature = "ccitt")]
                 {
@@ -838,7 +838,7 @@ pub(crate) fn declares_cmyk(
 ) -> bool {
     if let Some(info) = color_space {
         return match &info.decode {
-            DecodeColorSpace::Cmyk => true,
+            DecodeColorSpace::Cmyk { .. } => true,
             DecodeColorSpace::Indexed { base_channels, .. } => *base_channels == 4,
             _ => false,
         };
@@ -868,7 +868,9 @@ fn raw_recompression_skip_reason(
     // Resolved shapes (ICC-based, indexed, aliases) carry their own rules:
     // indexed pixels are 4/8-bit palette indices, ICC planes stay 8-bit.
     if let Some(info) = color_space {
-        if info.decode == DecodeColorSpace::Cmyk && stream.dict.get(b"Decode").is_ok() {
+        if matches!(info.decode, DecodeColorSpace::Cmyk { .. })
+            && stream.dict.get(b"Decode").is_ok()
+        {
             return Some(
                 "CMYK image carries a /Decode mapping that the RGB conversion would misread"
                     .into(),
@@ -876,9 +878,9 @@ fn raw_recompression_skip_reason(
         }
         let supported_depth = match info.decode {
             DecodeColorSpace::Indexed { .. } => bits_per_component == 4 || bits_per_component == 8,
-            DecodeColorSpace::Gray | DecodeColorSpace::Rgb | DecodeColorSpace::Cmyk => {
-                bits_per_component == 8
-            }
+            DecodeColorSpace::Gray
+            | DecodeColorSpace::Rgb
+            | DecodeColorSpace::Cmyk { .. } => bits_per_component == 8,
         };
         return (!supported_depth).then(|| {
             format!("resolved color space needs unsupported bit depth: {bits_per_component}")
@@ -1028,10 +1030,16 @@ pub(super) fn decode_raw_image_stream(
                 .ok_or_else(|| {
                     AppError::PdfBuild("RGB image bytes did not match the declared dimensions.".into())
                 }),
-            DecodeColorSpace::Cmyk => cmyk_bytes_to_rgb_image(width, height, decoded),
+            DecodeColorSpace::Cmyk { icc } => cmyk_bytes_to_rgb_image(
+                width,
+                height,
+                decoded,
+                icc.as_deref().map(|v| v.as_slice()),
+            ),
             DecodeColorSpace::Indexed {
                 base_channels,
                 palette,
+                base_icc,
             } => {
                 let channels = usize::from(*base_channels);
                 if !matches!(channels, 1 | 3 | 4) {
@@ -1061,7 +1069,13 @@ pub(super) fn decode_raw_image_stream(
                     image::RgbImage::from_raw(width, height, pixels)
                         .map(DynamicImage::ImageRgb8)
                 } else {
-                    cmyk_bytes_to_rgb_image(width, height, pixels).ok()
+                    cmyk_bytes_to_rgb_image(
+                        width,
+                        height,
+                        pixels,
+                        base_icc.as_deref().map(|v| v.as_slice()),
+                    )
+                    .ok()
                 }
                 .ok_or_else(|| {
                     AppError::PdfBuild(
@@ -1088,28 +1102,24 @@ pub(super) fn decode_raw_image_stream(
             .ok_or_else(|| {
                 AppError::PdfBuild("RGB image bytes did not match the declared dimensions.".into())
             }),
-        "DeviceCMYK" => cmyk_bytes_to_rgb_image(width, height, decoded),
+        "DeviceCMYK" => cmyk_bytes_to_rgb_image(width, height, decoded, None),
         other => Err(AppError::PdfBuild(format!(
             "Unsupported color space for recompression: {other}"
         ))),
     }
 }
 
-/// Convert interleaved 8-bit CMYK bytes into an RGB plane via the shared
-/// ink-subtraction conversion (see `colorspace::cmyk_to_rgb`). A length that
-/// is not an exact `width × height × 4` fails the `from_raw` shape check,
-/// matching the gray/RGB paths' dimension strictness.
+/// Convert interleaved 8-bit CMYK bytes into an RGB plane through the
+/// shared calibrated conversion (see `cmyk::cmyk_samples_to_rgb`). A length
+/// that is not an exact `width × height × 4` fails the `from_raw` shape
+/// check, matching the gray/RGB paths' dimension strictness.
 fn cmyk_bytes_to_rgb_image(
     width: u32,
     height: u32,
     decoded: Vec<u8>,
+    icc_profile: Option<&[u8]>,
 ) -> Result<DynamicImage, AppError> {
-    let mut pixels = Vec::with_capacity(decoded.len() / 4 * 3);
-    for sample in decoded.as_chunks::<4>().0 {
-        let [red, green, blue] =
-            super::colorspace::cmyk_to_rgb(sample[0], sample[1], sample[2], sample[3]);
-        pixels.extend_from_slice(&[red, green, blue]);
-    }
+    let pixels = super::cmyk::cmyk_samples_to_rgb(&decoded, icc_profile);
     image::RgbImage::from_raw(width, height, pixels)
         .map(DynamicImage::ImageRgb8)
         .ok_or_else(|| {
@@ -1117,6 +1127,44 @@ fn cmyk_bytes_to_rgb_image(
                 "CMYK image bytes did not match the declared dimensions.".into(),
             )
         })
+}
+
+/// Decode a JPEG stream into a plane. CMYK JPEGs take the calibrated DCT
+/// path when `cmyk-cms` is compiled in (the image crate's decoder folds
+/// Adobe CMYK into RGB with its own naive formula before the plane is
+/// visible — `cmyk::decode_dct_cmyk_stream` replaces that fold); everything
+/// else, and any 4-component stream that path cannot handle, goes through
+/// the generic decode unchanged.
+fn decode_jpeg_stream(
+    stream: &Stream,
+    color_space: Option<&ImageColorSpaceInfo>,
+) -> Result<DynamicImage, String> {
+    #[cfg(feature = "cmyk-cms")]
+    if declares_cmyk(stream, color_space) {
+        if let Some(image) =
+            super::cmyk::decode_dct_cmyk_stream(&stream.content, cmyk_icc_bytes(color_space))
+        {
+            return Ok(image);
+        }
+    }
+    #[cfg(not(feature = "cmyk-cms"))]
+    let _ = color_space;
+    image::load_from_memory(&stream.content)
+        .map_err(|e| format!("failed to decode JPEG image stream: {e}"))
+}
+
+/// The ICC profile bytes a CMYK conversion should use, when the resolved
+/// color space carries any (ICC N=4 directly, a CMYK-based Indexed through
+/// its base). Profile-less CMYK returns `None` for the calibrated default.
+#[cfg(feature = "cmyk-cms")]
+fn cmyk_icc_bytes(color_space: Option<&ImageColorSpaceInfo>) -> Option<&[u8]> {
+    match color_space.map(|info| &info.decode) {
+        Some(DecodeColorSpace::Cmyk { icc }) => icc.as_deref().map(|v| v.as_slice()),
+        Some(DecodeColorSpace::Indexed { base_icc, .. }) => {
+            base_icc.as_deref().map(|v| v.as_slice())
+        }
+        _ => None,
+    }
 }
 
 /// Encode a `DynamicImage` as JPEG into a `Vec<u8>`.

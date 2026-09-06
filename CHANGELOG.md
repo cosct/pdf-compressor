@@ -6,13 +6,18 @@
 
 ### 新增
 
+- **CMYK→RGB 真转换（0.6.0 路线 P0 落地，feature `cmyk-cms`）**：开启 `cmyk_conversion` 后的转换不再用朴素减色公式，而是与主流渲染器逐字节对齐——带 ICC profile 的图片（ICC N=4）经 Little CMS（vendored lcms2 静态编译，同 jpx 模式 feature 门控、默认关）按**嵌入 profile** 转换，且与 poppler 为同一文件构建的 transform 完全同构（Relative Colorimetric + 黑点补偿 → 内建 sRGB）；无 profile 的 CMYK（DeviceCMYK / 4 分量 JPX / CMYK 基 Indexed / 无效 profile）走 poppler 与 PDFium 共用的 xpdf SWOP 16 项矩阵（含其精确舍入）。DCT 路径经 zune-jpeg 取原始 4 分量平面再转换（跳过解码器内置的朴素折叠），Adobe YCCK 按 libjpeg 语义还原（极性经 poppler 26.08 实证钉死）。**验收**：CGATS TR 001（CC0）嵌入的 raw 与 Adobe YCCK DCT 双夹具上，压缩前后 poppler 渲染 PSNR 实测 ≈54.6dB（门槛 ≥25dB；0.6.0 朴素基线 ≈7.6dB），渲染比对门禁进 CI 可选特性腿；`cmyk_conversion` 默认仍为关（源码默认构建的朴素路径未达标，翻转评估见开发文档路线 §8），桌面 release 包与 AUR 包启用该 feature
 - **Arch Linux 安装包进入 Release 产物**：release 流程现直接产出 `pdf-compressor_<版本>_amd64.pkg.tar.zst`，随 deb/AppImage/NSIS/dmg 一同挂到 GitHub Release——CI 在 archlinux:base-devel 容器里复用 ubuntu 构建的原始二进制，跑与本地 `pnpm run tauri:arch` 完全相同的免编译 makepkg 管线（`scripts/build-arch-bundle.sh`），不重编译、与 bundle 目标零漂移
 - **AUR 自动发布**：打 `v*` tag 后 CI 自动把 PKGBUILD（含 Release zst 的真实 sha256）与再生成的 `.SRCINFO` 推送到 AUR；需在仓库 secret 配置 `AUR_SSH_PRIVATE_KEY`（公钥注册到 AUR 账号），未配置时跳过推送、其余产物照常发布
 
 ### 变更
 
+- **fuzz 强化**：pipeline 模糊目标开启 `cmyk_conversion` 并以 `cmyk-cms` 特性构建——任意 ICC profile 字节随变异 PDF 进入 vendored lcms2 解析器（与 jpx 的 C 面同等级暴露）
+- 4 分量 JPX 的 CMYK 转换随 chokepoint 切换（cms 构建下为 SWOP 矩阵，朴素构型行为不变）
 - **AUR 分发从源码包切换为二进制包**：包名 `pdf-compressor` → `pdf-compressor-bin`（声明 `provides`/`conflicts` 旧名，安装即替换），安装不再需要 Rust/Node 工具链与全量编译；原源码包停止更新
 - 适配 clippy 1.98 新 lint（`chunks_exact` → `as_chunks` 等）；修复 MSRV CI 作业在 src-tauri 缺 `frontend/dist` 占位时的构建失败
+
+> 0.6.0 路线中的 P2 搭车项（JPX/DCT 编码的 `/SMask` 解码、JPX 子采样分量上采样）未随 0.7.0 落地，顺延评估。
 
 ## [0.6.0] - 2026-09-06
 

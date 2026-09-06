@@ -30,11 +30,14 @@ fuzz_target!(|data: &[u8]| {
 
     // Font subsetting on: its embedded-program parsers (TrueType via the
     // subsetter, CFF via pdf/cff.rs) face the same hostile input surface as
-    // the image codecs and must never panic.
+    // the image codecs and must never panic. CMYK conversion on: with the
+    // `cmyk-cms` feature this feeds arbitrary ICC-profile bytes from the
+    // mutated PDF into the vendored lcms2 parser.
     let settings = CompressionSettings::from_sources(
         None,
         CompressionSettingsOverrides {
             subset_fonts: Some(true),
+            cmyk_conversion: Some(true),
             ..Default::default()
         },
     );

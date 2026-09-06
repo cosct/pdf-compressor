@@ -17,6 +17,7 @@
 //! 重写后保持不变（ICC 图像保留其 profile 引用，而不是静默退化为 DeviceRGB）。
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use lopdf::{Dictionary, Document, Object, Stream};
 
@@ -29,15 +30,22 @@ pub(crate) enum DecodeColorSpace {
     /// 3 channels, 8 bpc — ICC N=3 or an equivalent alias.
     Rgb,
     /// 4 channels, 8 bpc — ICC N=4, `DeviceCMYK`, or an equivalent alias.
-    /// Decoded planes come back as RGB through [`cmyk_to_rgb`] (ink
-    /// subtraction), so rebuilt streams declare a 3-channel space and never
-    /// restore the original CMYK `/ColorSpace`.
-    Cmyk,
+    /// Decoded planes come back as RGB through the calibrated CMYK
+    /// conversion (`cmyk::cmyk_samples_to_rgb`), so rebuilt streams declare
+    /// a 3-channel space and never restore the original CMYK
+    /// `/ColorSpace`. `icc` carries the embedded profile bytes when the
+    /// space resolved from an ICC stream — extracted only under the
+    /// `cmyk-cms` feature, where the CMS converter consumes them.
+    Cmyk {
+        icc: Option<Arc<Vec<u8>>>,
+    },
     /// Palette image: index bytes expand to `base_channels` channels
     /// (1 = gray base, 3 = RGB base, 4 = CMYK base) at decode time.
+    /// A CMYK base keeps its profile bytes in `base_icc` the same way.
     Indexed {
         base_channels: u8,
         palette: Vec<u8>,
+        base_icc: Option<Arc<Vec<u8>>>,
     },
 }
 
@@ -46,7 +54,7 @@ impl DecodeColorSpace {
         match self {
             Self::Gray => 1,
             Self::Rgb => 3,
-            Self::Cmyk => 4,
+            Self::Cmyk { .. } => 4,
             Self::Indexed { .. } => 3,
         }
     }
@@ -188,9 +196,14 @@ fn resolve_value(document: &Document, value: &Object) -> Option<ImageColorSpaceI
                     rebuild_color_space: Some((value.clone(), 3)),
                 }),
                 // CMYK planes are converted to RGB at decode time, so the
-                // profile must not ride along on the rebuilt 3-channel stream.
+                // profile must not ride along on the rebuilt 3-channel
+                // stream. The bytes themselves ride along instead — the
+                // `cmyk-cms` converter converts through the embedded profile
+                // exactly like the renderers do.
                 4 => Some(ImageColorSpaceInfo {
-                    decode: DecodeColorSpace::Cmyk,
+                    decode: DecodeColorSpace::Cmyk {
+                        icc: icc_profile_bytes(profile),
+                    },
                     rebuild_color_space: None,
                 }),
                 // Exotic counts stay skipped.
@@ -227,25 +240,29 @@ fn resolve_indexed(document: &Document, value: &Object) -> Option<ImageColorSpac
     // Base space: device name or ICC-based. CMYK bases (4 channels) expand
     // to RGB at decode time, like every other CMYK path; the rebuilt stream
     // therefore never carries the CMYK base space.
-    let (base_channels, rebuild_base): (u8, Option<Object>) = match &items[1] {
-        Object::Name(base) if base.as_slice() == b"DeviceGray" => (1, None),
-        Object::Name(base) if base.as_slice() == b"DeviceRGB" => (3, None),
-        Object::Name(base) if base.as_slice() == b"DeviceCMYK" => (4, None),
-        Object::Array(_) => {
-            let resolved = resolve_value(document, &items[1])?;
-            let channels = resolved.decode.channel_count();
-            // Preserve an ICC-based base on the rebuilt stream — unless the
-            // decode converts to RGB (CMYK), where it would misdescribe the
-            // plane.
-            let keep = if resolved.decode == DecodeColorSpace::Cmyk {
-                None
-            } else {
-                resolved.rebuild_color_space.map(|(object, _)| object)
-            };
-            (channels, keep)
-        }
-        _ => return None,
-    };
+    let (base_channels, rebuild_base, base_icc): (u8, Option<Object>, Option<Arc<Vec<u8>>>) =
+        match &items[1] {
+            Object::Name(base) if base.as_slice() == b"DeviceGray" => (1, None, None),
+            Object::Name(base) if base.as_slice() == b"DeviceRGB" => (3, None, None),
+            Object::Name(base) if base.as_slice() == b"DeviceCMYK" => (4, None, None),
+            Object::Array(_) => {
+                let resolved = resolve_value(document, &items[1])?;
+                let channels = resolved.decode.channel_count();
+                // Preserve an ICC-based base on the rebuilt stream — unless
+                // the decode converts to RGB (CMYK), where it would
+                // misdescribe the plane. The CMYK base's profile bytes stay
+                // available for the conversion itself.
+                let (keep, icc) = match resolved.decode {
+                    DecodeColorSpace::Cmyk { icc } => (None, icc),
+                    _ => (
+                        resolved.rebuild_color_space.map(|(object, _)| object),
+                        None,
+                    ),
+                };
+                (channels, keep, icc)
+            }
+            _ => return None,
+        };
 
     // Lookup: an inline string or a (possibly compressed) stream.
     let lookup: Vec<u8> = match &items[3] {
@@ -270,6 +287,7 @@ fn resolve_indexed(document: &Document, value: &Object) -> Option<ImageColorSpac
             decode: DecodeColorSpace::Indexed {
                 base_channels,
                 palette: padded,
+                base_icc,
             },
             rebuild_color_space: rebuild_base.map(|object| (object, base_channels)),
         });
@@ -279,9 +297,27 @@ fn resolve_indexed(document: &Document, value: &Object) -> Option<ImageColorSpac
         decode: DecodeColorSpace::Indexed {
             base_channels,
             palette: lookup[..needed].to_vec(),
+            base_icc,
         },
         rebuild_color_space: rebuild_base.map(|object| (object, base_channels)),
     })
+}
+
+/// Extract an ICC profile stream's bytes for the CMYK converter. Size-capped
+/// (real profiles are well under 2 MiB; anything bigger is misplaced data)
+/// and only compiled in with `cmyk-cms` — feature-off builds never pay the
+/// extraction or the memory.
+#[cfg(feature = "cmyk-cms")]
+fn icc_profile_bytes(profile: &Stream) -> Option<Arc<Vec<u8>>> {
+    const MAX_ICC_BYTES: usize = 4 << 20;
+    // A valid profile starts with a 128-byte header.
+    let bytes = profile.get_plain_content().ok()?;
+    (128..=MAX_ICC_BYTES).contains(&bytes.len()).then(|| Arc::new(bytes))
+}
+
+#[cfg(not(feature = "cmyk-cms"))]
+fn icc_profile_bytes(_profile: &Stream) -> Option<Arc<Vec<u8>>> {
+    None
 }
 
 fn optional_dict_integer(dict: &Dictionary, key: &[u8]) -> Option<i64> {
@@ -311,59 +347,5 @@ pub(crate) fn unpack_indices(data: &[u8], bits: i64, width: u32) -> Option<Vec<u
             Some(indices)
         }
         _ => None,
-    }
-}
-
-/// Convert one 8-bit CMYK sample to RGB with the ink-subtraction formula
-/// `rgb = (1 - cmy) × (1 - k)` — the same device-level conversion mainstream
-/// PDF tools apply when they cannot keep four channels (a real CMS would use
-/// the embedded ICC profile; that is out of scope for re-encode compression).
-/// PDF raw and JPX CMYK samples are non-inverted (0 = no ink), unlike the
-/// Adobe-convention inverted CMYK found inside some DCT streams, which the
-/// JPEG decoder resolves before the plane gets here.
-pub(crate) fn cmyk_to_rgb(cyan: u8, magenta: u8, yellow: u8, key: u8) -> [u8; 3] {
-    let white = 255u16 - u16::from(key);
-    let subtract = |channel: u8| -> u8 {
-        (((255u16 - u16::from(channel)) * white + 127) / 255) as u8
-    };
-    [subtract(cyan), subtract(magenta), subtract(yellow)]
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cmyk_conversion_corner_cases() {
-        // No ink anywhere → paper white.
-        assert_eq!(cmyk_to_rgb(0, 0, 0, 0), [255, 255, 255]);
-        // Full key alone → rich black, all channels pulled to zero.
-        assert_eq!(cmyk_to_rgb(0, 0, 0, 255), [0, 0, 0]);
-        // Pure ink primaries survive the key-free path exactly: full cyan
-        // ink absorbs all red light, and symmetrically for the others.
-        assert_eq!(cmyk_to_rgb(255, 0, 0, 0), [0, 255, 255]);
-        assert_eq!(cmyk_to_rgb(0, 255, 0, 0), [255, 0, 255]);
-        assert_eq!(cmyk_to_rgb(0, 0, 255, 0), [255, 255, 0]);
-        // Full ink everywhere → black.
-        assert_eq!(cmyk_to_rgb(255, 255, 255, 255), [0, 0, 0]);
-        // Half cyan, no key: 255 - 255/2 = 127.5 → 128 (rounded).
-        assert_eq!(cmyk_to_rgb(128, 0, 0, 0)[0], 127);
-        // 50% key darkens every channel to ~127.
-        let rgb = cmyk_to_rgb(0, 0, 0, 128);
-        assert_eq!(rgb, [127, 127, 127]);
-    }
-
-    #[test]
-    fn cmyk_conversion_is_monotonic_per_channel() {
-        for channel in 0..3 {
-            let mut sample = [0u8, 0, 0, 0];
-            let mut last = 255;
-            for ink in 0..=255u8 {
-                sample[channel] = ink;
-                let value = cmyk_to_rgb(sample[0], sample[1], sample[2], sample[3])[channel];
-                assert!(value <= last, "more ink must not brighten the channel");
-                last = value;
-            }
-        }
     }
 }

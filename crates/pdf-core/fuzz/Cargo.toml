@@ -15,14 +15,16 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 lopdf = "0.44"
 
-# The `jpx` feature pulls in the vendored OpenJPEG C code — exactly the
-# unsafe surface the fuzz targets must hammer. cargo-fuzz propagates the
-# sanitizer flags to `cc` builds via CFLAGS, so the C decode path is
-# instrumented and leak/overflow-checked like the Rust code. JBIG2 decoding
-# is pure Rust (hayro-jbig2) and exercises the pipeline target by default.
+# The `jpx` and `cmyk-cms` features pull in the vendored OpenJPEG and
+# lcms2 C code — exactly the unsafe surfaces the fuzz targets must hammer.
+# cargo-fuzz propagates the sanitizer flags to `cc` builds via CFLAGS, so
+# the C decode paths are instrumented and leak/overflow-checked like the
+# Rust code. JBIG2 decoding is pure Rust (hayro-jbig2) and exercises the
+# pipeline target by default; `cmyk-cms` additionally routes arbitrary
+# ICC-profile bytes into the lcms2 parser via the enabled conversion.
 [dependencies.pdf-core]
 path = ".."
-features = ["jpx"]
+features = ["jpx", "cmyk-cms"]
 
 [[bin]]
 name = "pipeline"
