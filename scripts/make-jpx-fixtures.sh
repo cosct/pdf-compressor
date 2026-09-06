@@ -41,9 +41,10 @@ with open(f"{work}/gray.pgm", "wb") as f:
     f.write(bytes(((x * 7 + y * 13) & 0xFF) for y in range(h) for x in range(w)))
 
 # Subsampled 4:2:0 YCbCr (testutil::jpx_sub420_reference): planar raw file
-# for opj_compress -F — Y at 256x192 (the gray gradient), neutral chroma
-# (Cb = Cr = 128) at 128x96, so the SYCC reference is exactly the luma.
-w, h = 256, 192
+# for opj_compress -F — Y at 512x384 (the gray gradient), neutral chroma
+# (Cb = Cr = 128) at 256x192, so the SYCC reference is exactly the luma.
+# Sized above the 64 KiB small-stream skip so transcode tests stay honest.
+w, h = 512, 384
 cw, ch = (w + 1) // 2, (h + 1) // 2
 with open(f"{work}/sub420.raw", "wb") as f:
     f.write(bytes(((x * 7 + y * 13) & 0xFF) for y in range(h) for x in range(w)))
@@ -77,7 +78,7 @@ opj_compress -i "$WORK/gray.pgm"     -o "$OUT/jpx-gray.j2k"     -n 1 -r 0 >/dev/
 opj_compress -i "$WORK/bilevel.pbm"  -o "$OUT/jpx-bilevel.j2k"  -n 1 -r 0 >/dev/null
 # 4:2:0: raw planar input with per-component sampling 1x1:2x2:2x2. The JP2
 # gets an SYCC colr box from OpenJPEG; the J2K codestream has none.
-SUB_ARGS=(-F 256,192,3,8,u@1x1:2x2:2x2)
+SUB_ARGS=(-F 512,384,3,8,u@1x1:2x2:2x2)
 opj_compress -i "$WORK/sub420.raw" -o "$OUT/jpx-sub420.jp2" -n 1 -r 0 "${SUB_ARGS[@]}" >/dev/null
 opj_compress -i "$WORK/sub420.raw" -o "$OUT/jpx-sub420.j2k" -n 1 -r 0 "${SUB_ARGS[@]}" >/dev/null
 

@@ -12,12 +12,11 @@
 
 ### 变更
 
+- **JPX 边缘补全（0.6.0 路线 P2 落地）**：`/SMask` 为 DCT 或 JPX 编码的图片此前整图跳过，现复用主解码器解码蒙版后正常重写（重建蒙版为 flate 灰度平面，`/Decode [1 0]` 归一化照旧）；JPX 子采样分量（per-component dx/dy > 1，如 4:2:0 色度）此前拒绝解码，现双线性上采样到全网格后转码——poppler 本就拒绝渲染这类码流，色彩按 JPEG 2000 规范语义处理（SYCC 声明 + 三分量 → BT.601 逆变换，其余保持平面语义），非子采样路径行为不变。夹具 `assets/jpx-sub420.{jp2,j2k}`（4:2:0 中性色度，上采样+SYCC 后 RGB≡luma 为精确锚点）
 - **fuzz 强化**：pipeline 模糊目标开启 `cmyk_conversion` 并以 `cmyk-cms` 特性构建——任意 ICC profile 字节随变异 PDF 进入 vendored lcms2 解析器（与 jpx 的 C 面同等级暴露）
 - 4 分量 JPX 的 CMYK 转换随 chokepoint 切换（cms 构建下为 SWOP 矩阵，朴素构型行为不变）
 - **AUR 分发从源码包切换为二进制包**：包名 `pdf-compressor` → `pdf-compressor-bin`（声明 `provides`/`conflicts` 旧名，安装即替换），安装不再需要 Rust/Node 工具链与全量编译；原源码包停止更新
 - 适配 clippy 1.98 新 lint（`chunks_exact` → `as_chunks` 等）；修复 MSRV CI 作业在 src-tauri 缺 `frontend/dist` 占位时的构建失败
-
-> 0.6.0 路线中的 P2 搭车项（JPX/DCT 编码的 `/SMask` 解码、JPX 子采样分量上采样）未随 0.7.0 落地，顺延评估。
 
 ## [0.6.0] - 2026-09-06
 

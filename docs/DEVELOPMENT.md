@@ -226,9 +226,18 @@ cargo run -p pdf-core --bin pdf-compressor-cli -- quick <file.pdf> --grayscale  
   Windows/macOS 打包风险。门禁收口照 CCITT 模式：`jpx_input_shape` 只看流字典
   （尺寸 1..=65535、无 DecodeParms/Decode、单元素过滤链），分析器经
   `stream_filter_info::jpx_decodable` 自动跟随；解码侧再校验码流尺寸与字典一致、
-  分量无子采样/无 alpha/精度 ≤16。分量数决定色彩：1→灰、3→RGB、4→CMYK（走
+  分量无 alpha/精度 ≤16；子采样分量（dx/dy>1）0.7.0 P2 起支持——OpenJPEG 按
+  分量自身网格返回，解码侧双线性上采样到全网格（poppler 对这类码流直接拒渲
+  "Component has different WxH than component 0"，没有可对齐的渲染解释，按
+  JPEG 2000 规范语义：SYCC 声明 + 三分量做 BT.601 逆变换，其余保持平面语义）。
+  分量数决定色彩：1→灰、3→RGB、4→CMYK（走
   上面 CMYK 段的校准转换，JPX 无 PDF 级 ICC 时用 SWOP 矩阵）；码流自带的 MCT 已被 OpenJPEG 逆变换，按 `opj_decompress`
   的口径对待。`/DecodeParms`（规范未定义）与 `/Decode` 数组保持 skip。
+  夹具 `assets/jpx-sub420.{jp2,j2k}`：4:2:0 中性色度 → 上采样+SYCC 后 RGB≡luma
+  是精确锚点（`scripts/make-jpx-fixtures.sh` 再生）。
+  **/SMask 为 JPX/DCT 编码（同 P2）**：`decode_smask_gray` 复用主解码器（DCT 走
+  image crate、JPX 走 jpeg2k 单分量路径），此前这类图整图跳过；重建后的蒙版与
+  非 DCT/JPX 蒙版同款（flate 灰度平面，`/Decode [1 0]` 归一化照旧）。
   **fuzz 强化**：`fuzz_targets/jpx.rs` 把任意字节包成最小合法 PDF 的 JPXDecode
   流并填充到小流跳过阈值之上，确保每次迭代都真正进入 C 解码（通用 pipeline
   target 无法从随机字节演化出带 JPX 流的合法 PDF）；CI 各跑 45s。夹具码流
@@ -402,11 +411,13 @@ release overlay 而非主配置）。
   对象**时的去重解码（当前每图各带一份 bytes）；随机接入组织的流内
   形态（embedded 常见，随机接入罕见）。
 
-### P2：JPX 边缘补全（搭车项）
+### P2：JPX 边缘补全（✅ 0.7.0 已落地）
 
-- `/SMask` 为 JPX/DCT 编码的图像（当前 `decode_smask_gray` 只认 raw/flate
-  8bit gray，此类图整图跳过）——SMask 解码复用主解码器即可。
-- JPX 子采样分量（per-component dx/dy > 1）的上采样支持评估（当前拒绝）。
+- `/SMask` 为 JPX/DCT 编码的图像：`decode_smask_gray` 复用主解码器（DCT 走
+  image crate、JPX 走 jpeg2k 单分量路径），此前整图跳过。
+- JPX 子采样分量（per-component dx/dy > 1）：双线性上采样到全网格；poppler
+  对这类码流拒渲，按 JPEG 2000 规范语义处理（SYCC+三分量 → BT.601 逆变换，
+  其余保持平面语义）。非子采样路径行为不变（零回归）。
 
 ### P3：大文件与体验
 

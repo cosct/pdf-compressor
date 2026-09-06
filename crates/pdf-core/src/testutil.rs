@@ -435,6 +435,9 @@ pub const JPX_BILEVEL_J2K: &[u8] = include_bytes!("../assets/jpx-bilevel.j2k");
 /// Regenerate with `scripts/make-jpx-fixtures.sh`.
 pub const JPX_SUB420_JP2: &[u8] = include_bytes!("../assets/jpx-sub420.jp2");
 pub const JPX_SUB420_J2K: &[u8] = include_bytes!("../assets/jpx-sub420.j2k");
+/// Grid size of the subsampled fixtures (sized above the small-stream skip).
+pub const JPX_SUB420_WIDTH: u32 = 512;
+pub const JPX_SUB420_HEIGHT: u32 = 384;
 
 /// Reference plane for the RGB JPX fixtures: the shared LCG-noise photograph
 /// pattern, so transcode fidelity can be measured with the same PSNR
@@ -469,11 +472,11 @@ pub fn jpx_bilevel_reference() -> GrayImage {
 }
 
 /// Reference for the subsampled JPX fixtures: the luma plane (the shared
-/// gradient pattern). The chroma planes are neutral (Cb = Cr = 128), so the
-/// SYCC→RGB conversion is the identity — a non-self-referential anchor for
-/// the upsample + color-transform chain.
+/// gradient pattern at the fixture's grid). The chroma planes are neutral
+/// (Cb = Cr = 128), so the SYCC→RGB conversion is the identity — a
+/// non-self-referential anchor for the upsample + color-transform chain.
 pub fn jpx_sub420_reference() -> GrayImage {
-    let (width, height) = (JPX_PLANE_WIDTH, JPX_PLANE_HEIGHT);
+    let (width, height) = (JPX_SUB420_WIDTH, JPX_SUB420_HEIGHT);
     let mut image = GrayImage::new(width, height);
     for y in 0..height {
         for x in 0..width {

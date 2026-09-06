@@ -12,7 +12,10 @@
 //! analyzer via `stream_filter_info`), and `decode_jpx_stream` re-derives the
 //! shape before touching C. Everything outside the proven-decodable shape —
 //! flate-mixed filter chains, indirect nonstandard parameters, `/Decode`
-//! arrays, subsampled or alpha-tagged components — stays skipped.
+//! arrays, alpha-tagged components — stays skipped. Subsampled components
+//! (per-component dx/dy > 1) are supported: they are upsampled to the image
+//! grid, with SYCC-declared three-component codestreams converted through
+//! the BT.601 inverse (see `decode_jpx_stream`).
 //!
 //! PDF-specific rules (spec 8.9.5.1): a JPX stream is self-describing; the
 //! dictionary `/ColorSpace` is advisory when the codestream carries its own
@@ -225,9 +228,10 @@ pub(super) fn decode_smask_jpx(
 mod tests {
     use super::*;
     use crate::testutil::{
-        jpx_bilevel_reference, jpx_gray_reference, jpx_rgb_reference, JPX_BILEVEL_J2K,
-        JPX_BILEVEL_HEIGHT, JPX_BILEVEL_WIDTH, JPX_GRAY_J2K, JPX_PLANE_HEIGHT, JPX_PLANE_WIDTH,
-        JPX_RGB_J2K, JPX_RGB_JP2,
+        jpx_bilevel_reference, jpx_gray_reference, jpx_rgb_reference, jpx_sub420_reference,
+        JPX_BILEVEL_J2K, JPX_BILEVEL_HEIGHT, JPX_BILEVEL_WIDTH, JPX_GRAY_J2K, JPX_PLANE_HEIGHT,
+        JPX_PLANE_WIDTH, JPX_RGB_J2K, JPX_RGB_JP2, JPX_SUB420_HEIGHT, JPX_SUB420_JP2,
+        JPX_SUB420_WIDTH,
     };
     use image::GenericImageView;
     use lopdf::dictionary;
@@ -309,6 +313,35 @@ mod tests {
             bilevel.to_luma8().as_raw(),
             jpx_bilevel_reference().as_raw(),
             "bilevel codestream must decode to the reference plane"
+        );
+    }
+
+    /// Subsampled 4:2:0 with neutral chroma (Cb = Cr = 128): the upsample +
+    /// SYCC inverse chain must land on RGB ≡ luma at the plane level — the
+    /// chroma offsets are exactly zero, so this pins the whole P2 path with
+    /// no re-encode loss in the way (≤1 allows for chroma-resampler
+    /// rounding on the upsampled constant planes).
+    #[test]
+    fn subsampled_sycc_neutral_chroma_is_identity() {
+        let stream = jpx_stream(
+            JPX_SUB420_JP2,
+            i64::from(JPX_SUB420_WIDTH),
+            i64::from(JPX_SUB420_HEIGHT),
+        );
+        let plane = decode_jpx_stream(&stream, true).expect("subsampled jp2 decodes");
+        let rgb = plane.to_rgb8();
+        assert_eq!(rgb.dimensions(), (JPX_SUB420_WIDTH, JPX_SUB420_HEIGHT));
+
+        let reference = jpx_sub420_reference();
+        let mut max_deviation = 0u8;
+        for (pixel, luma) in rgb.pixels().zip(reference.pixels()) {
+            for channel in pixel.0 {
+                max_deviation = max_deviation.max(channel.abs_diff(luma.0[0]));
+            }
+        }
+        assert!(
+            max_deviation <= 1,
+            "neutral-chroma SYCC must reproduce the luma (max deviation {max_deviation})"
         );
     }
 
