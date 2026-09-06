@@ -428,6 +428,13 @@ pub const JPX_GRAY_J2K: &[u8] = include_bytes!("../assets/jpx-gray.j2k");
 /// Lossless bilevel J2K codestream — the "JPX scan of a text page" shape the
 /// G4 transcode path targets.
 pub const JPX_BILEVEL_J2K: &[u8] = include_bytes!("../assets/jpx-bilevel.j2k");
+/// Lossless 4:2:0-subsampled three-component fixtures (Y at the full grid,
+/// chroma at half, dx/dy = 1x1:2x2:2x2): the JP2 declares SYCC, the raw J2K
+/// codestream carries no color-space boxes. Neutral chroma (Cb = Cr = 128)
+/// makes the SYCC reference exactly the luma plane.
+/// Regenerate with `scripts/make-jpx-fixtures.sh`.
+pub const JPX_SUB420_JP2: &[u8] = include_bytes!("../assets/jpx-sub420.jp2");
+pub const JPX_SUB420_J2K: &[u8] = include_bytes!("../assets/jpx-sub420.j2k");
 
 /// Reference plane for the RGB JPX fixtures: the shared LCG-noise photograph
 /// pattern, so transcode fidelity can be measured with the same PSNR
@@ -456,6 +463,21 @@ pub fn jpx_bilevel_reference() -> GrayImage {
         for x in 0..width {
             let white = ((x * x + y * y) / 32) % 2 == 0;
             image.put_pixel(x, y, Luma([if white { 255 } else { 0 }]));
+        }
+    }
+    image
+}
+
+/// Reference for the subsampled JPX fixtures: the luma plane (the shared
+/// gradient pattern). The chroma planes are neutral (Cb = Cr = 128), so the
+/// SYCC→RGB conversion is the identity — a non-self-referential anchor for
+/// the upsample + color-transform chain.
+pub fn jpx_sub420_reference() -> GrayImage {
+    let (width, height) = (JPX_PLANE_WIDTH, JPX_PLANE_HEIGHT);
+    let mut image = GrayImage::new(width, height);
+    for y in 0..height {
+        for x in 0..width {
+            image.put_pixel(x, y, Luma([((x * 7 + y * 13) & 0xFF) as u8]));
         }
     }
     image

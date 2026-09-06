@@ -737,6 +737,9 @@ fn build_smask_stream(alpha: &image::GrayImage) -> Stream {
 /// Decode an `/SMask` stream into an 8-bit grayscale image. Returns `None`
 /// for any shape we cannot rewrite safely (non-gray, non-8bit, mismatched
 /// byte counts, undecodable filter, an unsupported `/Decode` mapping).
+/// DCT-encoded and (with `jpx`) JPX-encoded masks reuse the main image
+/// decoders — their payloads are not flate, so `get_plain_content` cannot
+/// read them and such images previously skipped whole-image rewrites.
 /// A `/Decode` of `[1 0]` inverts the samples — the values are normalized
 /// here so the rebuilt mask (which never carries `/Decode`) preserves the
 /// original opacity.
@@ -776,6 +779,37 @@ fn decode_smask_gray(smask: &Stream) -> Option<image::GrayImage> {
         Err(_) => false,
         Ok(_) => return None,
     };
+
+    let normalize = |mut gray: image::GrayImage| -> Option<image::GrayImage> {
+        // The decoded geometry must match the declared grid — a mismatch
+        // means the dictionary cannot be trusted for the rewrite.
+        if gray.width() != width || gray.height() != height {
+            return None;
+        }
+        if inverted {
+            for sample in gray.pixels_mut() {
+                sample.0[0] = 255 - sample.0[0];
+            }
+        }
+        Some(gray)
+    };
+
+    if let Ok(Object::Name(filter)) = smask.dict.get(b"Filter") {
+        match filter.as_slice() {
+            b"DCTDecode" => {
+                // Same decoder the main JPEG path uses; a gray JPEG comes
+                // back as Luma8, an exotic color mask folds to luminance
+                // like renderers do.
+                let decoded = image::load_from_memory(&smask.content).ok()?;
+                return normalize(decoded.to_luma8());
+            }
+            #[cfg(feature = "jpx")]
+            b"JPXDecode" => {
+                return normalize(super::jpx::decode_smask_jpx(smask, width, height)?);
+            }
+            _ => {}
+        }
+    }
 
     // A mask without /Filter is spec-legal (raw bytes); get_plain_content
     // handles both raw and flate-encoded shapes.

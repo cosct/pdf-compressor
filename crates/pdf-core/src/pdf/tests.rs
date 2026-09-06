@@ -40,18 +40,7 @@ fn build_pdf_bytes_ext(
     smask_gray: Option<Vec<u8>>,
     duplicates: usize,
 ) -> Vec<u8> {
-    let mut doc = Document::with_version("1.5");
-    let info_id = doc.add_object(dictionary! {
-        "Producer" => Object::string_literal("pdf-compressor test fixture"),
-    });
-    let pages_id = doc.new_object_id();
-    let font_id = doc.add_object(dictionary! {
-        "Type" => "Font",
-        "Subtype" => "Type1",
-        "BaseFont" => "Helvetica",
-    });
-
-    let smask_ref = smask_gray.map(|gray| {
+    let smask_stream = smask_gray.map(|gray| {
         let mut soft_mask = Stream::new(
             dictionary! {
                 "Type" => "XObject",
@@ -64,8 +53,32 @@ fn build_pdf_bytes_ext(
             gray,
         );
         let _ = soft_mask.compress();
-        Object::Reference(doc.add_object(soft_mask))
+        soft_mask
     });
+    build_pdf_bytes_smask_stream(jpeg, width, height, smask_stream, duplicates)
+}
+
+/// [`build_pdf_bytes_ext`] with a fully-formed soft-mask stream (DCT- or
+/// JPX-encoded masks for the decoder-path fixtures).
+fn build_pdf_bytes_smask_stream(
+    jpeg: Vec<u8>,
+    width: u32,
+    height: u32,
+    smask: Option<Stream>,
+    duplicates: usize,
+) -> Vec<u8> {
+    let mut doc = Document::with_version("1.5");
+    let info_id = doc.add_object(dictionary! {
+        "Producer" => Object::string_literal("pdf-compressor test fixture"),
+    });
+    let pages_id = doc.new_object_id();
+    let font_id = doc.add_object(dictionary! {
+        "Type" => "Font",
+        "Subtype" => "Type1",
+        "BaseFont" => "Helvetica",
+    });
+
+    let smask_ref = smask.map(|stream| Object::Reference(doc.add_object(stream)));
 
     let mut xobjects = lopdf::Dictionary::new();
     let mut draw_ops = String::new();
@@ -3702,6 +3715,241 @@ fn jpx_jp2_container_transcodes_identically_to_raw_codestream() {
         raw_image.content, container_image.content,
         "JP2 container and raw codestream must produce identical JPEG bytes"
     );
+}
+
+/// Subsampled (4:2:0) JPX with an SYCC declaration: the chroma planes are
+/// upsampled to the full grid and converted through the BT.601 inverse.
+/// The fixture's chroma is neutral, so the expected RGB is exactly the
+/// luma plane — a non-self-referential anchor for the whole chain.
+#[cfg(feature = "jpx")]
+#[test]
+fn jpx_subsampled_sycc_transcodes_with_upsampled_chroma() {
+    use crate::testutil::{jpx_sub420_reference, JPX_PLANE_HEIGHT, JPX_PLANE_WIDTH, JPX_SUB420_JP2};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_fixture(
+        dir.path(),
+        "jpx-sub420-sycc.pdf",
+        &build_jpx_pdf_bytes(JPX_SUB420_JP2, JPX_PLANE_WIDTH, JPX_PLANE_HEIGHT),
+    );
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(),
+        None,
+        maximum_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+    assert!(
+        response.images_recompressed >= 1,
+        "the subsampled JPX image must be actionable, notices: {:?}",
+        response.notices
+    );
+
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+    let stream = sole_image_stream(&reloaded);
+    assert!(
+        matches!(stream.dict.get(b"Filter"), Ok(Object::Name(name)) if name.as_slice() == b"DCTDecode"),
+        "subsampled JPX must transcode to JPEG, got {:?}",
+        stream.dict.get(b"Filter")
+    );
+    assert_eq!(
+        stream.dict.get(b"Width").ok(),
+        Some(&Object::Integer(i64::from(JPX_PLANE_WIDTH))),
+        "the rebuilt plane is at the full image grid"
+    );
+
+    let decoded = image::load_from_memory(&stream.content).expect("output JPEG decodes");
+    let psnr = luma_psnr_db(&decoded, &DynamicImage::ImageLuma8(jpx_sub420_reference()))
+        .expect("dimensions must match");
+    // Neutral chroma makes RGB ≡ luma; the smooth gradient survives the
+    // maximum-preset JPEG with room to spare over the shared JPX floor.
+    assert!(
+        psnr >= 40.0,
+        "SYCC upsampling fidelity {psnr:.2} dB fell below the floor"
+    );
+}
+
+/// Subsampled JPX without a color-space declaration (raw J2K codestream):
+/// upsampling applies, the plane semantics of the non-subsampled path stay
+/// (component order → RGB), with no hidden color transform.
+#[cfg(feature = "jpx")]
+#[test]
+fn jpx_subsampled_unspecified_keeps_plane_semantics() {
+    use crate::testutil::{jpx_sub420_reference, JPX_PLANE_HEIGHT, JPX_PLANE_WIDTH, JPX_SUB420_J2K};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_fixture(
+        dir.path(),
+        "jpx-sub420-raw.pdf",
+        &build_jpx_pdf_bytes(JPX_SUB420_J2K, JPX_PLANE_WIDTH, JPX_PLANE_HEIGHT),
+    );
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(),
+        None,
+        maximum_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+    assert!(response.images_recompressed >= 1);
+
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+    let stream = sole_image_stream(&reloaded);
+    assert!(
+        matches!(stream.dict.get(b"Filter"), Ok(Object::Name(name)) if name.as_slice() == b"DCTDecode"),
+        "subsampled J2K must transcode, got {:?}",
+        stream.dict.get(b"Filter")
+    );
+
+    // Plane semantics: R = upsampled luma gradient, G = B = neutral 128.
+    let decoded = image::load_from_memory(&stream.content).expect("output JPEG decodes");
+    let luma = jpx_sub420_reference();
+    let mut reference = image::RgbImage::new(JPX_PLANE_WIDTH, JPX_PLANE_HEIGHT);
+    for (luma_pixel, pixel) in luma.pixels().zip(reference.pixels_mut()) {
+        *pixel = image::Rgb([luma_pixel.0[0], 128, 128]);
+    }
+    let psnr = luma_psnr_db(&decoded, &DynamicImage::ImageRgb8(reference))
+        .expect("dimensions must match");
+    assert!(
+        psnr >= 40.0,
+        "plane-semantics fidelity {psnr:.2} dB fell below the floor"
+    );
+}
+
+/// A DCT-encoded soft mask reuses the main JPEG decoder (P2 of the 0.7.0
+/// roadmap): the image rewrites instead of skipping, and the rebuilt mask
+/// is the decoded, flate-compressed alpha plane.
+#[test]
+fn smask_dct_encoded_image_transcodes() {
+    let (width, height) = (1600u32, 1200u32);
+    let jpeg = encode_jpeg(fixture_rgb_image(width, height), 95);
+
+    // Deterministic alpha ramp, encoded as a grayscale JPEG.
+    let alpha: image::GrayImage = image::ImageBuffer::from_fn(width, height, |x, y| {
+        image::Luma([((x + y) % 256) as u8])
+    });
+    let mut alpha_jpeg = Vec::new();
+    let encoder = jpeg_encoder::Encoder::new(&mut alpha_jpeg, 95);
+    encoder
+        .encode(
+            alpha.as_raw(),
+            width as u16,
+            height as u16,
+            jpeg_encoder::ColorType::Luma,
+        )
+        .expect("encode alpha JPEG");
+    let smask = Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Image",
+            "Width" => width as i64,
+            "Height" => height as i64,
+            "ColorSpace" => "DeviceGray",
+            "BitsPerComponent" => 8,
+            "Filter" => "DCTDecode",
+        },
+        alpha_jpeg,
+    );
+
+    let bytes = build_pdf_bytes_smask_stream(jpeg, width, height, Some(smask), 0);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_fixture(dir.path(), "smask-dct.pdf", &bytes);
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(), None,
+        maximum_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+    assert!(
+        response.images_recompressed >= 1,
+        "the DCT-masked image must be rewritten, not skipped, notices: {:?}",
+        response.notices
+    );
+
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+    let smask = reloaded.objects.values().find_map(|object| {
+        let Object::Stream(stream) = object else { return None };
+        matches!(stream.dict.get(b"Subtype"), Ok(Object::Name(t)) if t.as_slice() == b"Image")
+            .then_some(stream)
+    });
+    let Some(smask) = smask else {
+        panic!("the rebuilt document must keep a soft-mask stream");
+    };
+    assert!(
+        smask.dict.get(b"Filter").is_err(),
+        "the rebuilt mask is a raw (flate-at-save) plane, got {:?}",
+        smask.dict.get(b"Filter")
+    );
+    let decoded = image::GrayImage::from_raw(
+        width,
+        height,
+        smask.get_plain_content().expect("rebuilt mask decompresses"),
+    )
+    .expect("rebuilt mask decodes");
+    // The alpha survives the JPEG→plane→flate round-trip at high quality.
+    let mut identical = 0;
+    for (a, b) in decoded.pixels().zip(alpha.pixels()) {
+        if a.0[0].abs_diff(b.0[0]) <= 2 {
+            identical += 1;
+        }
+    }
+    assert!(
+        identical * 10 >= (width * height) as usize * 9,
+        "the rebuilt alpha must track the original within ±2 for ≥90% of samples"
+    );
+}
+
+/// A JPX-encoded soft mask reuses the JPX decoder (feature build): same
+/// rewrite outcome as the DCT variant.
+#[cfg(feature = "jpx")]
+#[test]
+fn smask_jpx_encoded_image_transcodes() {
+    use crate::testutil::{JPX_GRAY_J2K, JPX_PLANE_HEIGHT, JPX_PLANE_WIDTH};
+
+    let (width, height) = (1600u32, 1200u32);
+    let jpeg = encode_jpeg(fixture_rgb_image(width, height), 95);
+    let smask = Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Image",
+            "Width" => JPX_PLANE_WIDTH as i64,
+            "Height" => JPX_PLANE_HEIGHT as i64,
+            "ColorSpace" => "DeviceGray",
+            "BitsPerComponent" => 8,
+            "Filter" => "JPXDecode",
+        },
+        JPX_GRAY_J2K.to_vec(),
+    );
+
+    let bytes = build_pdf_bytes_smask_stream(jpeg, width, height, Some(smask), 0);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_fixture(dir.path(), "smask-jpx.pdf", &bytes);
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(), None,
+        maximum_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+    assert!(
+        response.images_recompressed >= 1,
+        "the JPX-masked image must be rewritten, not skipped, notices: {:?}",
+        response.notices
+    );
+
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+    let has_smask = reloaded.objects.values().any(|object| {
+        let Object::Stream(stream) = object else { return false };
+        stream.dict.get(b"SMask").is_ok()
+            && matches!(stream.dict.get(b"Filter"), Ok(Object::Name(f)) if f.as_slice() == b"DCTDecode")
+    });
+    assert!(has_smask, "the rewritten image must keep its soft mask");
 }
 
 #[cfg(all(feature = "jpx", feature = "ccitt"))]

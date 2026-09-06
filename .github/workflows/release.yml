@@ -108,6 +108,26 @@ jobs:
           if-no-files-found: error
           retention-days: 5
 
+  # tauri-action creates the draft release with an empty body. The notes are
+  # generated from the tag's CHANGELOG.md section (the canonical document)
+  # by scripts/release-notes.sh — a release can no longer ship with an empty
+  # body, and the notes never drift from the changelog.
+  release-notes:
+    name: Release notes from CHANGELOG
+    needs: build-desktop-artifacts
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fill the draft release body
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ./scripts/release-notes.sh "${GITHUB_REF_NAME}" > notes.md
+          gh release edit "${GITHUB_REF_NAME}" --notes-file notes.md
+
   arch-package:
     name: Arch package (zst + AUR)
     needs: build-desktop-artifacts

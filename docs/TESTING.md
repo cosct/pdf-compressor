@@ -99,7 +99,9 @@ cd crates/pdf-core && cargo mutants          # 本地全量（较慢）
 
 ## 发布前检查单
 
-1. `pnpm run sync-version` 版本三处对齐（README 已不再携带版本号；CHANGELOG 新版本段落就位）
+1. `pnpm run sync-version` 版本三处对齐（README 已不再携带版本号；**CHANGELOG 新版本段落必须就位**——打 tag 后 release workflow 会用该段落自动生成 release notes，缺失则 `release-notes` job 直接失败，杜绝空 body 发版）
 2. 上面“一键全量”全绿
 3. 真实语料快照跑一轮（若有语料）
 4. AUR PKGBUILD 按_release workflow_ 的 `aur-checksum` job 输出更新 sha256
+
+发版前可本地预览生成的 notes：`./scripts/release-notes.sh v<版本>`（打印到 stdout，与 job 产出一致）。

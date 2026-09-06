@@ -65,9 +65,17 @@ pub(super) fn jpx_input_shape(stream: &Stream) -> Option<JpxInputShape> {
 
 /// Decode a JPX image stream into an RGB or grayscale plane. The codestream
 /// may be a raw J2K codestream or a JP2 file — `from_bytes` auto-detects —
-/// because both forms appear inside PDFs. Four-component (CMYK) codestreams
-/// come back as RGB via the shared calibrated conversion (`cmyk` module),
-/// but only
+/// because both forms appear inside PDFs. Subsampled components (per-
+/// component dx/dy > 1, e.g. 4:2:0 chroma) come back from OpenJPEG at their
+/// own reduced grid; they are upsampled bilinearly to the image grid. For
+/// those codestreams a SYCC declaration (JP2 `colr` box) switches the
+/// three-component assembly through the BT.601 YCbCr inverse — proper
+/// JPEG 2000 semantics, since poppler outright refuses to render
+/// subsampled components ("Component has different WxH than component 0")
+/// and no renderer interpretation exists to match. Non-subsampled
+/// codestreams keep the historical plane semantics untouched. Four-
+/// component (CMYK) codestreams come back as RGB via the shared calibrated
+/// conversion, but only
 /// when `allow_cmyk` is set (the compressor's opt-in gate); otherwise they
 /// fail cleanly so the image keeps its original stream.
 pub(super) fn decode_jpx_stream(stream: &Stream, allow_cmyk: bool) -> Result<DynamicImage, AppError> {
@@ -86,64 +94,131 @@ pub(super) fn decode_jpx_stream(stream: &Stream, allow_cmyk: bool) -> Result<Dyn
     }
 
     let components = image.components();
-    // Subsampled components (distinct per-component geometry) and alpha
-    // channels have no faithful rewrite path here — the rebuilt stream is a
-    // flat plane and transparency belongs to /SMask. Precision above 16 bits
-    // is exotic for scanned PDFs and needlessly widens the scaling math.
-    if components.iter().any(|component| {
-        component.is_alpha()
-            || component.width() != shape.width
-            || component.height() != shape.height
-            || !(1..=16).contains(&component.precision())
-    }) {
+    // Alpha channels have no faithful rewrite path here — transparency
+    // belongs to /SMask. Precision above 16 bits is exotic for scanned PDFs
+    // and needlessly widens the scaling math. Subsampled components are
+    // handled below; their geometry is no longer a rejection.
+    if components
+        .iter()
+        .any(|component| component.is_alpha() || !(1..=16).contains(&component.precision()))
+    {
         return Err(AppError::PdfBuild(
-            "JPX components use an unsupported shape (subsampling, alpha, or precision)".into(),
+            "JPX components use an unsupported shape (alpha or precision)".into(),
         ));
     }
 
     let width = shape.width;
     let height = shape.height;
-    match components {
-        [gray] => {
-            let pixels: Vec<u8> = gray.data_u8().collect();
-            image::GrayImage::from_raw(width, height, pixels)
-                .map(DynamicImage::ImageLuma8)
-                .ok_or_else(|| AppError::PdfBuild("JPX decode produced mismatched buffer".into()))
-        }
-        [red, green, blue] => {
-            let mut pixels = Vec::with_capacity(width as usize * height as usize * 3);
-            for (r, (g, b)) in red
-                .data_u8()
-                .zip(green.data_u8().zip(blue.data_u8()))
-            {
-                pixels.extend_from_slice(&[r, g, b]);
-            }
+    let subsampled = components
+        .iter()
+        .any(|component| component.width() != width || component.height() != height);
+    let planes: Vec<Vec<u8>> = components
+        .iter()
+        .map(|component| component_plane(component, width, height))
+        .collect();
+
+    let mismatched_buffer = || AppError::PdfBuild("JPX decode produced mismatched buffer".into());
+    match planes.as_slice() {
+        [gray] => image::GrayImage::from_raw(width, height, gray.clone())
+            .map(DynamicImage::ImageLuma8)
+            .ok_or_else(mismatched_buffer),
+        [first, second, third] => {
+            // SYCC only changes the interpretation of subsampled
+            // codestreams; full-grid three-component planes keep the
+            // historical component→RGB assembly exactly.
+            let pixels = if subsampled && matches!(image.color_space(), jpeg2k::ColorSpace::SYCC) {
+                sycc_planes_to_rgb(first, second, third)
+            } else {
+                let mut pixels = Vec::with_capacity(first.len() * 3);
+                for (r, (g, b)) in first.iter().zip(second.iter().zip(third)) {
+                    pixels.extend_from_slice(&[*r, *g, *b]);
+                }
+                pixels
+            };
             image::RgbImage::from_raw(width, height, pixels)
                 .map(DynamicImage::ImageRgb8)
-                .ok_or_else(|| AppError::PdfBuild("JPX decode produced mismatched buffer".into()))
+                .ok_or_else(mismatched_buffer)
         }
         [cyan, magenta, yellow, key] if allow_cmyk => {
-            // Assemble the packed CMYK plane first, then convert through the
-            // shared chokepoint. JPX codestreams carry no PDF-level ICC
-            // profile, so the calibrated SWOP matrix applies (0 = no ink,
-            // same polarity as the raw planes).
-            let mut plane = Vec::with_capacity(width as usize * height as usize * 4);
+            // CMYK planes convert through the shared chokepoint; JPX
+            // codestreams carry no PDF-level ICC profile, so the calibrated
+            // SWOP matrix applies (0 = no ink, same polarity as raw planes).
+            let mut plane = Vec::with_capacity(cyan.len() * 4);
             for (c, (m, (y, k))) in cyan
-                .data_u8()
-                .zip(magenta.data_u8().zip(yellow.data_u8().zip(key.data_u8())))
+                .iter()
+                .zip(magenta.iter().zip(yellow.iter().zip(key)))
             {
-                plane.extend_from_slice(&[c, m, y, k]);
+                plane.extend_from_slice(&[*c, *m, *y, *k]);
             }
             let pixels = super::cmyk::cmyk_samples_to_rgb(&plane, None);
             image::RgbImage::from_raw(width, height, pixels)
                 .map(DynamicImage::ImageRgb8)
-                .ok_or_else(|| AppError::PdfBuild("JPX decode produced mismatched buffer".into()))
+                .ok_or_else(mismatched_buffer)
         }
         _ => Err(AppError::PdfBuild(format!(
             "JPX codestream has an unsupported component count: {}",
             components.len()
         ))),
     }
+}
+
+/// A component's samples at the full image grid: components at their own
+/// (reduced) grid are upsampled bilinearly — the standard chroma
+/// reconstruction for subsampled color components.
+fn component_plane(component: &jpeg2k::ImageComponent, width: u32, height: u32) -> Vec<u8> {
+    let data: Vec<u8> = component.data_u8().collect();
+    if component.width() == width && component.height() == height {
+        return data;
+    }
+    let source = image::GrayImage::from_raw(component.width(), component.height(), data)
+        .expect("component buffer matches its declared grid");
+    image::imageops::resize(&source, width, height, image::imageops::FilterType::Triangle)
+        .into_raw()
+}
+
+/// Convert full-resolution YCbCr planes (SYCC subsampled codestreams) to
+/// packed RGB with the full-range BT.601 inverse — the same coefficient
+/// family the JPEG paths use.
+fn sycc_planes_to_rgb(luma: &[u8], cb: &[u8], cr: &[u8]) -> Vec<u8> {
+    let mut rgb = Vec::with_capacity(luma.len() * 3);
+    for ((&y, &cb), &cr) in luma.iter().zip(cb).zip(cr) {
+        let luma = f64::from(y);
+        let cb = f64::from(cb) - 128.0;
+        let cr = f64::from(cr) - 128.0;
+        let red = luma + 1.402 * cr;
+        let green = luma - 0.344_136 * cb - 0.714_136 * cr;
+        let blue = luma + 1.772 * cb;
+        let to_byte = |value: f64| value.clamp(0.0, 255.0).round() as u8;
+        rgb.extend_from_slice(&[to_byte(red), to_byte(green), to_byte(blue)]);
+    }
+    rgb
+}
+
+/// Decode a JPX-encoded `/SMask`: a single-component codestream at the
+/// dictionary's grid. Multi-component or alpha-carrying masks stay
+/// unsupported — the PDF spec defines soft masks as luminance-only, and
+/// anything else would change the mask's meaning in the rewrite.
+pub(super) fn decode_smask_jpx(
+    stream: &Stream,
+    width: u32,
+    height: u32,
+) -> Option<image::GrayImage> {
+    let shape = jpx_input_shape(stream)?;
+    if shape.width != width || shape.height != height {
+        return None;
+    }
+    let image = jpeg2k::Image::from_bytes(&stream.content).ok()?;
+    if image.width() != width || image.height() != height {
+        return None;
+    }
+    let [component] = image.components() else {
+        return None;
+    };
+    if component.is_alpha() || !(1..=16).contains(&component.precision()) {
+        return None;
+    }
+    let plane = component_plane(component, width, height);
+    image::GrayImage::from_raw(width, height, plane)
 }
 
 #[cfg(test)]
