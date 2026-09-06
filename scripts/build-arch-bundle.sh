@@ -22,8 +22,14 @@ command -v makepkg >/dev/null 2>&1 || {
 version=$(sed -n 's/^version = "\(.*\)"$/\1/p' src-tauri/Cargo.toml | head -1)
 [[ -n "$version" ]] || { echo "error: could not read the version from src-tauri/Cargo.toml" >&2; exit 1; }
 
-target=$(cargo metadata --format-version 1 --no-deps | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')
-[[ -n "$target" ]] || { echo "error: could not resolve the cargo target directory" >&2; exit 1; }
+# Resolve the cargo target dir instead of assuming ./target — a machine-wide
+# shared target (build.target-dir in ~/.cargo/config.toml) redirects it. The
+# CI packaging container has no Rust toolchain; the release workflow lays the
+# binaries out at ./target there, so fall back to that when cargo is absent.
+if command -v cargo >/dev/null 2>&1; then
+  target=$(cargo metadata --format-version 1 --no-deps | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')
+fi
+target=${target:-target}
 
 for bin in app pdf-compressor-cli; do
   [[ -x "$target/release/$bin" ]] || {
@@ -70,5 +76,8 @@ EOF
 outdir="$target/release/bundle/archlinux"
 mkdir -p "$outdir"
 pkg=$(ls -t "$stage"/pdf-compressor-*.pkg.tar.zst | grep -v -- '-debug-' | head -1)
-cp "$pkg" "$outdir/"
-echo "==> $outdir/$(basename "$pkg")"
+# Stable asset name for GitHub Releases (mirrors the deb's _amd64 naming);
+# the AUR -bin PKGBUILD's source URL points at this file.
+asset="$outdir/pdf-compressor_${version}_amd64.pkg.tar.zst"
+cp "$pkg" "$asset"
+echo "==> $asset"

@@ -20,7 +20,7 @@
 
 | 平台 | 来源 |
 | --- | --- |
-| Arch Linux | AUR：`yay -S pdf-compressor`（或用 [`packaging/archlinux/`](packaging/archlinux/) 自建） |
+| Arch Linux | AUR：`yay -S pdf-compressor-bin`（二进制包，源为 [Releases](https://github.com/cosct/pdf-compressor/releases) 资产；本地自建可用 `pnpm run tauri:arch`） |
 | Windows | [Releases](https://github.com/cosct/pdf-compressor/releases) 的 NSIS 安装包（内置 CLI 与资源管理器右键菜单） |
 | macOS | [Releases](https://github.com/cosct/pdf-compressor/releases) 的 `.dmg`（可选装访达快速操作，见用户指南） |
 | 任意平台 | 源码构建：`pnpm install && pnpm run tauri build`（Rust 1.93+、Node 22+） |

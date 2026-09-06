@@ -1,32 +1,55 @@
 # AUR packaging for PDF Compressor
 
-This directory contains the AUR source package files for `pdf-compressor`.
+`pdf-compressor-bin` — the AUR **binary** package. Its `source` points at the
+`.pkg.tar.zst` published on GitHub Releases, so installing needs no Rust/Node
+toolchain and no compilation. The zst itself is produced by
+`scripts/build-arch-bundle.sh` — the same makepkg pipeline as a local
+`pnpm run tauri:arch` — so the AUR package cannot drift from the
+deb/appimage bundles.
 
-Before publishing to AUR:
+> The former source package (`pdf-compressor`) is no longer updated;
+> `pdf-compressor-bin` provides/conflicts the old name, so upgrading replaces
+> it cleanly.
 
-1. Push the project to the upstream URL in `PKGBUILD`.
-2. Create a `v0.2.0` release tag, or adjust `source` to match the actual release archive URL.
-3. Replace `sha256sums=('SKIP')` with the real release archive checksum:
+## Automated publish (release workflow)
 
-   ```bash
-   updpkgsums
-   ```
+On every `v*` tag (`.github/workflows/release.yml`, `arch-package` job):
 
-4. Regenerate `.SRCINFO`:
+1. The ubuntu build uploads the raw release binaries (GUI `app` +
+   `pdf-compressor-cli`) as a workflow artifact.
+2. An `archlinux:base-devel` container restores them into `target/release/`,
+   runs `scripts/build-arch-bundle.sh`, and attaches
+   `pdf-compressor_<version>_amd64.pkg.tar.zst` to the GitHub release.
+3. The same job renders this `PKGBUILD` with the real `pkgver`/`sha256sums`,
+   regenerates `.SRCINFO`, and pushes both to
+   `ssh://aur@aur.archlinux.org/pdf-compressor-bin.git`. Cloning a not-yet-
+   existing AUR package yields an empty repo — the first push creates it.
 
-   ```bash
-   makepkg --printsrcinfo > .SRCINFO
-   ```
+### Required secret
 
-5. Build-check the source package:
-
-   ```bash
-   makepkg -sf
-   ```
-
-For a local test before the upstream release archive exists, create a matching source tarball manually from the project parent directory:
+`AUR_SSH_PRIVATE_KEY` — an OpenSSH private key whose public half is registered
+under the AUR account (*My Account → SSH keys*):
 
 ```bash
-git archive --format=tar.gz --prefix=pdf-compressor-0.2.0/ -o pdf-compressor-0.2.0.tar.gz HEAD
-mv pdf-compressor-0.2.0.tar.gz packaging/archlinux/
+ssh-keygen -t ed25519 -f aur_key -N ''
+# aur_key.pub  → AUR account settings
+# aur_key      → repository secret AUR_SSH_PRIVATE_KEY (full file contents)
 ```
+
+Without the secret the job still builds and attaches the zst, but skips the
+AUR push (forks work out of the box).
+
+## Manual publish (fallback)
+
+```bash
+# fill pkgver + sha256sums in PKGBUILD, then:
+makepkg --printsrcinfo > .SRCINFO
+git clone ssh://aur@aur.archlinux.org/pdf-compressor-bin.git
+cp PKGBUILD .SRCINFO pdf-compressor-bin/
+cd pdf-compressor-bin && git add . && git commit -m "v<version>" && git push
+```
+
+## Local zst without AUR
+
+`pnpm run tauri:arch` — produces the same package next to the deb/appimage
+bundles in `target/release/bundle/archlinux/`.

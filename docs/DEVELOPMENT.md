@@ -314,8 +314,12 @@ pnpm run tauri:build  # 安装包 + 便携版可执行文件（scripts/postbuild
 pnpm run tauri:arch   # 安装包 + Arch zst 包（release/bundle/archlinux/，scripts/build-arch-bundle.sh）
 ```
 
-- Linux（Arch）：AUR 源码包在 `packaging/archlinux/`，PKGBUILD 走与 deb/appimage
-  相同的 `tauri build --no-bundle` 管线（另编 headless CLI），不会与 bundle 目标漂移。
+- Linux（Arch）：AUR 二进制包 `pdf-compressor-bin`（模板在 `packaging/archlinux/`），
+  source 指向 GitHub Release 的 `pdf-compressor_<版本>_amd64.pkg.tar.zst`——release
+  workflow 的 `arch-package` 作业在 archlinux:base-devel 容器里跑与本地
+  `pnpm run tauri:arch` 相同的 `scripts/build-arch-bundle.sh` 管线产出该 zst，随后
+  自动填 pkgver/sha256、再生成 `.SRCINFO` 推送到 AUR（secret `AUR_SSH_PRIVATE_KEY`，
+  详见 `packaging/archlinux/README.md`）。
 - Release 流程见 `.github/workflows/release.yml`；产物命名与标识符见 README「Release metadata」。
 
 ### 文件管理器右键集成（三平台）
