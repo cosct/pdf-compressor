@@ -24,7 +24,7 @@
     "@tauri-apps/plugin-process": "^2.3.1",
     "@tauri-apps/plugin-updater": "^2.11.0",
     "vue": "^3.5.30",
-    "vue-i18n": "^11.3.0"
+    "vue-i18n": "^11.4.10"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.10.1",
