@@ -8,14 +8,24 @@
 //!                              [--quality 10-100] [--max-edge 100-8000] [--grayscale]
 //!                              [--bilevel g4] [--output-dir DIR] [--keep-metadata]
 //!                              [--target-size 5MB]
-//!   pdf-compressor-cli quick <input.pdf> [more.pdf ...] [OPTIONS]
+//!   pdf-compressor-cli compress - --stdout [OPTIONS] < input.pdf > output.pdf
+//!   pdf-compressor-cli quick <input.pdf|directory> [more.pdf ...] [OPTIONS]
 //!
 //! `quick` is the headless background mode: it compresses each file next to
 //! the original, removes outputs that did not get smaller, prints a JSON
 //! summary, and shows a desktop notification (via `notify-send` when present).
-//! Results are printed to stdout as JSON; errors go to stderr as JSON.
+//! Directory inputs are walked recursively for PDFs. Results are printed to
+//! stdout as JSON; errors go to stderr as JSON.
+//!
+//! `compress - --stdout` is the pipeline mode: the input is read from stdin
+//! and the PDF bytes are written to stdout (the JSON summary goes to stderr,
+//! keeping stdout pure for the pipe). When compression cannot beat the
+//! input, the original bytes pass through unchanged so downstream stages
+//! always receive a valid PDF.
 
 use std::{
+    fs,
+    io::{Read, Write},
     path::Path,
     process::{Command, ExitCode, Stdio},
     sync::atomic::AtomicBool,
@@ -25,11 +35,12 @@ use std::{
 use serde::Serialize;
 
 use pdf_core::{
-    analyze_pdf_with_progress, compress_pdf_to_target_size, compress_pdf_with_progress,
+    analyze_pdf_with_progress, compress_pdf_bytes_with_progress, compress_pdf_to_target_size,
+    compress_pdf_with_progress,
     models::QuickProfilePayload,
     quick_profile::{default_quick_profile_path, quick_profile_overrides, read_quick_profile_at},
     AppError, AppErrorPayload, BilevelCodec, CompressionResponse, CompressionSettings,
-    CompressionSettingsOverrides,
+    CompressionSettingsOverrides, MAX_INPUT_BYTES,
 };
 
 const USAGE: &str = "\
@@ -38,7 +49,14 @@ pdf-compressor-cli — analyze, compress, or quick-compress PDFs from the shell
 USAGE:
     pdf-compressor-cli analyze <input.pdf> [--password <PW>]
     pdf-compressor-cli compress <input.pdf> [OPTIONS]
-    pdf-compressor-cli quick <input.pdf> [more.pdf ...] [OPTIONS]
+    pdf-compressor-cli compress - --stdout [OPTIONS] < input.pdf > output.pdf
+    pdf-compressor-cli quick <input.pdf | directory> [more.pdf ...] [OPTIONS]
+
+PIPELINE MODE (compress - --stdout):
+    Reads the PDF from stdin and writes the result PDF to stdout; the JSON
+    summary goes to stderr. When compression cannot beat the input, the
+    original bytes pass through unchanged (never an empty pipe). Not
+    combinable with --output-dir or --target-size.
 
 QUICK OPTIONS (background mode, used by file-manager context menus):
     --preset <NAME>       maximum | balanced | conservative (default: balanced)
@@ -48,9 +66,11 @@ QUICK OPTIONS (background mode, used by file-manager context menus):
     --bilevel <CODEC>     Codec for near-black-and-white images: g4 | jpeg
                           (g4 = lossless CCITT Group 4, best for text scans)
     --subset-fonts       Shrink embedded CID TrueType fonts to used glyphs
-    --convert-cmyk       Convert CMYK images to RGB for re-encoding (off by
-                          default; the naive conversion shifts colors slightly
-                          vs color-managed viewers, see docs)
+    --convert-cmyk       Convert CMYK images to RGB for re-encoding (on by
+                          default; matches how color-managed viewers render
+                          CMYK — needs a build with the cmyk-cms feature,
+                          otherwise CMYK images are left untouched)
+    --no-convert-cmyk    Keep CMYK images untouched
     --keep-metadata       Keep document metadata (removed by default)
     --target-size <SIZE>  Fit the output under this size (e.g. 5MB, 500K)
     --password <PW>       Open password for encrypted PDFs (applies to every
@@ -63,6 +83,12 @@ QUICK OPTIONS (background mode, used by file-manager context menus):
 COMPRESS OPTIONS:
     (same as QUICK, plus:)
     --output-dir <DIR>    Write the output into this directory
+    --stdout              Write the result PDF to stdout (pipeline mode; use
+                          - as the input path to read from stdin)
+
+DIRECTORY INPUTS (quick):
+    A directory argument is walked recursively for .pdf files (any case);
+    symlinked directories are skipped so the walk can never loop.
 
 OTHER:
     -h, --help            Show this help";
@@ -178,7 +204,9 @@ fn compression_overrides(rest: &[String]) -> Result<CompressionSettingsOverrides
         } else {
             None
         },
-        cmyk_conversion: if rest.iter().any(|arg| arg == "--convert-cmyk") {
+        cmyk_conversion: if rest.iter().any(|arg| arg == "--no-convert-cmyk") {
+            Some(false)
+        } else if rest.iter().any(|arg| arg == "--convert-cmyk") {
             Some(true)
         } else {
             None
@@ -254,8 +282,9 @@ impl QuickOutcome {
 
     fn original_bytes(&self) -> Option<f64> {
         match self {
-            QuickOutcome::Compressed(response)
-            | QuickOutcome::NotSmaller(response) => Some(response.original_size_bytes),
+            QuickOutcome::Compressed(response) | QuickOutcome::NotSmaller(response) => {
+                Some(response.original_size_bytes)
+            }
             QuickOutcome::Failed(_) => None,
         }
     }
@@ -293,12 +322,59 @@ struct QuickSummary {
     savings_percent: f32,
 }
 
+/// Expand quick inputs: a directory argument is walked recursively for
+/// `.pdf` files (extension matched case-insensitively), everything else
+/// passes through as given. Symlinked directories are skipped so the walk
+/// can never loop; plain files keep their exact argument form.
+fn expand_quick_inputs(inputs: &[String]) -> Result<Vec<String>, String> {
+    let mut expanded = Vec::new();
+    for input in inputs {
+        let path = Path::new(input);
+        if path.is_dir() {
+            collect_pdfs(path, &mut expanded)
+                .map_err(|error| format!("failed to walk directory {input}: {error}"))?;
+        } else {
+            expanded.push(input.clone());
+        }
+    }
+    Ok(expanded)
+}
+
+/// Depth-first collection of PDF files under `dir`, sorted per directory so
+/// a run is deterministic regardless of the filesystem's iteration order.
+fn collect_pdfs(dir: &Path, out: &mut Vec<String>) -> std::io::Result<()> {
+    let mut entries: Vec<_> = fs::read_dir(dir)?.collect::<Result<_, _>>()?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        // `file_type` does not follow symlinks: a symlink to a directory is
+        // neither recursed into (no cycle risk) nor collected.
+        let file_type = entry.file_type()?;
+        let path = entry.path();
+        if file_type.is_dir() {
+            collect_pdfs(&path, out)?;
+        } else if file_type.is_file()
+            && path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
+        {
+            out.push(path.to_string_lossy().into_owned());
+        }
+    }
+    Ok(())
+}
+
 fn run_quick(rest: &[String], notify: bool) -> Result<QuickSummary, AppError> {
-    let (inputs, flags) =
-        split_quick_inputs(rest).map_err(AppError::Config)?;
-    if inputs.is_empty() {
+    let (raw_inputs, flags) = split_quick_inputs(rest).map_err(AppError::Config)?;
+    let inputs = expand_quick_inputs(&raw_inputs).map_err(AppError::Config)?;
+    if raw_inputs.is_empty() {
         return Err(AppError::Config(
             "quick requires at least one input PDF path".to_string(),
+        ));
+    }
+    if inputs.is_empty() {
+        return Err(AppError::Config(
+            "no PDF files found under the given directory input(s)".to_string(),
         ));
     }
     if flag_value(&flags, "--output-dir")
@@ -363,7 +439,10 @@ fn run_quick(rest: &[String], notify: bool) -> Result<QuickSummary, AppError> {
         .filter(|r| matches!(r, QuickOutcome::Failed(_)))
         .count();
 
-    let original_bytes: f64 = results.iter().filter_map(QuickOutcome::original_bytes).sum();
+    let original_bytes: f64 = results
+        .iter()
+        .filter_map(QuickOutcome::original_bytes)
+        .sum();
     let compressed_bytes: f64 = results.iter().filter_map(QuickOutcome::kept_bytes).sum();
     let savings_percent = if original_bytes > 0.0 {
         ((original_bytes - compressed_bytes) / original_bytes * 100.0) as f32
@@ -461,7 +540,12 @@ fn build_quick_notification(
     let (urgency, title): (&'static str, String) = if failures > 0 && success == 0 {
         (
             "critical",
-            if zh { "PDF 压缩失败" } else { "PDF compression failed" }.to_string(),
+            if zh {
+                "PDF 压缩失败"
+            } else {
+                "PDF compression failed"
+            }
+            .to_string(),
         )
     } else if failures > 0 {
         (
@@ -475,7 +559,12 @@ fn build_quick_notification(
     } else {
         (
             "normal",
-            if zh { "PDF 压缩完成" } else { "PDF compression finished" }.to_string(),
+            if zh {
+                "PDF 压缩完成"
+            } else {
+                "PDF compression finished"
+            }
+            .to_string(),
         )
     };
 
@@ -594,7 +683,14 @@ fn build_quick_notification(
 /// are silent — notifications are best-effort, never a hard dependency.
 fn send_notification(urgency: &str, title: &str, body: &str) {
     let _ = Command::new("notify-send")
-        .args(["-a", "PDF Compressor", "-i", "pdf-compressor", "-u", urgency])
+        .args([
+            "-a",
+            "PDF Compressor",
+            "-i",
+            "pdf-compressor",
+            "-u",
+            urgency,
+        ])
         .arg(title)
         .arg(body)
         .stdout(Stdio::null())
@@ -602,7 +698,14 @@ fn send_notification(urgency: &str, title: &str, body: &str) {
         .status();
 }
 
-fn run(args: &[String]) -> Result<String, AppError> {
+/// What `run` produced: printable JSON text, or pipeline-mode PDF bytes
+/// that must reach stdout verbatim (no trailing newline of its own).
+enum RunOutput {
+    Text(String),
+    PdfBytes(Vec<u8>),
+}
+
+fn run(args: &[String]) -> Result<RunOutput, AppError> {
     let command = args
         .first()
         .ok_or_else(|| AppError::Config("missing command".to_string()))?;
@@ -614,8 +717,12 @@ fn run(args: &[String]) -> Result<String, AppError> {
 
     match command.as_str() {
         "analyze" => analyze_pdf_with_progress(&input, password_arg(rest)?.as_deref(), |_| {})
-            .map(|response| serde_json::to_string_pretty(&response).expect("serializable")),
+            .map(|response| serde_json::to_string_pretty(&response).expect("serializable"))
+            .map(RunOutput::Text),
         "compress" => {
+            if rest.iter().any(|arg| arg == "--stdout") {
+                return run_stdout_compress(rest, &input);
+            }
             // Flag parsing errors are surfaced through AppError::Config.
             let overrides = compression_overrides(rest)?;
             let target_bytes = target_size_bytes(rest)?;
@@ -641,9 +748,66 @@ fn run(args: &[String]) -> Result<String, AppError> {
                 ),
             }
             .map(|response| serde_json::to_string_pretty(&response).expect("serializable"))
+            .map(RunOutput::Text)
         }
         other => Err(AppError::Config(format!("unknown command: {other}"))),
     }
+}
+
+/// Pipeline mode (`compress - --stdout`): stdin bytes in, PDF bytes to
+/// stdout, JSON summary to stderr. When compression cannot beat the input
+/// the engine passes the original bytes through, so the pipe never runs
+/// dry and the exit status stays success.
+fn run_stdout_compress(rest: &[String], input: &str) -> Result<RunOutput, AppError> {
+    let config_error = |message: String| AppError::Config(message);
+    if input != "-" {
+        return Err(config_error(
+            "--stdout reads the PDF from stdin; pass - as the input path".to_string(),
+        ));
+    }
+    if flag_value(rest, "--output-dir").is_ok_and(|value| value.is_some()) {
+        return Err(config_error(
+            "--stdout writes to stdout; --output-dir is not combinable with it".to_string(),
+        ));
+    }
+    if target_size_bytes(rest)?.is_some() {
+        return Err(config_error(
+            "--target-size materializes probe files; it is not combinable with --stdout"
+                .to_string(),
+        ));
+    }
+    let overrides = compression_overrides(rest)?;
+    let password = password_arg(rest)?;
+    let settings = CompressionSettings::from_sources(None, overrides);
+
+    // Read stdin through a Take bound of the engine's ceiling: an oversized
+    // stream is rejected after at most limit+1 bytes instead of being fully
+    // buffered first (the same friendly pre-check the file paths get).
+    let mut input_bytes = Vec::new();
+    std::io::stdin()
+        .take(MAX_INPUT_BYTES + 1)
+        .read_to_end(&mut input_bytes)
+        .map_err(AppError::Io)?;
+    if input_bytes.len() as u64 > MAX_INPUT_BYTES {
+        return Err(AppError::InputTooLarge {
+            size_bytes: input_bytes.len() as u64,
+            limit_bytes: MAX_INPUT_BYTES,
+        });
+    }
+
+    let outcome = compress_pdf_bytes_with_progress(
+        input_bytes,
+        password.as_deref(),
+        settings,
+        Arc::new(AtomicBool::new(false)),
+        |_| {},
+    )?;
+
+    // Summary first (stderr), then the payload — a reader waiting on stdout
+    // gets complete diagnostics even if the byte stream fails mid-write.
+    let summary = serde_json::to_string_pretty(&outcome.response).expect("serializable");
+    eprintln!("{summary}");
+    Ok(RunOutput::PdfBytes(outcome.bytes))
 }
 
 /// `--password` for the analyze/compress subcommands.
@@ -684,9 +848,25 @@ fn main() -> ExitCode {
     }
 
     match run(&args) {
-        Ok(output) => {
+        Ok(RunOutput::Text(output)) => {
             println!("{output}");
             ExitCode::SUCCESS
+        }
+        Ok(RunOutput::PdfBytes(bytes)) => {
+            let mut stdout = std::io::stdout().lock();
+            match stdout.write_all(&bytes).and_then(|()| stdout.flush()) {
+                // A failed stdout write (closed pipe, full disk) is a real
+                // failure even though the compression itself succeeded.
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!(
+                        "{}",
+                        serde_json::to_string_pretty(&AppErrorPayload::from(AppError::Io(error)))
+                            .expect("serializable")
+                    );
+                    ExitCode::FAILURE
+                }
+            }
         }
         Err(error) => {
             let payload = AppErrorPayload::from(error);
@@ -702,10 +882,12 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_quick_notification, flag_value, human_bytes, parse_size, quick_language,
-        QuickFileReport, QuickSummary, split_quick_inputs,
+        build_quick_notification, collect_pdfs, compression_overrides, expand_quick_inputs,
+        flag_value, human_bytes, parse_size, quick_language, split_quick_inputs, QuickFileReport,
+        QuickSummary,
     };
     use pdf_core::AppErrorPayload;
+    use std::fs;
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|item| item.to_string()).collect()
@@ -768,6 +950,104 @@ mod tests {
     }
 
     #[test]
+    fn cmyk_flags_parse_as_opt_out_and_opt_in() {
+        // Unset falls through to the engine default (on since 0.8.0).
+        assert_eq!(
+            compression_overrides(&args(&["a.pdf"]))
+                .unwrap()
+                .cmyk_conversion,
+            None
+        );
+        assert_eq!(
+            compression_overrides(&args(&["a.pdf", "--convert-cmyk"]))
+                .unwrap()
+                .cmyk_conversion,
+            Some(true)
+        );
+        // The opt-out wins when both flags appear.
+        assert_eq!(
+            compression_overrides(&args(&["a.pdf", "--no-convert-cmyk"]))
+                .unwrap()
+                .cmyk_conversion,
+            Some(false)
+        );
+        assert_eq!(
+            compression_overrides(&args(&["a.pdf", "--convert-cmyk", "--no-convert-cmyk"]))
+                .unwrap()
+                .cmyk_conversion,
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn expand_quick_inputs_walks_directories_for_pdfs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        fs::write(root.join("top.pdf"), b"pdf").unwrap();
+        fs::write(root.join("ignored.txt"), b"").unwrap();
+        fs::write(root.join("upper.PDF"), b"pdf").unwrap();
+        fs::create_dir(root.join("nested")).unwrap();
+        fs::write(root.join("nested").join("deep.Pdf"), b"pdf").unwrap();
+        fs::create_dir(root.join("nested").join("empty")).unwrap();
+
+        let expanded = expand_quick_inputs(&[
+            root.join("top.pdf").to_string_lossy().into_owned(),
+            root.to_string_lossy().into_owned(),
+        ])
+        .expect("expand");
+        // The explicit file comes first as given; the directory argument
+        // then walks its contents (sorted, nested directories between
+        // files by name), picking top.pdf up a second time — expansion
+        // keeps every match, dedupe is the caller's business.
+        let expected = vec![
+            root.join("top.pdf").to_string_lossy().into_owned(),
+            root.join("nested")
+                .join("deep.Pdf")
+                .to_string_lossy()
+                .into_owned(),
+            root.join("top.pdf").to_string_lossy().into_owned(),
+            root.join("upper.PDF").to_string_lossy().into_owned(),
+        ];
+        assert_eq!(expanded, expected, "files must be sorted per directory");
+    }
+
+    #[test]
+    fn expand_quick_inputs_passes_plain_arguments_through() {
+        let expanded =
+            expand_quick_inputs(&args(&["/tmp/a.pdf", "/tmp/missing.pdf", "relative.PDF"]))
+                .expect("expand");
+        assert_eq!(
+            expanded,
+            args(&["/tmp/a.pdf", "/tmp/missing.pdf", "relative.PDF"])
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn collect_pdfs_skips_symlinked_directories() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        fs::create_dir(root.join("real")).unwrap();
+        fs::write(root.join("real").join("inside.pdf"), b"pdf").unwrap();
+        symlink(root.join("real"), root.join("loop")).unwrap();
+
+        let mut collected = Vec::new();
+        collect_pdfs(root, &mut collected).expect("walk");
+        // The symlinked directory is not followed: its target's file is
+        // collected exactly once (via the real path), and the walk ends.
+        assert_eq!(
+            collected,
+            vec![root
+                .join("real")
+                .join("inside.pdf")
+                .to_string_lossy()
+                .into_owned()]
+        );
+    }
+
+    #[test]
     fn human_bytes_picks_sane_units() {
         assert_eq!(human_bytes(0.0), "0B");
         assert_eq!(human_bytes(512.0), "512B");
@@ -779,9 +1059,7 @@ mod tests {
     fn quick_language_follows_locale() {
         // Locale-dependent via env vars; only assert the classification of a
         // fixed value to keep the test environment-independent.
-        let decision = |lang: &str| {
-            lang.to_ascii_lowercase().starts_with("zh")
-        };
+        let decision = |lang: &str| lang.to_ascii_lowercase().starts_with("zh");
         assert!(decision("zh_CN.UTF-8"));
         assert!(!decision("en_US.UTF-8"));
         let _ = quick_language(); // must not panic with unset locale vars
