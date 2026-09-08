@@ -40,7 +40,9 @@ cargo bench -p pdf-core      # 压缩性能基准（criterion）
 cargo run -p pdf-core --bin pdf-compressor-cli -- analyze <file.pdf>
 cargo run -p pdf-core --bin pdf-compressor-cli -- compress <file.pdf> --preset maximum
 cargo run -p pdf-core --bin pdf-compressor-cli -- compress <file.pdf> --target-size 5MB
+cargo run -p pdf-core --bin pdf-compressor-cli -- compress - --stdout < in.pdf > out.pdf  # 管道模式
 cargo run -p pdf-core --bin pdf-compressor-cli -- quick <file.pdf> --grayscale   # 后台模式（右键集成用）
+cargo run -p pdf-core --bin pdf-compressor-cli -- quick <dir>/ --no-notify       # 目录递归批量
 ```
 
 > 前端代码在 `frontend/` 子目录（`index.html` / `src` / `public` / `vite.config.ts` / `tsconfig*`）。
@@ -51,7 +53,7 @@ cargo run -p pdf-core --bin pdf-compressor-cli -- quick <file.pdf> --grayscale  
 ```
 ┌─────────────────────────────┐       ┌──────────────────────────────┐
 │  前端 (frontend/, Vue 3 + TS) │  IPC  │  桌面壳 (src-tauri, Tauri 2) │
-│  App.vue ─ 主视图/设置视图    │ ◄───► │  commands.rs（12 个命令）     │
+│  App.vue ─ 主视图/设置视图    │ ◄───► │  commands.rs（13 个命令）     │
 │  usePdfCompressor（核心状态）│ typed │  任务注册表 / 输出路径白名单    │
 └─────────────────────────────┘  IPC  └──────────────┬───────────────┘
                                                       │ 直接调用
@@ -66,7 +68,9 @@ cargo run -p pdf-core --bin pdf-compressor-cli -- quick <file.pdf> --grayscale  
 
 - **`crates/pdf-core`**：纯 PDF 引擎，不依赖 Tauri/UI。公共 API 只有
   `analyze_pdf_with_progress`、`compress_pdf_with_progress`、
-  `compress_pdf_to_target_size`、`CompressionSettings(Overrides)` 与错误/模型类型，
+  `compress_pdf_bytes_with_progress`（+`BytesCompressionOutcome`，管道字节入口）、
+  `compress_pdf_to_target_size`、`CompressionSettings(Overrides)`、
+  `MAX_INPUT_BYTES`、`migrate_cmyk_default_flip` 与错误/模型类型，
   在 `src/lib.rs` 统一导出。四个前端共享它：Tauri 应用、`pdf-compressor-cli`、criterion 基准、cargo-fuzz。
   引擎内部分层：`pdf/compressor.rs`（文档编排与批量调度）、`pdf/encode.rs`（单图
   编解码：跳过启发式/解码/缩放/JPEG 重编码/软蒙版）、`pdf/search.rs`（目标大小搜索
@@ -189,7 +193,8 @@ cargo run -p pdf-core --bin pdf-compressor-cli -- quick <file.pdf> --grayscale  
   `ImageTask`/`ImageSearchEntry` 携带。别名表取全部资源字典的并集，同名不同值
   视为歧义弃用。重建流时若通道数匹配则**保留原 ICC 数组**（profile 不丢），
   Indexed 输出声明基色空间；灰度/G4 转换导致通道数变化时回退 Device 名。
-- **CMYK（0.6.0 起 opt-in；0.7.0 起为渲染器校准的真转换）**：ICC N=4、`DeviceCMYK`
+- **CMYK（0.6.0 起 opt-in；0.7.0 起为渲染器校准的真转换；0.8.0 起默认开启）**：
+  ICC N=4、`DeviceCMYK`
   名、CMYK 基 Indexed 统一经 `DecodeColorSpace::Cmyk` 解析，四条路径（raw/Indexed/
   DCT/JPX）汇入同一转换 chokepoint `cmyk::cmyk_samples_to_rgb`：
   - **`cmyk-cms` feature 开启**（release/AUR 包）：带 ICC 的图经 Little CMS 按嵌入
@@ -199,8 +204,10 @@ cargo run -p pdf-core --bin pdf-compressor-cli -- quick <file.pdf> --grayscale  
     SWOP 近似矩阵**——poppler（`GfxDeviceCMYKColorSpace`，未配置 default CMYK
     profile 的 pdftoppm 默认态）与 PDFium 的逐样本解释，含其“截断后 clip”的舍入。
     矩阵参考值已用 poppler 26.08 计算钉死在测试里。
-  - **feature 关闭**（默认构建）：朴素减色公式（0.6.0 行为），与渲染器 CMS 解释
-    存在 ≈7.6dB 系统偏差（Adobe YCCK 夹具实测）。
+  - **feature 关闭**（默认构建，0.8.0 起）：**拒绝彩色路径转换**——朴素减色公式与
+    渲染器 CMS 解释存在 ≈7.6dB 系统偏差（Adobe YCCK 夹具实测），宁可保持原图
+    也不偏色（`converts_cmyk()` 只放行灰度/G4 的亮度坍缩意图，公式仅作其输入）；
+    跳过原因指明需以 `cmyk-cms` 特性重建。
   - **DCT 极性（2026-09 实证）**：poppler/PDFium 把 4 分量 DCT 解码输出直接当
     0=无墨消费——transform-0 样本透传、YCCK 按 libjpeg `ycck_cmyk_convert` 语义
     （`cmy = 255 − YCbCr⁻¹(stored)`，K 透传）；历史上的"Adobe 反相"读法并不被
@@ -210,11 +217,15 @@ cargo run -p pdf-core --bin pdf-compressor-cli -- quick <file.pdf> --grayscale  
     时）：CGATS TR 001（CC0，`assets/cgats001-cmyk.icc`）嵌入 ICC N=4 的 raw 与
     Adobe YCCK DCT 双夹具，conservative 档 + 开关开启压缩，poppler 渲染前后
     PSNR ≥25dB；实测 ≈54.6dB（0.6.0 朴素基线 ≈7.6dB）。
-  - **开关与预估**：`cmyk_conversion`（CLI `--convert-cmyk`、GUI 设置卡）仍默认
-    关——feature-off 构建的朴素转换未达标，翻转默认值推迟（见路线 §8）；灰度/G4
-    请求隐式开启（`settings.converts_cmyk()`）；gate 在 `optimize_image_stream`
-  统一拦截 raw/Indexed/DCT/JPX（`declares_cmyk`），带 `/Decode` 的 CMYK 保持
-  skip，分析器按默认关镜像（宁低勿高）。重建流声明 `DeviceRGB`，CMYK 的 ICC
+  - **开关与预估**：`cmyk_conversion`（CLI `--convert-cmyk`/`--no-convert-cmyk`、
+    GUI 设置卡）自 0.8.0 起**默认开**——release/AUR 包自 0.7.0 起稳定携带 cms
+    转换，opt-in 使命完成；feature-off 构建无论开关一律拒绝彩色转换（见上）。
+    灰度/G4 请求隐式开启（`settings.converts_cmyk()`）；gate 在
+    `optimize_image_stream` 统一拦截 raw/Indexed/DCT/JPX（`declares_cmyk`），
+    `/Decode` 自 0.7.1 起按可归一化形状（单位/反相）在解码阶段折叠，不可归一化
+    （部分区间、奇数长度、通道不符）保持 skip；分析器按构建的默认姿态镜像
+    （cms 构建计为可压缩，feature-off 排除，宁低勿高）。重建流声明 `DeviceRGB`，
+    CMYK 的 ICC
   profile 不随行（通道数已不符），但 ICC 字节在解析阶段提取随 `ImageTask` 携带
   到 worker（与 JBIG2 globals 同款预解析模式，仅 cms 构建提取，4MiB 上限）。
 - **JPX（JPEG 2000）解码**（`jpx.rs`，feature `jpx` **默认关**，保持默认构建纯
@@ -395,11 +406,12 @@ release overlay 而非主配置）。
   PDFium 的 DeviceCMYK 解释，比"找一个校准 profile"更准——它们的默认态根本
   不走 CMS）。验收实测 ≈54.6dB（门槛 ≥25dB，0.6.0 基线 ≈7.6dB），渲染比对
   门禁 `cmyk_fidelity_matches_poppler_render` 进 CI 可选特性腿。
-- **默认值翻转评估（2026-09）**：cms 构建下转换已达标，但 `cmyk_conversion`
-  默认仍为**关**——默认构建（feature 关）的朴素转换未达标，翻转会让源码自建
-  用户静默得到偏色输出。翻转条件：release 产物稳定启用 cmyk-cms 一个版本
-  （0.7.x）后，若改默认开，朴素路径应直接跳过而非转换（宁可不压不偏色），
-  于 0.8 评估。
+- **默认值翻转（✅ 0.8.0 落地）**：release/AUR 产物稳定携带 `cmyk-cms` 一个
+  版本（0.7.x）后，`cmyk_conversion` 默认翻转为**开**（GUI 预设、CLI、quick
+  profile 回落链全部同步，`--no-convert-cmyk` 提供退出）。朴素路径（feature-off
+  构建）按既定原则**直接跳过而非转换**（宁可不压不偏色）：`converts_cmyk()`
+  仅放行灰度/G4 亮度坍缩意图，跳过原因指明需重建特性；分析器预估按构建镜像
+  新默认。
 
 ### P1：JBIG2 输入解码（已随 0.6.0 落地）
 
@@ -408,8 +420,9 @@ release overlay 而非主配置）。
   管道、poppler 渲染门禁、conformance 语料夹具均已就位（见上文 JBIG2 段）。
 - **输出侧维持 JBIG2 门禁结论**（2026-08 备忘录）：G4 仍是唯一双级出口。
 - 0.7.0 增量：`/JBIG2Globals` 引用的共享字典在**多图共享一个 globals
-  对象**时的去重解码（当前每图各带一份 bytes）；随机接入组织的流内
-  形态（embedded 常见，随机接入罕见）。
+  对象**时的去重解码（✅ 0.7.1 落地，按对象 ID 共享解压）；随机接入组织的流内
+  形态（embedded 常见，随机接入罕见）**维持暂缓**——真实语料罕见，收益不成
+  比例。
 
 ### P2：JPX 边缘补全（✅ 0.7.0 已落地）
 
@@ -423,7 +436,11 @@ release overlay 而非主配置）。
 
 - 2GiB 预检提示已做（0.6.0）；0.7.0 评估上限工程（lopdf 全内存对象图的
   分页/惰性加载属多周工程，收益人群有限——倾向维持上限 + 文档明示）。
-- CLI 管道模式（stdin/stdout）与批量目录递归增强（低风险体验项）。
+- CLI 管道模式与批量目录递归（✅ 0.8.0 落地）：`compress - --stdout`
+  读 stdin 写 stdout（JSON 摘要走 stderr，压不赢时直通原始字节，管道永不断流；
+  引擎侧新增 `compress_pdf_bytes_with_progress` 字节入口，与文件路径共用优化
+  管线与"不写更大输出"语义）；`quick` 接受目录参数递归收集 `.pdf`（不分大小写，
+  跳过符号链接目录防环，逐目录排序保证确定性）。
 
 ### 维持暂缓
 
@@ -432,4 +449,6 @@ release overlay 而非主配置）。
 
 ### 节奏建议
 
-0.7.0 主打 CMYK 真转换（lcms2）+ P2 搭车，P3 按余量取舍。
+0.7.0 主打 CMYK 真转换（lcms2）+ P2 搭车，P3 按余量取舍；0.8.0 主打 CMYK
+默认翻转（feature-off 拒绝偏色转换）+ P3 CLI 管道/目录递归。0.8.0 后路线池：
+JBIG2 随机接入（罕见，暂缓）、线性化（等上游）、PDF/A（暂无计划）。

@@ -95,7 +95,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "app"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "dirs-next",
  "log",
@@ -3247,7 +3247,7 @@ checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
 name = "pdf-core"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "criterion",
  "dirs-next",

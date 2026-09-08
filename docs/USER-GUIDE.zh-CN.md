@@ -176,13 +176,21 @@ pdf-compressor-cli analyze input.pdf [--password <PW>]
 pdf-compressor-cli compress input.pdf [OPTIONS]
 ```
 
+管道模式（stdin 进、stdout 出）：
+
+```bash
+pdf-compressor-cli compress - --stdout [OPTIONS] < input.pdf > output.pdf
+```
+
+输入读自 stdin，PDF 字节写往 stdout，JSON 摘要走 stderr（stdout 保持纯 PDF 流）。压缩赢不过原文件时直通原始字节——下游永远拿到合法 PDF，退出码仍为 0。不可与 `--output-dir`、`--target-size` 组合。
+
 ### `quick` —— 后台批量模式（右键菜单同款）
 
 ```bash
-pdf-compressor-cli quick a.pdf b.pdf [OPTIONS]
+pdf-compressor-cli quick a.pdf b.pdf 目录/ [OPTIONS]
 ```
 
-输出写在原文件旁；压不小于原文件的跳过不写；完成后发桌面通知（Linux 需 `libnotify`）；stdout 打印逐文件 JSON 汇总，错误走 stderr。
+输出写在原文件旁；压不小于原文件的跳过不写；完成后发桌面通知（Linux 需 `libnotify`）；stdout 打印逐文件 JSON 汇总，错误走 stderr。目录参数会递归收集其中的 `.pdf` 文件（不分大小写；跳过符号链接目录，遍历不会成环）。
 
 ### 全部旗标
 
@@ -194,10 +202,13 @@ pdf-compressor-cli quick a.pdf b.pdf [OPTIONS]
 | `--grayscale` | 全部 | 彩色图转灰度 |
 | `--bilevel <CODEC>` | 全部 | 近黑白图编码：`g4`（无损 CCITT G4）/ `jpeg` |
 | `--subset-fonts` | 全部 | 启用字体子集化 |
+| `--convert-cmyk` | 全部 | CMYK 图片转 RGB 后重编码（默认开启；安装包为与色彩管理查看器一致的 lcms2 转换，源码默认构建无此能力时保持原图不动） |
+| `--no-convert-cmyk` | 全部 | CMYK 图片保持原样（关闭默认转换） |
 | `--keep-metadata` | 全部 | 保留元数据（默认移除） |
 | `--target-size <SIZE>` | 全部 | 目标体积预算，如 `5MB`、`500K`、字节数 |
 | `--password <PW>` | 全部 | 打开密码（quick 模式作用于整批） |
 | `--output-dir <DIR>` | compress | 输出目录（quick 固定写在原文件旁，不支持） |
+| `--stdout` | compress | 管道模式：PDF 字节写 stdout、摘要走 stderr（输入用 `-` 读 stdin） |
 | `--no-notify` | quick | 跳过桌面通知 |
 
 未指定的字段回落到 GUI 设置页保存的“右键快速压缩”配置（`<配置目录>/pdf-compressor/quick-profile.json`），再回落到内置默认。
@@ -216,6 +227,12 @@ pdf-compressor-cli quick a.pdf b.pdf [OPTIONS]
 for f in *.pdf; do
   pdf-compressor-cli quick "$f" --target-size 2MB --no-notify || echo "failed: $f" >> failed.log
 done
+
+# 整个目录递归压缩（quick 接受目录参数）
+pdf-compressor-cli quick 扫描件/ --no-notify
+
+# 管道：边下载边压缩，不落中间文件
+curl -s https://example.com/big.pdf | pdf-compressor-cli compress - --stdout > small.pdf
 ```
 
 ---
@@ -265,7 +282,7 @@ done
 能。文本层从不被栅格化，这也是本项目与“整页转图”式压缩工具的根本区别。
 
 **Q：为什么我的文件只小了一点？**
-先看分析结果的文档分类：文本型 PDF（体积主要在字体和内容流）压缩空间有限；图片是 JBIG2/JPX 编码或 CMYK 印刷色的会被保守跳过（分析会报告“不受支持的编码”）；文件本来就很紧凑时引擎会放弃输出（不写更大文件）。
+先看分析结果的文档分类：文本型 PDF（体积主要在字体和内容流）压缩空间有限；个别图片编码（如源码默认构建下的 JPX/CMYK）会被保守跳过（分析会报告“不受支持的编码”）；文件本来就很紧凑时引擎会放弃输出（不写更大文件）。
 
 **Q：扫描件用哪个模式？**
 分析判定为“扫描型”的文件会自动走扫描管线。黑白文字扫描件把色彩模式设为“黑白（G4）”收益最大；彩色扫描件可用“灰度”或直接“最大化”。
@@ -285,13 +302,16 @@ KDE：确认装的是 Arch 包且未禁用 ServiceMenu。GNOME：运行安装脚
 **Q：怎么彻底重置设置？**
 删除配置目录下的 `pdf-compressor/`（Linux `~/.config/`，Windows `%APPDATA%`，macOS `~/Library/Application Support/`）。队列与设置都在里面，删除不影响已生成的输出文件。
 
+**Q：从 0.7.x 升级后，"转换 CMYK"是开的还是关的？**
+0.8.0 起 CMYK 转换默认开启，升级时会自动迁移旧配置：0.7 保存的"未开启"（当时的默认值）被视为旧默认并重置为新默认（开）；当时**主动开启**过的配置保持开启。升级后如需关闭，在设置里取消勾选或 CLI 用 `--no-convert-cmyk`——0.8 起写入的"关闭"是真实意愿，不会再被迁移改动。确认转换是否生效：压缩报告的 JSON 里 CMYK 图片计入 `imagesRecompressed`（而非跳过）；源码自建（未启用 `cmyk-cms` 特性）的构建始终保持 CMYK 原样，报告的跳过原因会注明。
+
 ---
 
 ## 10. 已知限制
 
 | 限制 | 说明 | 计划 |
 | --- | --- | --- |
-| CMYK / ICC-4 通道图片默认跳过 | 印刷色图片默认保持原样；设置中开启"转换 CMYK"后重编码（安装包内为 lcms2 真色彩管理转换，源码默认构建为朴素近似） | 视反馈评估默认开启 |
+| 源码默认构建不转换 CMYK | 安装包（启用 cmyk-cms 特性）自 0.8.0 起默认把 CMYK/ICC-4 图片转为 RGB 重编码；源码默认构建无色彩管理能力，宁可保持原图也不做朴素偏色转换（灰度/G4 请求除外） | 维持现状 |
 | 字体子集化仅覆盖 CID 字体 | 简单字体（Type1/PFB）不动（低收益） | 暂缓 |
 | 单文件上限 2GiB | 全内存处理的安全上限 | 流式处理在"明确不做清单"中 |
 | 无线性化输出 | 上游 lopdf 的实现是空壳 | 等待上游或另立项 |
