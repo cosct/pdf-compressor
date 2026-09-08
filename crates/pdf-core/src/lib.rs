@@ -20,8 +20,9 @@ pub mod quick_profile;
 pub mod testutil;
 
 pub use error::{AppError, AppErrorPayload};
-pub use models::CompressionResponse;
+pub use models::{migrate_cmyk_default_flip, CompressionResponse};
 pub use pdf::{
-    analyze_pdf_with_progress, compress_pdf_to_target_size, compress_pdf_with_progress,
-    BilevelCodec, CompressionSettings, CompressionSettingsOverrides,
+    analyze_pdf_with_progress, compress_pdf_bytes_with_progress, compress_pdf_to_target_size,
+    compress_pdf_with_progress, BilevelCodec, BytesCompressionOutcome, CompressionSettings,
+    CompressionSettingsOverrides, MAX_INPUT_BYTES,
 };

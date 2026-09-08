@@ -7,7 +7,26 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 fn default_config_version() -> u32 {
-    1
+    2
+}
+
+/// v1→v2 config migration (0.8.0's CMYK default flip). A v1 config's
+/// `cmyk_conversion: Some(false)` was the 0.7.x **default state** persisted
+/// verbatim — the 0.7 GUI/CLI wrote the checkbox default as an explicit
+/// value, so `Some(false)` cannot be distinguished from "never touched"
+/// (one cannot explicitly opt out of a feature that was already off).
+/// The migration therefore drops v1 `Some(false)` back to unset, letting
+/// the new default (on) apply; `Some(true)` was always a deliberate opt-in
+/// and survives. v2 configs keep their values verbatim — a `Some(false)`
+/// written by 0.8.0+ is a genuine opt-out and must never be migrated away.
+/// Returns the stamped config version.
+pub fn migrate_cmyk_default_flip(version: u32, cmyk_conversion: &mut Option<bool>) -> u32 {
+    if version < 2 {
+        *cmyk_conversion = cmyk_conversion.filter(|value| *value);
+        2
+    } else {
+        version
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -30,9 +49,9 @@ pub struct CompressionSettingsPayload {
     /// Shrink embedded Type0/CIDFontType2 TrueType fonts to the used glyphs.
     #[serde(default)]
     pub subset_fonts: Option<bool>,
-    /// Convert CMYK images to RGB for re-encoding (opt-in, default off —
-    /// the naive ink-subtraction conversion shifts colors measurably
-    /// against color-managed renderers; grayscale requests imply it).
+    /// Convert CMYK images to RGB for re-encoding (default on since 0.8.0;
+    /// builds without the `cmyk-cms` feature keep CMYK untouched instead of
+    /// converting naively — grayscale requests still imply the collapse).
     #[serde(default)]
     pub cmyk_conversion: Option<bool>,
     pub output_dir: Option<String>,
@@ -115,7 +134,7 @@ pub struct PresetProfilePayload {
     pub bilevel_codec: Option<String>,
     #[serde(default)]
     pub subset_fonts: Option<bool>,
-    /// Opt-in CMYK→RGB conversion for re-encoding (default off).
+    /// CMYK→RGB conversion for re-encoding (default on since 0.8.0).
     #[serde(default)]
     pub cmyk_conversion: Option<bool>,
 }
@@ -184,7 +203,7 @@ pub struct QuickProfilePayload {
     pub bilevel_codec: Option<String>,
     #[serde(default)]
     pub subset_fonts: Option<bool>,
-    /// Opt-in CMYK→RGB conversion for re-encoding (default off).
+    /// CMYK→RGB conversion for re-encoding (default on since 0.8.0).
     #[serde(default)]
     pub cmyk_conversion: Option<bool>,
     /// Byte budget for target-size mode; absent means plain compression.

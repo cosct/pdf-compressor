@@ -103,13 +103,16 @@ pub struct CompressionSettings {
     /// (opt-in; `subset-fonts` feature). Non-eligible fonts are untouched.
     pub subset_fonts: bool,
     /// Convert CMYK images (ICC N=4, `DeviceCMYK`, CMYK-based Indexed, CMYK
-    /// JPEG, 4-component JPX) to RGB for re-encoding. **Opt-in and default
-    /// off**: the ink-subtraction conversion differs measurably from how
-    /// mainstream renderers color-manage CMYK (poppler baseline ≈7.6 dB on
-    /// proper Adobe fixtures, quality-insensitive), so CMYK images stay
-    /// untouched unless the user asks. Grayscale/G4 requests imply the
-    /// conversion — any color-to-luma collapse is already lossy by intent
-    /// and the CMYK→gray deviation is far below the color one.
+    /// JPEG, 4-component JPX) to RGB for re-encoding. **Default on since
+    /// 0.8.0**: release artifacts have shipped the calibrated `cmyk-cms`
+    /// conversion since 0.7.0, so the opt-in guard has served its purpose.
+    /// Builds without the feature refuse the color conversion at
+    /// [`Self::converts_cmyk`] regardless of this setting — their naive
+    /// ink-subtraction formula drifts ≈7.6 dB off color-managed renderers,
+    /// and an untouched image beats a wrong-colored one. Grayscale/G4
+    /// requests imply the conversion in every build — any color-to-luma
+    /// collapse is already lossy by intent and the CMYK→gray deviation is
+    /// far below the color one.
     pub cmyk_conversion: bool,
     pub output_dir: Option<String>,
 }
@@ -165,9 +168,7 @@ impl CompressionSettings {
         let payload_strip_metadata = payload.as_ref().and_then(|value| value.strip_metadata);
         let payload_grayscale = payload.as_ref().and_then(|value| value.grayscale);
         let payload_subset_fonts = payload.as_ref().and_then(|value| value.subset_fonts);
-        let payload_cmyk_conversion = payload
-            .as_ref()
-            .and_then(|value| value.cmyk_conversion);
+        let payload_cmyk_conversion = payload.as_ref().and_then(|value| value.cmyk_conversion);
         let payload_bilevel_codec = payload
             .as_ref()
             .and_then(|value| value.bilevel_codec.as_deref())
@@ -210,16 +211,29 @@ impl CompressionSettings {
             cmyk_conversion: overrides
                 .cmyk_conversion
                 .or(payload_cmyk_conversion)
-                .unwrap_or(false),
+                .unwrap_or(true),
             output_dir: overrides.output_dir.or(payload_output_dir),
         }
     }
 
     /// Whether CMYK images may be converted for re-encoding under these
-    /// settings: the explicit opt-in, or an implied conversion request
-    /// (grayscale / G4 bilevel output collapses color by design).
+    /// settings: the explicit setting (on by default since 0.8.0), or an
+    /// implied conversion request (grayscale / G4 bilevel output collapses
+    /// color by design).
+    ///
+    /// Builds without the `cmyk-cms` feature refuse the color conversion
+    /// even when the setting asks for it: their naive ink-subtraction
+    /// formula deviates ≈7.6 dB from color-managed renderers (poppler
+    /// baseline, 2026-09), so CMYK images stay untouched rather than being
+    /// re-encoded wrong. Only the luma-collapse intents convert there —
+    /// the CMYK→gray deviation is far below the intent's own loss.
     pub fn converts_cmyk(&self) -> bool {
-        self.cmyk_conversion || self.grayscale || self.bilevel_codec.uses_ccitt()
+        let collapse_intent = self.grayscale || self.bilevel_codec.uses_ccitt();
+        // Flat form (no cfg! branch): every operator stays observable in
+        // either build, so mutation testing in the default-feature leg can
+        // reach both the refusal and the intent paths.
+        let color_conversion_allowed = cfg!(feature = "cmyk-cms") && self.cmyk_conversion;
+        color_conversion_allowed || collapse_intent
     }
 }
 
@@ -335,6 +349,67 @@ mod tests {
         let default =
             CompressionSettings::from_sources(None, CompressionSettingsOverrides::default());
         assert!(!default.grayscale);
+    }
+
+    #[test]
+    fn cmyk_conversion_defaults_on_and_honors_opt_out() {
+        let default =
+            CompressionSettings::from_sources(None, CompressionSettingsOverrides::default());
+        assert!(default.cmyk_conversion);
+
+        let opted_out = CompressionSettings::from_sources(
+            Some(CompressionSettingsPayload {
+                cmyk_conversion: Some(false),
+                ..Default::default()
+            }),
+            CompressionSettingsOverrides::default(),
+        );
+        assert!(!opted_out.cmyk_conversion);
+    }
+
+    #[test]
+    fn converts_cmyk_follows_the_build_and_the_intent() {
+        let settings = |grayscale: bool, g4: bool, cmyk: Option<bool>| {
+            CompressionSettings::from_sources(
+                None,
+                CompressionSettingsOverrides {
+                    grayscale: Some(grayscale),
+                    bilevel_codec: Some(if g4 {
+                        BilevelCodec::CcittG4
+                    } else {
+                        BilevelCodec::Jpeg
+                    }),
+                    cmyk_conversion: cmyk,
+                    ..Default::default()
+                },
+            )
+        };
+
+        // Full matrix of (grayscale, g4, cmyk setting) x build. The
+        // luma-collapse intents imply the conversion in every build; only
+        // the pure color intent follows the build's capability.
+        for (grayscale, g4) in [(false, false), (true, false), (false, true), (true, true)] {
+            for cmyk in [None, Some(true), Some(false)] {
+                let converts = settings(grayscale, g4, cmyk).converts_cmyk();
+                if grayscale || g4 {
+                    assert!(
+                        converts,
+                        "collapse intent must convert regardless of build/setting                          (grayscale={grayscale}, g4={g4}, cmyk={cmyk:?})"
+                    );
+                } else if cfg!(feature = "cmyk-cms") {
+                    assert_eq!(
+                        converts,
+                        cmyk.unwrap_or(true),
+                        "cms builds follow the setting/default (cmyk={cmyk:?})"
+                    );
+                } else {
+                    assert!(
+                        !converts,
+                        "feature-off builds refuse the color path (cmyk={cmyk:?})"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
