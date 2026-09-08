@@ -11,7 +11,11 @@ jobs:
   mutants:
     name: cargo-mutants (pdf-core)
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    # The full pdf-core suite needs ~2h05m on a hosted runner (2026-09-08
+    # measurement: cancelled at the old 120m cap while already deep in
+    # testutil.rs, the alphabetically last file). 5h leaves 2.4x headroom
+    # under GitHub's 6h hard job cap for suite growth.
+    timeout-minutes: 300
     steps:
       - uses: actions/checkout@v4
 

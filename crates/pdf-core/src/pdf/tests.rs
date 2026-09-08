@@ -501,6 +501,30 @@ fn owner_password_only_document_unlocks_and_compresses() {
 }
 
 #[test]
+fn luma_psnr_rejects_mismatched_and_empty_inputs() {
+    // Pins both guards in the shared PSNR helper: mismatched dimensions
+    // must yield None (the caller's `.expect("dimensions match")` relies on
+    // it), and an empty plane must never reach the mean (divide by zero).
+    let small = DynamicImage::ImageLuma8(image::GrayImage::new(4, 4));
+    let large = DynamicImage::ImageLuma8(image::GrayImage::new(8, 8));
+    assert_eq!(
+        luma_psnr_db(&small, &large),
+        None,
+        "mismatched dimensions must be rejected"
+    );
+    let empty = DynamicImage::ImageLuma8(image::GrayImage::default());
+    assert_eq!(
+        luma_psnr_db(&empty, &empty),
+        None,
+        "empty planes must be rejected"
+    );
+    assert!(
+        luma_psnr_db(&small, &small).is_some_and(|db| db.is_infinite()),
+        "identical images are infinite PSNR"
+    );
+}
+
+#[test]
 fn compress_round_trip_preserves_text_and_shrinks() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = fresh_fixture(dir.path());
