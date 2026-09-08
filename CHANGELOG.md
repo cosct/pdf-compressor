@@ -19,7 +19,8 @@
 - CMYK 门控双特性测试矩阵：设置默认值/显式退出、灰度/G4 隐式意图 × cms/feature-off 构建全组合钉断言（新增 `converts_cmyk_is_refused_without_cms_support`、`cmyk_with_partial_range_decode_stays_untouched`；三个彩色转码测试改为 cms 门控；"默认跳过"类测试改钉显式退出）。poppler 渲染保真门禁（≥25dB，实测 ≈54.6dB）继续通过
 - 存量配置迁移测试：v1 的 `Some(false)` 重置为缺省 / `Some(true)` 保留 / v2 的真实退出永不被迁移（preset-user-config 与 quick-profile 双侧，含无版本号文件的 serde 缺省路径）
 - 字节管道集成测试：压缩胜出（回报尺寸与字节一致、节省字节数/百分比精确到浮点、文本存活）、直通（字节恒等 + 标准警告通知 + 零节省字段）、加密分类（缺密码/空密码/错密码——空密码按缺密码分类钉死 `load_document_mem` 的过滤）
-- CLI 16 项单元测试（新增：cmyk 旗标解析优先级、目录递归展开、符号链接防环）；引擎 146 项（默认）/ 171 项（`jpx,cmyk-cms`）+ 桌面壳 9 项测试通过；workspace 与可选特性 Clippy `-D warnings` 通过；前端 65 项测试与构建通过；WIP 改动文件 rustfmt 清零（HEAD 基线本就干净）；`cargo mutants --in-diff` 漏杀清零（见验收补记）
+- CLI 16 项单元测试（新增：cmyk 旗标解析优先级、目录递归展开、符号链接防环）；引擎 147 项（默认）/ 172 项（`jpx,cmyk-cms`）+ 桌面壳 10 项测试通过；workspace 与可选特性 Clippy `-D warnings` 通过；前端 65 项测试与构建通过；WIP 改动文件 rustfmt 清零（HEAD 基线本就干净）
+- `cargo mutants --in-diff` 定向验证（diff 内高危函数 40 个变异体，与外部审查漏杀清单同口径）：初跑 34 杀 + 2 超时计杀 + 3 不可行 + **1 漏**——`save_and_build_response_with_renumber` 的 `original_size_bytes > 0` 守卫（u64 上 `>=` 恒真）；补零字节原始输入契约测试后复验该函数 16 个变异体 **15 杀 + 1 不可行，0 漏**
 - 手工冒烟：367KB 噪声夹具经管道模式压至 75KB（摘要/字节分流正确）；quick 目录递归命中嵌套 `.PDF`；互斥旗标报错路径逐一验证
 
 ## [0.7.1] - 2026-09-07

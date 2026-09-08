@@ -3790,6 +3790,42 @@ fn compress_never_writes_a_larger_output() {
     assert_eq!(fs::read(&path).expect("re-read original"), original_bytes);
 }
 
+#[test]
+fn guard_zero_byte_original_still_writes_the_serialization() {
+    // Pins the `original_size_bytes > 0` guard on the not-smaller check:
+    // "could not beat the original" is only meaningful against a strictly
+    // positive original. An empty original is unreachable through the file
+    // entry points (loading fails first), so this test pins the direct-call
+    // contract: the serialization is written and reported as a win with
+    // zero savings.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = fresh_fixture(dir.path());
+
+    let mut document = Document::load(&path).expect("load fixture");
+    document.prune_objects();
+    let mut stats = crate::pdf::compressor::CompressionStats::default();
+    let output_path = dir.path().join("zero-original.pdf");
+
+    let response = super::compressor::save_and_build_response(
+        &mut document,
+        &output_path,
+        0,
+        Instant::now(),
+        &maximum_settings(),
+        &mut stats,
+    )
+    .expect("response must be built");
+
+    assert!(response.output_was_smaller);
+    assert!(output_path.exists(), "the serialization must be written");
+    assert_eq!(response.saved_bytes, 0.0);
+    assert_eq!(response.savings_percent, 0.0);
+    assert!(!response
+        .notices
+        .iter()
+        .any(|notice| notice.code == "compress.warning.outputNotSmaller"));
+}
+
 // ---------------------------------------------------------------------------
 // Bytes pipeline (CLI stdin/stdout mode)
 // ---------------------------------------------------------------------------
