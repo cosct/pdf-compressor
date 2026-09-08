@@ -217,7 +217,7 @@ export async function existingPaths(paths: string[]): Promise<string[]> {
 
 function toPresetUserConfig(payload: PresetUserConfigPayload): PresetUserConfig {
   return {
-    version: payload.version ?? 1,
+    version: payload.version ?? 2,
     presets: { ...payload.presets },
   }
 }
@@ -225,7 +225,7 @@ function toPresetUserConfig(payload: PresetUserConfigPayload): PresetUserConfig 
 export async function loadPresetUserConfig(): Promise<PresetUserConfig> {
   if (!hasNativeCommands()) {
     return {
-      version: 1,
+      version: 2,
       presets: {},
     }
   }
@@ -266,7 +266,7 @@ let browserQuickProfile: QuickProfilePayload | null = null
 
 export async function getQuickProfile(): Promise<QuickProfilePayload> {
   if (!hasNativeCommands()) {
-    return browserQuickProfile ?? { version: 1 }
+    return browserQuickProfile ?? { version: 2 }
   }
 
   return unwrap(commands.loadQuickProfile())

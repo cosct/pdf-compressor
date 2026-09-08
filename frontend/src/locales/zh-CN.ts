@@ -114,7 +114,7 @@ const zhCN = {
     subsetFontsHint: '把内嵌字体裁剪为文档实际使用的字形，减小体积',
     cmykConversion: '转换 CMYK 图片',
     cmykConversionHint:
-      '把 CMYK 图片转为 RGB 后重编码（默认关闭：朴素转换与专业色彩管理查看器相比略有偏色；灰度模式不受此开关影响，照常转换）',
+      '把 CMYK 图片转为 RGB 后重编码，色彩与专业色彩管理查看器一致（默认开启；灰度模式始终转换）',
     outputDir: '输出目录',
     outputDirDefault: '与原文件相同',
     outputDirBrowse: '选择',

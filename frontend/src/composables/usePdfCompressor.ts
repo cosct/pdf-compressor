@@ -106,7 +106,7 @@ export function normalizeSettings(settings: CompressionSettings): CompressionSet
     grayscale: settings.grayscale ?? false,
     bilevelCodec: settings.bilevelCodec === 'ccitt-g4' ? 'ccitt-g4' : 'jpeg',
     subsetFonts: settings.subsetFonts ?? false,
-    cmykConversion: settings.cmykConversion ?? false,
+    cmykConversion: settings.cmykConversion ?? true,
     outputDir: settings.outputDir?.trim() ? settings.outputDir.trim() : null,
     targetFileSizeMb: normalizeTargetFileSizeMb(settings.targetFileSizeMb),
   }
