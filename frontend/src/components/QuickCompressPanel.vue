@@ -79,7 +79,7 @@ function presetParams(preset: PresetMode) {
       grayscale: profile.grayscale ?? false,
       bilevelCodec: profile.bilevelCodec === 'ccitt-g4' ? ('ccitt-g4' as const) : ('jpeg' as const),
       subsetFonts: profile.subsetFonts ?? false,
-      cmykConversion: profile.cmykConversion ?? false,
+      cmykConversion: profile.cmykConversion ?? true,
     }
   }
   const base = ENGINE_FALLBACK[preset === 'custom' ? 'maximum' : preset]
@@ -95,7 +95,7 @@ function presetParams(preset: PresetMode) {
     grayscale: false,
     bilevelCodec: 'jpeg' as const,
     subsetFonts: preset === 'maximum' || preset === 'custom',
-    cmykConversion: false,
+    cmykConversion: true,
   }
 }
 
@@ -245,7 +245,9 @@ function selectMode(next: QuickMode) {
 function buildPayload(): QuickProfilePayload {
   const preset = mode.value === 'target' ? lastPresetMode.value : mode.value
   return {
-    version: 1,
+    // v2: cmykConversion opt-outs are genuine from this version on (v1
+    // values get the default-flip migration on load).
+    version: 2,
     preset,
     ...presetParams(preset),
     grayscale: colorMode.value !== 'color',
@@ -275,8 +277,8 @@ async function reset() {
   saving.value = true
   try {
     // An all-empty profile makes the CLI fall back to the engine defaults.
-    await saveQuickProfile({ version: 1 })
-    applyProfile({ version: 1 })
+    await saveQuickProfile({ version: 2 })
+    applyProfile({ version: 2 })
     emit('saved')
   } catch (error) {
     emit('error', error)

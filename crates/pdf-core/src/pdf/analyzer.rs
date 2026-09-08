@@ -480,9 +480,10 @@ fn summarize_image_records(
             recommended_edge,
             skip_policy,
             // The analyzer runs settings-free, so it mirrors the default
-            // (CMYK conversion off): declared-CMYK images are excluded from
-            // the savings estimate, erring low rather than promising shifts.
-            record.cmyk_declared,
+            // conversion stance of the build: `cmyk-cms` builds convert
+            // CMYK by default (actionable), feature-off builds refuse the
+            // conversion (excluded — err low rather than promise shifts).
+            record.cmyk_declared && !cfg!(feature = "cmyk-cms"),
         ) {
             stats.actionable_image_bytes += record.bytes;
         }
@@ -821,6 +822,44 @@ mod tests {
         assert!(numbers.windows(2).all(|pair| pair[0] < pair[1]));
         assert_eq!(*numbers.first().unwrap(), 1);
         assert_eq!(*numbers.last().unwrap(), 500);
+    }
+
+    #[test]
+    fn summarize_image_records_splits_actionable_bytes() {
+        let record = |bytes: u64, edge: u32, cmyk: bool, supported: bool| ImageStreamRecord {
+            bytes,
+            longest_edge: Some(edge),
+            // Well above TRIVIAL_PIXEL_COUNT so only the codec/CMYK gates
+            // decide actionability.
+            pixels: Some(u64::from(edge) * 900),
+            is_jpeg: false,
+            codec_supported: supported,
+            cmyk_declared: cmyk,
+        };
+        // One plainly actionable image, one unsupported codec, one
+        // declared-CMYK image whose actionability follows the build.
+        let records = vec![
+            record(10_000, 2000, false, true),
+            record(5_000, 2000, false, false),
+            record(7_000, 2000, true, true),
+        ];
+        let stats = summarize_image_records(records, 1800);
+
+        assert_eq!(stats.image_object_count, 3);
+        assert_eq!(stats.total_image_bytes, 22_000);
+        assert_eq!(stats.unsupported_codec_count, 1);
+        assert_eq!(stats.longest_edges, vec![2000, 2000, 2000]);
+        if cfg!(feature = "cmyk-cms") {
+            assert_eq!(
+                stats.actionable_image_bytes, 17_000,
+                "cms builds convert declared CMYK by default"
+            );
+        } else {
+            assert_eq!(
+                stats.actionable_image_bytes, 10_000,
+                "feature-off builds exclude declared CMYK from the estimate"
+            );
+        }
     }
 
     #[test]

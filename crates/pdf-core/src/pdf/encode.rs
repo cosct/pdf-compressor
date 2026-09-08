@@ -11,8 +11,8 @@ use lopdf::{dictionary, Object, Stream};
 
 use super::colorspace::{DecodeColorSpace, ImageColorSpaceInfo};
 use super::ensure_not_cancelled;
-use super::settings::CompressionSettings;
 use super::optional_integer;
+use super::settings::CompressionSettings;
 use crate::error::AppError;
 
 /// JPEG streams smaller than this are skipped outright — the decode+encode
@@ -47,10 +47,7 @@ impl SkipPolicy {
     /// small-stream skip is lifted when a conversion was requested (grayscale
     /// or CCITT G4 — the user asked for a conversion, not just shrinkage) or
     /// the document is image-heavy (many small scans add up).
-    pub fn for_document(
-        image_object_count: usize,
-        conversion_requested: bool,
-    ) -> Self {
+    pub fn for_document(image_object_count: usize, conversion_requested: bool) -> Self {
         let lifted = conversion_requested || image_object_count >= SMALL_SKIP_LIFT_IMAGE_OBJECTS;
         Self {
             small_stream_bytes: if lifted {
@@ -95,9 +92,7 @@ const DETAIL_SAMPLE_STRIDE: u32 = 4;
 fn plane_detail_score(plane: &DynamicImage) -> f32 {
     use image::Pixel as _;
 
-    let luma_at = |x: u32, y: u32| -> u32 {
-        u32::from(plane.get_pixel(x, y).to_luma().0[0])
-    };
+    let luma_at = |x: u32, y: u32| -> u32 { u32::from(plane.get_pixel(x, y).to_luma().0[0]) };
 
     let (width, height) = plane.dimensions();
     if width < 2 || height < 2 {
@@ -229,14 +224,9 @@ impl ImageSearchCache {
             .bitmap
             .as_ref()
             .map_or(0, |plane| plane.as_bytes().len() as u64);
-        let smask_gray = self
-            .smask_gray
-            .as_ref()
-            .map_or(0, |plane| {
-                plane
-                    .as_ref()
-                    .map_or(0, |gray| gray.as_raw().len() as u64)
-            });
+        let smask_gray = self.smask_gray.as_ref().map_or(0, |plane| {
+            plane.as_ref().map_or(0, |gray| gray.as_raw().len() as u64)
+        });
         let smask_product = self
             .smask_product
             .as_ref()
@@ -455,17 +445,25 @@ pub(super) fn optimize_image_stream(
         return Ok(ImageOptimization::Skipped { reason });
     }
 
-    // --- CMYK fidelity gate (opt-in conversion) ---
+    // --- CMYK fidelity gate ---
     // With `cmyk-cms` the conversion matches how color-managed renderers
-    // interpret CMYK (see `cmyk`), but feature-off builds still carry the
-    // naive ink-subtraction formula, so CMYK images stay untouched unless
-    // the user opted in (or requested a grayscale/G4 collapse, where the
-    // deviation is far below the intent's own loss). Applies to every
-    // path: raw and indexed planes here, CMYK JPEGs, and 4-component JPX
-    // codestreams at decode.
+    // interpret CMYK (see `cmyk`), so it runs by default and an explicit
+    // opt-out keeps the image untouched. Feature-off builds refuse the
+    // color conversion even when the setting asks for it — the naive
+    // ink-subtraction formula shifts colors ≈7.6 dB off the renderers, and
+    // untouched beats wrong-colored. Grayscale/G4 collapse intents convert
+    // in every build (the deviation is far below the intent's own loss).
+    // Applies to every path: raw and indexed planes here, CMYK JPEGs, and
+    // 4-component JPX codestreams at decode.
     if declares_cmyk(stream, color_space) && !settings.converts_cmyk() {
+        let reason = if cfg!(feature = "cmyk-cms") {
+            "CMYK image kept untouched (the CMYK conversion setting is off)"
+        } else {
+            "CMYK image kept untouched (this build lacks the calibrated CMYK \
+             conversion; rebuild with the cmyk-cms feature to enable it)"
+        };
         return Ok(ImageOptimization::Skipped {
-            reason: "CMYK image kept untouched (enable the CMYK conversion setting to re-encode)".into(),
+            reason: reason.into(),
         });
     }
 
@@ -557,19 +555,17 @@ pub(super) fn optimize_image_stream(
             // so the rebuilt stream (which never carries /Decode) renders
             // identically. CMYK mappings were applied inside the decode, on
             // the samples before their conversion.
-            let decoded =
-                decoded.and_then(|image| match plane_decodes.as_deref() {
-                    Some(decodes) => apply_channel_decodes(image, decodes),
-                    None => Ok(image),
-                });
+            let decoded = decoded.and_then(|image| match plane_decodes.as_deref() {
+                Some(decodes) => apply_channel_decodes(image, decodes),
+                None => Ok(image),
+            });
             match decoded {
                 Ok(image) => {
                     // Grayscale conversion happens before resizing: it is
                     // constant across probe rounds (so the cached plane stays
                     // gray) and resizing a single-channel plane is a third of
                     // the work of RGB. G4 output implies luma as well.
-                    let wants_luma =
-                        settings.grayscale || settings.bilevel_codec.uses_ccitt();
+                    let wants_luma = settings.grayscale || settings.bilevel_codec.uses_ccitt();
                     if wants_luma && image.color().has_color() {
                         DynamicImage::ImageLuma8(image.to_luma8())
                     } else {
@@ -628,8 +624,7 @@ pub(super) fn optimize_image_stream(
     };
 
     #[cfg(feature = "ccitt")]
-    let bilevel_g4 =
-        settings.bilevel_codec.uses_ccitt() && plane_is_near_bilevel(&plane);
+    let bilevel_g4 = settings.bilevel_codec.uses_ccitt() && plane_is_near_bilevel(&plane);
     #[cfg(not(feature = "ccitt"))]
     let bilevel_g4 = false;
 
@@ -928,10 +923,7 @@ fn skip_recompression_reason(
 /// CMYK-based Indexed) or by a plain `/DeviceCMYK` name (covers CMYK JPEGs
 /// and raw planes alike)? Shared by the compressor gate and the analyzer's
 /// actionable mirror.
-pub(crate) fn declares_cmyk(
-    stream: &Stream,
-    color_space: Option<&ImageColorSpaceInfo>,
-) -> bool {
+pub(crate) fn declares_cmyk(stream: &Stream, color_space: Option<&ImageColorSpaceInfo>) -> bool {
     if let Some(info) = color_space {
         return match &info.decode {
             DecodeColorSpace::Cmyk { .. } => true,
@@ -968,15 +960,14 @@ fn raw_recompression_skip_reason(
             && stream.dict.get(b"Decode").is_ok()
         {
             return Some(
-                "CMYK image carries a /Decode mapping that the RGB conversion would misread"
-                    .into(),
+                "CMYK image carries a /Decode mapping that the RGB conversion would misread".into(),
             );
         }
         let supported_depth = match info.decode {
             DecodeColorSpace::Indexed { .. } => bits_per_component == 4 || bits_per_component == 8,
-            DecodeColorSpace::Gray
-            | DecodeColorSpace::Rgb
-            | DecodeColorSpace::Cmyk { .. } => bits_per_component == 8,
+            DecodeColorSpace::Gray | DecodeColorSpace::Rgb | DecodeColorSpace::Cmyk { .. } => {
+                bits_per_component == 8
+            }
         };
         return (!supported_depth).then(|| {
             format!("resolved color space needs unsupported bit depth: {bits_per_component}")
@@ -1124,7 +1115,9 @@ pub(super) fn decode_raw_image_stream(
             DecodeColorSpace::Rgb => image::RgbImage::from_raw(width, height, decoded)
                 .map(DynamicImage::ImageRgb8)
                 .ok_or_else(|| {
-                    AppError::PdfBuild("RGB image bytes did not match the declared dimensions.".into())
+                    AppError::PdfBuild(
+                        "RGB image bytes did not match the declared dimensions.".into(),
+                    )
                 }),
             DecodeColorSpace::Cmyk { icc } => cmyk_bytes_to_rgb_image(
                 width,
@@ -1146,22 +1139,17 @@ pub(super) fn decode_raw_image_stream(
                 let bits = optional_integer(stream, b"BitsPerComponent").unwrap_or(8);
                 let indices =
                     super::colorspace::unpack_indices(&decoded, bits, width).ok_or_else(|| {
-                    AppError::PdfBuild(
-                        "Indexed image uses an unsupported index bit depth.".into(),
-                    )
-                })?;
-                let pixels = super::colorspace::expand_indexed_samples(
-                    &indices,
-                    *base_channels,
-                    palette,
-                )
-                .map_err(AppError::PdfBuild)?;
+                        AppError::PdfBuild(
+                            "Indexed image uses an unsupported index bit depth.".into(),
+                        )
+                    })?;
+                let pixels =
+                    super::colorspace::expand_indexed_samples(&indices, *base_channels, palette)
+                        .map_err(AppError::PdfBuild)?;
                 if channels == 1 {
-                    image::GrayImage::from_raw(width, height, pixels)
-                        .map(DynamicImage::ImageLuma8)
+                    image::GrayImage::from_raw(width, height, pixels).map(DynamicImage::ImageLuma8)
                 } else if channels == 3 {
-                    image::RgbImage::from_raw(width, height, pixels)
-                        .map(DynamicImage::ImageRgb8)
+                    image::RgbImage::from_raw(width, height, pixels).map(DynamicImage::ImageRgb8)
                 } else {
                     cmyk_bytes_to_rgb_image(
                         width,
@@ -1218,9 +1206,7 @@ pub(super) fn cmyk_bytes_to_rgb_image(
     image::RgbImage::from_raw(width, height, pixels)
         .map(DynamicImage::ImageRgb8)
         .ok_or_else(|| {
-            AppError::PdfBuild(
-                "CMYK image bytes did not match the declared dimensions.".into(),
-            )
+            AppError::PdfBuild("CMYK image bytes did not match the declared dimensions.".into())
         })
 }
 
@@ -1254,9 +1240,7 @@ fn decode_jpeg_stream(
         // The calibrated path did not (or cannot) run; the generic fold
         // would consume remapped CMYK samples unnormalized — keep the
         // original stream instead.
-        return Err(
-            "CMYK JPEG with a /Decode mapping needs the calibrated decode path".into(),
-        );
+        return Err("CMYK JPEG with a /Decode mapping needs the calibrated decode path".into());
     }
     #[cfg(not(feature = "cmyk-cms"))]
     let _ = color_space;
@@ -1559,23 +1543,20 @@ fn decode_ccitt_g3_eol(
     let mut pixels = vec![0u8; width as usize * height as usize];
     let mut written_rows = 0usize;
 
-    let decoded = fax::decoder::decode_g3(
-        stream.content.iter().copied(),
-        |transitions| {
-            if written_rows < height as usize {
-                // `decode_g3` does NOT swap the fax Color labels the way the
-                // G4 path does (see `write_transitions_row`): a fax-White run
-                // is a true white run here, so the flag is flipped to undo
-                // the G4-oriented polarity inside the row expander.
-                write_transitions_row(
-                    &mut pixels[written_rows * width as usize..][..width as usize],
-                    transitions,
-                    !black_is_1,
-                );
-                written_rows += 1;
-            }
-        },
-    );
+    let decoded = fax::decoder::decode_g3(stream.content.iter().copied(), |transitions| {
+        if written_rows < height as usize {
+            // `decode_g3` does NOT swap the fax Color labels the way the
+            // G4 path does (see `write_transitions_row`): a fax-White run
+            // is a true white run here, so the flag is flipped to undo
+            // the G4-oriented polarity inside the row expander.
+            write_transitions_row(
+                &mut pixels[written_rows * width as usize..][..width as usize],
+                transitions,
+                !black_is_1,
+            );
+            written_rows += 1;
+        }
+    });
 
     if written_rows < height as usize && decoded.is_none() {
         return Err(AppError::PdfBuild(
@@ -1694,10 +1675,7 @@ fn decode_ccitt_g3_plain(
 /// terminating code (< 64) lands. `None` on stream exhaustion or an invalid
 /// code — both leave the image undecodable.
 #[cfg(feature = "ccitt")]
-fn read_markup_run(
-    reader: &mut impl fax::BitReader,
-    color: fax::Color,
-) -> Option<u32> {
+fn read_markup_run(reader: &mut impl fax::BitReader, color: fax::Color) -> Option<u32> {
     let mut sum: u32 = 0;
     loop {
         let markup = match color {
@@ -1728,8 +1706,13 @@ fn encode_gray_as_ccitt_g4(plane: &image::GrayImage) -> Vec<u8> {
     for row in plane.as_raw().chunks(width as usize) {
         // VecWriter's error type is `Infallible` — there is nothing to handle.
         let _ = encoder.encode_line(
-            row.iter()
-                .map(|&luma| if luma >= 128 { fax::Color::Black } else { fax::Color::White }),
+            row.iter().map(|&luma| {
+                if luma >= 128 {
+                    fax::Color::Black
+                } else {
+                    fax::Color::White
+                }
+            }),
             width,
         );
     }
@@ -1884,8 +1867,7 @@ fn stream_filter_info(stream: &Stream) -> StreamFilterInfo {
     // two-dimensional coding, aligned EOL rows, flate mixes — stays
     // unsupported.
     #[cfg(feature = "ccitt")]
-    let ccitt_decodable =
-        info.has_ccitt && names.len() == 1 && ccitt_input_shape(stream).is_some();
+    let ccitt_decodable = info.has_ccitt && names.len() == 1 && ccitt_input_shape(stream).is_some();
     #[cfg(not(feature = "ccitt"))]
     let ccitt_decodable = false;
     if info.has_ccitt && !ccitt_decodable {
@@ -2121,7 +2103,10 @@ mod tests {
 
         let flat_score = plane_detail_score(&flat);
         let detailed_score = plane_detail_score(&detailed);
-        assert!(flat_score < DETAIL_LOW_SCORE, "gradient is flat: {flat_score}");
+        assert!(
+            flat_score < DETAIL_LOW_SCORE,
+            "gradient is flat: {flat_score}"
+        );
         assert!(
             detailed_score > DETAIL_HIGH_SCORE,
             "noisy fixture is detailed: {detailed_score}"
@@ -2135,7 +2120,11 @@ mod tests {
         let flat = DynamicImage::ImageRgb8(gradient_rgb_image(400, 300, FIXTURE_SEED_FOR_TESTS));
         let detailed = DynamicImage::ImageRgb8(fixture_rgb_image(400, 300));
 
-        assert_eq!(search_round_quality(72, &flat), 60, "flat planes get the penalty");
+        assert_eq!(
+            search_round_quality(72, &flat),
+            60,
+            "flat planes get the penalty"
+        );
         assert_eq!(
             search_round_quality(72, &detailed),
             78,
@@ -2150,8 +2139,8 @@ mod tests {
     /// 12..=20 / cols 20..=44), generated with the battle-tested `tiffcp
     /// -c g4`. T.4 polarity: 0 bits are white.
     const REFERENCE_G4_BAR: &[u8] = &[
-        0x26, 0xA0, 0x78, 0x6F, 0xFF, 0xFF, 0xFC, 0x86, 0x85, 0x7F, 0xFF, 0xFF, 0xFF, 0xF8,
-        0xFF, 0xFF, 0xFC, 0x00, 0x40, 0x04,
+        0x26, 0xA0, 0x78, 0x6F, 0xFF, 0xFF, 0xFC, 0x86, 0x85, 0x7F, 0xFF, 0xFF, 0xFF, 0xF8, 0xFF,
+        0xFF, 0xFC, 0x00, 0x40, 0x04,
     ];
 
     fn reference_bar_plane() -> image::GrayImage {

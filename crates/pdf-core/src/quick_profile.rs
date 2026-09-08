@@ -48,12 +48,18 @@ pub fn read_quick_profile_at(config_path: &Path) -> Result<QuickProfilePayload, 
         return Ok(QuickProfilePayload::default());
     }
 
-    serde_json::from_str::<QuickProfilePayload>(&contents).map_err(|error| {
+    let mut profile = serde_json::from_str::<QuickProfilePayload>(&contents).map_err(|error| {
         AppError::Config(format!(
             "Failed to parse quick profile at {}: {error}",
             config_path.display()
         ))
-    })
+    })?;
+    // v1→v2: the 0.7.x CMYK default-off state must not pin the upgraded
+    // install to the old default (see `migrate_cmyk_default_flip`). The
+    // stamped version persists on the next save.
+    profile.version =
+        crate::models::migrate_cmyk_default_flip(profile.version, &mut profile.cmyk_conversion);
+    Ok(profile)
 }
 
 /// Serialize, write to a temp file, sync, then atomically rename over the
@@ -121,8 +127,66 @@ mod tests {
         let path = dir.path().join(QUICK_PROFILE_FILE_NAME);
 
         let profile = read_quick_profile_at(&path).expect("read missing");
-        assert_eq!(profile.version, 1);
+        assert_eq!(profile.version, 2);
         assert!(profile.preset.is_none());
+    }
+
+    #[test]
+    fn v1_profile_migrates_the_cmyk_default_flip() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(QUICK_PROFILE_FILE_NAME);
+
+        // A 0.7.x profile persisted cmykConversion verbatim — false was the
+        // old default state (indistinguishable from untouched) and must not
+        // pin the upgrade to it; true was a deliberate opt-in and survives.
+        fs::write(
+            &path,
+            r#"{ "version": 1, "cmykConversion": false, "grayscale": true }"#,
+        )
+        .expect("write v1");
+        let migrated = read_quick_profile_at(&path).expect("read v1");
+        assert_eq!(
+            migrated.version, 2,
+            "v1 profiles are stamped to v2 in memory"
+        );
+        assert_eq!(
+            migrated.cmyk_conversion, None,
+            "old default-off resets to unset"
+        );
+        assert_eq!(migrated.grayscale, Some(true), "unrelated fields survive");
+
+        fs::write(
+            &path,
+            r#"{ "version": 1, "cmykConversion": true, "grayscale": true }"#,
+        )
+        .expect("write v1 opt-in");
+        let opt_in = read_quick_profile_at(&path).expect("read v1 opt-in");
+        assert_eq!(opt_in.version, 2);
+        assert_eq!(
+            opt_in.cmyk_conversion,
+            Some(true),
+            "deliberate opt-ins survive"
+        );
+    }
+
+    #[test]
+    fn v2_profile_keeps_genuine_opt_outs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(QUICK_PROFILE_FILE_NAME);
+
+        // A false written by 0.8.0+ is a genuine opt-out: no migration may
+        // touch it (otherwise every re-save could silently re-enable it).
+        fs::write(&path, r#"{ "version": 2, "cmykConversion": false }"#).expect("write v2");
+        let profile = read_quick_profile_at(&path).expect("read v2");
+        assert_eq!(profile.version, 2);
+        assert_eq!(profile.cmyk_conversion, Some(false));
+
+        // Files without a version field read as current (serde default 2),
+        // so hand-written minimal profiles never re-run the migration.
+        fs::write(&path, r#"{ "grayscale": true }"#).expect("write versionless");
+        let versionless = read_quick_profile_at(&path).expect("read versionless");
+        assert_eq!(versionless.version, 2);
+        assert_eq!(versionless.cmyk_conversion, None);
     }
 
     #[test]
@@ -144,7 +208,10 @@ mod tests {
         assert_eq!(loaded.preset.as_deref(), Some("maximum"));
         assert_eq!(loaded.image_quality, Some(55));
         assert_eq!(loaded.target_size_bytes, Some(5 * 1024 * 1024));
-        assert!(!path.with_extension("tmp").exists(), "temp file never lingers");
+        assert!(
+            !path.with_extension("tmp").exists(),
+            "temp file never lingers"
+        );
     }
 
     #[test]
@@ -169,7 +236,9 @@ mod tests {
         let overrides = quick_profile_overrides(&profile);
         assert_eq!(overrides.preset.as_deref(), Some("conservative"));
         assert_eq!(overrides.grayscale, Some(true));
-        assert!(overrides.bilevel_codec.is_some_and(|codec| codec.uses_ccitt()));
+        assert!(overrides
+            .bilevel_codec
+            .is_some_and(|codec| codec.uses_ccitt()));
         assert_eq!(overrides.subset_fonts, Some(true));
         assert!(overrides.output_dir.is_none());
     }

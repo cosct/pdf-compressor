@@ -23,7 +23,9 @@ import type {
 } from '../types/pdf'
 import { clampImageQuality, clampMaxImageSizePercent } from '../utils/compressionSettings'
 
-const CONFIG_VERSION = 1
+// v2 (0.8.0): cmykConversion default flip — v1 configs get the load-time
+// migration in the backend; configs created here are current-generation.
+const CONFIG_VERSION = 2
 
 const PRESET_KEYS: CompressionPreset[] = ['conservative', 'balanced', 'maximum', 'custom']
 
@@ -50,7 +52,7 @@ const LEGACY_PROFILE_FALLBACK = {
   grayscale: false,
   bilevelCodec: 'jpeg',
   subsetFonts: false,
-  cmykConversion: false,
+  cmykConversion: true,
 } as const
 
 function sanitizePresetProfile(

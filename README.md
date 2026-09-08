@@ -35,7 +35,9 @@ A local-first desktop app that makes PDFs smaller — without breaking what matt
 pdf-compressor-cli analyze input.pdf
 pdf-compressor-cli compress input.pdf --preset maximum
 pdf-compressor-cli compress input.pdf --target-size 5MB   # fit under a budget
+pdf-compressor-cli compress - --stdout < in.pdf > out.pdf # pipe mode (stdin→stdout)
 pdf-compressor-cli quick input.pdf --bilevel g4            # headless + notification
+pdf-compressor-cli quick scans/ --no-notify                # recurse a directory
 ```
 
 ## Documentation

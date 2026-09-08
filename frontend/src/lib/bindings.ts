@@ -206,9 +206,9 @@ export type CompressionSettingsPayload = {
 	/**  Shrink embedded Type0/CIDFontType2 TrueType fonts to the used glyphs. */
 	subsetFonts?: boolean | null,
 	/**
-	 *  Convert CMYK images to RGB for re-encoding (opt-in, default off —
-	 *  the naive ink-subtraction conversion shifts colors measurably
-	 *  against color-managed renderers; grayscale requests imply it).
+	 *  Convert CMYK images to RGB for re-encoding (default on since 0.8.0;
+	 *  builds without the `cmyk-cms` feature keep CMYK untouched instead of
+	 *  converting naively — grayscale requests still imply the collapse).
 	 */
 	cmykConversion?: boolean | null,
 	outputDir: string | null,
@@ -224,7 +224,7 @@ export type PresetProfilePayload = {
 	/**  `"jpeg"` (default) or `"ccitt-g4"` for near-bilevel scans. */
 	bilevelCodec?: string | null,
 	subsetFonts?: boolean | null,
-	/**  Opt-in CMYK→RGB conversion for re-encoding (default off). */
+	/**  CMYK→RGB conversion for re-encoding (default on since 0.8.0). */
 	cmykConversion?: boolean | null,
 };
 
@@ -257,7 +257,7 @@ export type QuickProfilePayload = {
 	/**  `"jpeg"` (default) or `"ccitt-g4"` for near-bilevel scans. */
 	bilevelCodec?: string | null,
 	subsetFonts?: boolean | null,
-	/**  Opt-in CMYK→RGB conversion for re-encoding (default off). */
+	/**  CMYK→RGB conversion for re-encoding (default on since 0.8.0). */
 	cmykConversion?: boolean | null,
 	/**  Byte budget for target-size mode; absent means plain compression. */
 	targetSizeBytes?: number | null,

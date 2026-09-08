@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "0.7.1"
+version = "0.8.0"
 description = "A selective PDF compression desktop app built with Tauri and Rust"
 authors = ["cosct"]
 license = "MIT"
@@ -26,9 +26,10 @@ custom-protocol = ["tauri/custom-protocol"]
 # stay pure Rust; release artifacts and the AUR package enable it.
 jpx = ["pdf-core/jpx"]
 # Real CMYK→sRGB color management (vendored lcms2 + raw CMYK planes from
-# zune-jpeg). Off by default like `jpx`; release artifacts enable it so the
-# opt-in `cmyk_conversion` setting converts through the embedded ICC profile
-# instead of the naive ink-subtraction formula.
+# zune-jpeg). Off by default like `jpx`; release artifacts enable it — since
+# 0.8.0 the default-on `cmyk_conversion` setting converts through the
+# embedded ICC profile, while builds without this feature keep CMYK images
+# untouched instead of converting naively.
 cmyk-cms = ["pdf-core/cmyk-cms"]
 
 [build-dependencies]

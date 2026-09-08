@@ -84,7 +84,7 @@ function makeSettings(overrides: Partial<CompressionSettings> = {}): Compression
     grayscale: false,
     bilevelCodec: 'jpeg',
     subsetFonts: false,
-    cmykConversion: false,
+    cmykConversion: true,
     outputDir: null,
     targetFileSizeMb: null,
     ...overrides,
@@ -184,6 +184,18 @@ describe('normalizeSettings', () => {
         targetFileSizeMb: 0,
       }).targetFileSizeMb,
     ).toBeNull()
+  })
+
+  it('coerces a missing cmykConversion field (legacy persisted queue) to true', () => {
+    const restored = normalizeSettings({
+      ...makeSettings({ cmykConversion: undefined as unknown as boolean }),
+    })
+    // 0.7.x queues must adopt the new default...
+    expect(restored.cmykConversion).toBe(true)
+
+    expect(normalizeSettings(makeSettings()).cmykConversion).toBe(true)
+    // ...while an explicit opt-out survives normalization.
+    expect(normalizeSettings(makeSettings({ cmykConversion: false })).cmykConversion).toBe(false)
   })
 
   it('coerces a missing grayscale field (legacy persisted queue) to false', () => {

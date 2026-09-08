@@ -23,8 +23,8 @@ use lopdf::{Dictionary, Document, Object, ObjectId, Stream};
 use super::encode::{optimize_image_stream, pixel_count, ImageOptimization, SkipPolicy};
 use super::ensure_not_cancelled;
 use super::settings::CompressionSettings;
-use super::workers::{run_worker_pool, CHANNEL_BUFFER_MULTIPLIER};
 use super::validate_input_path;
+use super::workers::{run_worker_pool, CHANNEL_BUFFER_MULTIPLIER};
 use crate::{
     error::AppError,
     models::{BackendNotice, CompressionResponse, ProgressUpdate},
@@ -51,7 +51,9 @@ const MIN_COMPRESSIBLE_STREAM_BYTES: usize = 64;
 
 /// Inputs above this size are rejected: the whole document is loaded into
 /// memory, so a hard ceiling protects against OOM on multi-gigabyte files.
-const MAX_INPUT_BYTES: u64 = 2 * 1024 * 1024 * 1024; // 2 GiB
+/// Public so the CLI can bound its stdin read *before* buffering an
+/// oversized stream (the friendly pre-check, not an after-the-fact abort).
+pub const MAX_INPUT_BYTES: u64 = 2 * 1024 * 1024 * 1024; // 2 GiB
 
 /// Maximum number of per-image skip notices included in the response.
 /// Additional skips are counted but not individually reported.
@@ -223,6 +225,134 @@ where
     Ok(response)
 }
 
+/// Outcome of a bytes-pipeline compression: the bytes to hand downstream
+/// plus the standard response (with `output_path` set to `"<stdout>"`).
+#[derive(Debug)]
+pub struct BytesCompressionOutcome {
+    /// The compressed PDF when it beat the input; the original bytes
+    /// otherwise — a pipe must not run dry just because compression could
+    /// not improve the file (`response.output_was_smaller` says which).
+    pub bytes: Vec<u8>,
+    pub response: CompressionResponse,
+}
+
+/// In-memory pipeline twin of [`compress_pdf_with_progress`]: bytes in,
+/// bytes out, no filesystem. The CLI's stdin/stdout mode runs on this; the
+/// "never write a larger output" rule becomes "pass the original bytes
+/// through" so downstream pipe stages always receive a valid PDF. Encrypted
+/// inputs, cancellation, and progress reporting follow the file path's
+/// semantics exactly.
+///
+/// Takes the input by value so the passthrough can return the caller's
+/// buffer instead of copying it (peak memory stays at input + serialized
+/// instead of a third full copy). Callers that need the original afterwards
+/// clone before handing it over.
+/// 内存管道版压缩入口 — CLI 的 stdin/stdout 模式；"不写更大输出"在管道里
+/// 语义化为"直通原始字节"；按值收输入以便直通时零拷贝归还。
+pub fn compress_pdf_bytes_with_progress<F>(
+    input: Vec<u8>,
+    password: Option<&str>,
+    settings: CompressionSettings,
+    cancel_flag: Arc<AtomicBool>,
+    mut report_progress: F,
+) -> Result<BytesCompressionOutcome, AppError>
+where
+    F: FnMut(ProgressUpdate),
+{
+    const PIPE_TASK_ID: &str = "<stdin>";
+
+    let started_at = Instant::now();
+    ensure_not_cancelled(&cancel_flag, PIPE_TASK_ID)?;
+    report_progress(ProgressUpdate::new("compressing", 5.0));
+
+    ensure_input_size_supported(input.len() as u64)?;
+
+    // --- Load the PDF document (same password/encryption taxonomy) ---
+    ensure_not_cancelled(&cancel_flag, PIPE_TASK_ID)?;
+    let password_attempted = password.is_some_and(|value| !value.is_empty());
+    let mut document = super::load_document_mem(&input, password)?;
+    let mut stats = CompressionStats {
+        decrypted_with_empty_password: super::ensure_not_encrypted(
+            &mut document,
+            password_attempted,
+        )?,
+        ..CompressionStats::default()
+    };
+
+    report_progress(ProgressUpdate::new(
+        "compressing",
+        OBJECT_SCAN_PROGRESS_START,
+    ));
+
+    // --- Core optimization pass ---
+    optimize_document(
+        &mut document,
+        &settings,
+        &cancel_flag,
+        &mut stats,
+        &mut report_progress,
+        PIPE_TASK_ID,
+    )?;
+
+    report_progress(ProgressUpdate::new("writing", 92.0));
+    ensure_not_cancelled(&cancel_flag, PIPE_TASK_ID)?;
+
+    // --- Serialize & build the response ---
+    let original_size_bytes = input.len() as u64;
+    let (serialized, mut response) = serialize_and_count(
+        &mut document,
+        original_size_bytes,
+        started_at,
+        &settings,
+        &mut stats,
+        true,
+    )?;
+    response.output_path = "<stdout>".to_string();
+
+    // --- Never hand downstream a result that did not improve the input ---
+    // The file path writes nothing; a pipe passes the original bytes
+    // through instead, so the receiving stage always gets a valid PDF.
+    let outcome = if serialized.len() as u64 >= original_size_bytes {
+        response.notices.insert(
+            0,
+            BackendNotice::new(
+                "compress.warning.outputNotSmaller",
+                "warning",
+                format!(
+                    "Optimization could not beat the original {original_size_bytes} bytes \
+                     (best result: {} bytes); the original bytes were passed through.",
+                    serialized.len()
+                ),
+            )
+            .with_value("originalBytes", original_size_bytes.to_string())
+            .with_value("bestBytes", serialized.len().to_string()),
+        );
+        BytesCompressionOutcome {
+            bytes: input,
+            response,
+        }
+    } else {
+        let saved_bytes = original_size_bytes - serialized.len() as u64;
+        response.saved_bytes = saved_bytes as f64;
+        response.savings_percent = (saved_bytes as f32 / original_size_bytes as f32) * 100.0;
+        response.output_was_smaller = true;
+        BytesCompressionOutcome {
+            bytes: serialized,
+            response,
+        }
+    };
+
+    report_progress(
+        ProgressUpdate::new("done", 100.0).with_message(BackendNotice::new(
+            "compress.progress.done",
+            "success",
+            "Compression finished.",
+        )),
+    );
+
+    Ok(outcome)
+}
+
 /// Serialize the optimized document, compute result metrics, and assemble the
 /// response with the standard notices. Shared by the single-pass compressor
 /// and the target-size search materialization.
@@ -259,6 +389,70 @@ pub(crate) fn save_and_build_response_with_renumber(
     stats: &mut CompressionStats,
     renumber_objects: bool,
 ) -> Result<CompressionResponse, AppError> {
+    let (serialized, counters) = serialize_and_count(
+        document,
+        original_size_bytes,
+        started_at,
+        settings,
+        stats,
+        renumber_objects,
+    )?;
+    let compressed_size_bytes = serialized.len() as u64;
+
+    // --- Never leave an output that did not improve on the original ---
+    // Serialize-then-compare (instead of write-then-stat) so a non-improving
+    // result never touches the disk; a file left behind by an earlier
+    // optimistic round of the target-size search is removed.
+    if original_size_bytes > 0 && compressed_size_bytes >= original_size_bytes {
+        let _ = fs::remove_file(output_path);
+        let mut response = counters;
+        response.notices.insert(
+            0,
+            BackendNotice::new(
+                "compress.warning.outputNotSmaller",
+                "warning",
+                format!(
+                    "Optimization could not beat the original {original_size_bytes} bytes \
+                     (best result: {compressed_size_bytes} bytes); nothing was written."
+                ),
+            )
+            .with_value("originalBytes", original_size_bytes.to_string())
+            .with_value("bestBytes", compressed_size_bytes.to_string()),
+        );
+        return Ok(response);
+    }
+
+    fs::write(output_path, &serialized)?;
+
+    let saved_bytes = original_size_bytes.saturating_sub(compressed_size_bytes);
+    let savings_percent = if original_size_bytes == 0 {
+        0.0
+    } else {
+        (saved_bytes as f32 / original_size_bytes as f32) * 100.0
+    };
+
+    Ok(CompressionResponse {
+        output_path: output_path.to_string_lossy().to_string(),
+        saved_bytes: saved_bytes as f64,
+        savings_percent,
+        output_was_smaller: true,
+        ..counters
+    })
+}
+
+/// Serialize the optimized document and assemble the notice stack and
+/// counter skeleton shared by both write paths (file output and the bytes
+/// pipeline), so their reports stay identical.
+/// 序列化优化后的文档并组装两条写出路径共享的通知与计数骨架。
+#[allow(clippy::too_many_arguments)]
+fn serialize_and_count(
+    document: &mut Document,
+    original_size_bytes: u64,
+    started_at: Instant,
+    settings: &CompressionSettings,
+    stats: &mut CompressionStats,
+    renumber_objects: bool,
+) -> Result<(Vec<u8>, CompressionResponse), AppError> {
     // --- Cleanup & serialize in memory ---
     document.prune_objects();
     if renumber_objects {
@@ -361,7 +555,11 @@ pub(crate) fn save_and_build_response_with_renumber(
                 format!(
                     "Removed {} unused font/XObject resource entr{} left behind by earlier edits.",
                     stats.resources_removed,
-                    if stats.resources_removed == 1 { "y" } else { "ies" }
+                    if stats.resources_removed == 1 {
+                        "y"
+                    } else {
+                        "ies"
+                    }
                 ),
             )
             .with_value("count", stats.resources_removed.to_string()),
@@ -407,45 +605,7 @@ pub(crate) fn save_and_build_response_with_renumber(
         notices: std::mem::take(&mut stats.notices),
     };
 
-    // --- Never leave an output that did not improve on the original ---
-    // Serialize-then-compare (instead of write-then-stat) so a non-improving
-    // result never touches the disk; a file left behind by an earlier
-    // optimistic round of the target-size search is removed.
-    if original_size_bytes > 0 && compressed_size_bytes >= original_size_bytes {
-        let _ = fs::remove_file(output_path);
-        let mut response = counters;
-        response.notices.insert(
-            0,
-            BackendNotice::new(
-                "compress.warning.outputNotSmaller",
-                "warning",
-                format!(
-                    "Optimization could not beat the original {original_size_bytes} bytes \
-                     (best result: {compressed_size_bytes} bytes); nothing was written."
-                ),
-            )
-            .with_value("originalBytes", original_size_bytes.to_string())
-            .with_value("bestBytes", compressed_size_bytes.to_string()),
-        );
-        return Ok(response);
-    }
-
-    fs::write(output_path, &serialized)?;
-
-    let saved_bytes = original_size_bytes.saturating_sub(compressed_size_bytes);
-    let savings_percent = if original_size_bytes == 0 {
-        0.0
-    } else {
-        (saved_bytes as f32 / original_size_bytes as f32) * 100.0
-    };
-
-    Ok(CompressionResponse {
-        output_path: output_path.to_string_lossy().to_string(),
-        saved_bytes: saved_bytes as f64,
-        savings_percent,
-        output_was_smaller: true,
-        ..counters
-    })
+    Ok((serialized, counters))
 }
 
 // ---------------------------------------------------------------------------
@@ -544,8 +704,7 @@ where
     if settings.subset_fonts {
         #[cfg(feature = "subset-fonts")]
         {
-            let outcome =
-                super::fonts::subset_embedded_fonts(document, cancel_flag, task_id)?;
+            let outcome = super::fonts::subset_embedded_fonts(document, cancel_flag, task_id)?;
             stats.fonts_subsetted += outcome.fonts_subsetted;
             stats.font_bytes_saved += outcome.bytes_saved;
         }
@@ -658,8 +817,7 @@ where
         let Some(Object::Stream(stream)) = document.objects.get(&image_id) else {
             continue;
         };
-        if let Some(info) =
-            super::colorspace::resolve_image_color_space(document, stream, &aliases)
+        if let Some(info) = super::colorspace::resolve_image_color_space(document, stream, &aliases)
         {
             color_space_by_image.insert(image_id, info);
         }
@@ -825,19 +983,16 @@ fn objects_equivalent(left: &Object, right: &Object) -> bool {
 
 fn dictionaries_equivalent(left: &Dictionary, right: &Dictionary) -> bool {
     left.len() == right.len()
-        && left.iter().all(|(key, value)| {
-            matches!(right.get(key), Ok(other) if objects_equivalent(value, other))
-        })
+        && left.iter().all(
+            |(key, value)| matches!(right.get(key), Ok(other) if objects_equivalent(value, other)),
+        )
 }
 
 /// Rewrite `Reference(duplicate)` to `Reference(canonical)` inside every
 /// object (and the trailer), then delete the duplicate objects outright —
 /// unlike the earlier stub approach (an indirect object whose body is a
 /// reference), in-edge rewriting leaves only spec-clean objects behind.
-fn dedupe_apply_replacements(
-    document: &mut Document,
-    replacements: &HashMap<ObjectId, ObjectId>,
-) {
+fn dedupe_apply_replacements(document: &mut Document, replacements: &HashMap<ObjectId, ObjectId>) {
     fn rewrite_object(object: &mut Object, mapping: &HashMap<ObjectId, ObjectId>) {
         match object {
             Object::Array(items) => {

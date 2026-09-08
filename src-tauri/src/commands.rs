@@ -164,12 +164,22 @@ fn read_preset_config_at(config_path: &Path) -> Result<PresetUserConfigPayload, 
         return Ok(PresetUserConfigPayload::default());
     }
 
-    serde_json::from_str::<PresetUserConfigPayload>(&contents).map_err(|error| {
-        AppError::Config(format!(
-            "Failed to parse preset config at {}: {error}",
-            config_path.display()
-        ))
-    })
+    let mut config =
+        serde_json::from_str::<PresetUserConfigPayload>(&contents).map_err(|error| {
+            AppError::Config(format!(
+                "Failed to parse preset config at {}: {error}",
+                config_path.display()
+            ))
+        })?;
+    // v1→v2: the 0.7.x CMYK default-off state must not pin the upgraded
+    // install to the old default. The per-profile call shares the engine's
+    // migration rule; only the boolean matters per entry, the stamped
+    // version is tracked by the container.
+    for profile in config.presets.values_mut() {
+        let _ = pdf_core::migrate_cmyk_default_flip(config.version, &mut profile.cmyk_conversion);
+    }
+    config.version = config.version.max(2);
+    Ok(config)
 }
 
 fn write_preset_user_config(config: &PresetUserConfigPayload) -> Result<(), AppError> {
@@ -265,8 +275,15 @@ pub fn clear_preset_user_config() -> Result<(), AppErrorPayload> {
 #[tauri::command]
 #[specta::specta]
 pub fn load_quick_profile() -> Result<QuickProfilePayload, AppErrorPayload> {
-    let path = pdf_core::quick_profile::default_quick_profile_path().map_err(AppErrorPayload::from)?;
-    pdf_core::quick_profile::read_quick_profile_at(&path).map_err(AppErrorPayload::from)
+    let path =
+        pdf_core::quick_profile::default_quick_profile_path().map_err(AppErrorPayload::from)?;
+    load_quick_profile_at(&path).map_err(AppErrorPayload::from)
+}
+
+/// Path-parameterized core of [`load_quick_profile`] so tests can point it
+/// at a temp directory (same discipline as the preset config commands).
+fn load_quick_profile_at(path: &Path) -> Result<QuickProfilePayload, AppError> {
+    pdf_core::quick_profile::read_quick_profile_at(path)
 }
 
 #[tauri::command]
@@ -274,10 +291,19 @@ pub fn load_quick_profile() -> Result<QuickProfilePayload, AppErrorPayload> {
 pub fn save_quick_profile(
     profile: QuickProfilePayload,
 ) -> Result<QuickProfilePayload, AppErrorPayload> {
-    let path = pdf_core::quick_profile::default_quick_profile_path().map_err(AppErrorPayload::from)?;
-    pdf_core::quick_profile::write_quick_profile_at(&path, &profile)
-        .map_err(AppErrorPayload::from)?;
-    Ok(profile)
+    let path =
+        pdf_core::quick_profile::default_quick_profile_path().map_err(AppErrorPayload::from)?;
+    save_quick_profile_at(&path, profile).map_err(AppErrorPayload::from)
+}
+
+/// Path-parameterized core of [`save_quick_profile`]. Writes and echoes the
+/// saved profile back so the GUI can adopt any load-time normalization.
+fn save_quick_profile_at(
+    path: &Path,
+    profile: QuickProfilePayload,
+) -> Result<QuickProfilePayload, AppError> {
+    pdf_core::quick_profile::write_quick_profile_at(path, &profile)?;
+    pdf_core::quick_profile::read_quick_profile_at(path)
 }
 
 #[tauri::command]
@@ -636,6 +662,96 @@ mod tests {
         fs::write(&config_path, b"{ not json").expect("write");
 
         assert!(read_preset_config_at(&config_path).is_err());
+    }
+
+    #[test]
+    fn preset_config_v1_migrates_the_cmyk_default_flip() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_path = dir.path().join("preset-user-config.json");
+
+        // A 0.7.x config persisted cmykConversion verbatim: false was the
+        // old default state and must not pin the upgrade to it; true was a
+        // deliberate opt-in and survives. Unrelated fields ride along.
+        fs::write(
+            &config_path,
+            r#"{
+                "version": 1,
+                "presets": {
+                    "balanced":  { "imageQuality": 72, "maxImageSizePercent": 80, "cmykConversion": false },
+                    "maximum":   { "imageQuality": 46, "maxImageSizePercent": 52, "cmykConversion": true },
+                    "custom":    { "imageQuality": 60, "maxImageSizePercent": 70 }
+                }
+            }"#,
+        )
+        .expect("write v1 config");
+
+        let migrated = read_preset_config_at(&config_path).expect("read v1");
+        assert_eq!(
+            migrated.version, 2,
+            "v1 configs are stamped to v2 in memory"
+        );
+        assert_eq!(
+            migrated.presets["balanced"].cmyk_conversion, None,
+            "old default-off resets to unset (new default applies)"
+        );
+        assert_eq!(
+            migrated.presets["maximum"].cmyk_conversion,
+            Some(true),
+            "deliberate opt-ins survive"
+        );
+        assert_eq!(
+            migrated.presets["custom"].cmyk_conversion, None,
+            "untouched entries stay unset"
+        );
+        assert_eq!(migrated.presets["balanced"].image_quality, 72);
+    }
+
+    #[test]
+    fn preset_config_v2_keeps_genuine_opt_outs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_path = dir.path().join("preset-user-config.json");
+
+        // A false written by 0.8.0+ is a genuine opt-out and must survive
+        // every future load untouched.
+        fs::write(
+            &config_path,
+            r#"{ "version": 2, "presets": { "balanced": { "imageQuality": 72, "maxImageSizePercent": 80, "cmykConversion": false } } }"#,
+        )
+        .expect("write v2 config");
+
+        let loaded = read_preset_config_at(&config_path).expect("read v2");
+        assert_eq!(loaded.version, 2);
+        assert_eq!(loaded.presets["balanced"].cmyk_conversion, Some(false));
+    }
+
+    #[test]
+    fn quick_profile_commands_roundtrip_through_their_cores() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("quick-profile.json");
+
+        // Missing file reads as the (migrated, current-version) default.
+        let missing = load_quick_profile_at(&path).expect("load missing");
+        assert_eq!(missing.version, 2);
+        assert_eq!(missing.cmyk_conversion, None);
+
+        // A save echoes back the persisted (load-normalized) profile, not
+        // the caller's object — the GUI adopts the same view the CLI's
+        // next read will see.
+        let saved = save_quick_profile_at(
+            &path,
+            QuickProfilePayload {
+                preset: Some("maximum".to_string()),
+                grayscale: Some(true),
+                ..Default::default()
+            },
+        )
+        .expect("save");
+        assert_eq!(saved.preset.as_deref(), Some("maximum"));
+        assert_eq!(saved.grayscale, Some(true));
+        assert_eq!(saved.version, 2);
+
+        let reloaded = load_quick_profile_at(&path).expect("reload");
+        assert_eq!(reloaded.preset.as_deref(), Some("maximum"));
     }
 
     #[test]

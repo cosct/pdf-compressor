@@ -35,7 +35,9 @@
 pdf-compressor-cli analyze input.pdf
 pdf-compressor-cli compress input.pdf --preset maximum
 pdf-compressor-cli compress input.pdf --target-size 5MB   # 压到预算以内
+pdf-compressor-cli compress - --stdout < in.pdf > out.pdf # 管道模式（stdin→stdout）
 pdf-compressor-cli quick input.pdf --bilevel g4            # 后台压缩 + 桌面通知
+pdf-compressor-cli quick 扫描件/ --no-notify                # 递归整个目录
 ```
 
 ## 文档

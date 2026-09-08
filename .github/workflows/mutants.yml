@@ -17,6 +17,13 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      # The strict renderer gates (0.7.1+) panic instead of skipping when
+      # pdftoppm is missing, and cargo-mutants runs the same test suite as
+      # its baseline — without poppler the baseline itself fails and no
+      # report is produced.
+      - name: Install poppler for the renderer gates
+        run: sudo apt-get install -y poppler-utils
+
       - uses: taiki-e/install-action@cargo-mutants
 
       - uses: Swatinem/rust-cache@v2

@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# Full local quality gate — runs exactly what CI runs (ci.yml), so a green
-# local run means a green push. 本地完整质量门：步骤与 CI 一一对应。
+# Full local quality gate — the per-push subset of CI (ci.yml): a green run
+# means a green push for the build/test/lint legs. CI additionally runs the
+# MSRV checks, scheduled fuzzing, and dependency audits, which are not
+# mirrored here. 本地完整质量门：覆盖 CI 的构建/测试/lint 腿；MSRV/模糊
+# 测试/依赖审计仅在 CI 执行。
 #
 # Usage: scripts/quality-gate.sh
 set -euo pipefail

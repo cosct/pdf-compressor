@@ -23,7 +23,10 @@ mod workers;
 mod tests;
 
 pub use analyzer::analyze_pdf_with_progress;
-pub use compressor::compress_pdf_with_progress;
+pub use compressor::{
+    compress_pdf_bytes_with_progress, compress_pdf_with_progress, BytesCompressionOutcome,
+    MAX_INPUT_BYTES,
+};
 pub use settings::{BilevelCodec, CompressionSettings, CompressionSettingsOverrides};
 pub use target_size::compress_pdf_to_target_size;
 
@@ -85,8 +88,29 @@ pub(crate) fn load_document(
         Some(password) => Document::load_with_password(input_path, password),
         None => Document::load(input_path),
     };
-    // lopdf fails the load outright on a wrong password (unlike the no-password
-    // path, which returns an unparsed shell document).
+    classify_document_load(loaded)
+}
+
+/// In-memory twin of [`load_document`] for the bytes pipeline (CLI
+/// stdin/stdout mode): same password semantics, same error classification.
+pub(crate) fn load_document_mem(
+    bytes: &[u8],
+    password: Option<&str>,
+) -> Result<Document, AppError> {
+    let password = password.filter(|value| !value.is_empty());
+    let loaded = match &password {
+        Some(password) => {
+            Document::load_mem_with_options(bytes, lopdf::LoadOptions::with_password(password))
+        }
+        None => Document::load_mem(bytes),
+    };
+    classify_document_load(loaded)
+}
+
+/// Map a lopdf load result onto the engine's error taxonomy. lopdf fails the
+/// load outright on a wrong password (unlike the no-password path, which
+/// returns an unparsed shell document).
+fn classify_document_load(loaded: Result<Document, lopdf::Error>) -> Result<Document, AppError> {
     if matches!(loaded, Err(lopdf::Error::InvalidPassword)) {
         return Err(AppError::WrongPassword);
     }

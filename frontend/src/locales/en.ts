@@ -116,7 +116,7 @@ const en = {
     subsetFontsHint: 'Trim embedded fonts to the glyphs the document actually uses',
     cmykConversion: 'Convert CMYK images',
     cmykConversionHint:
-      'Re-encode CMYK images as RGB (off by default: the conversion shifts colors slightly compared to color-managed viewers; grayscale mode converts anyway)',
+      'Re-encode CMYK images as RGB, matching how color-managed viewers render them (on by default; grayscale mode always converts)',
     outputDir: 'Output directory',
     outputDirDefault: 'Same as source',
     outputDirBrowse: 'Browse',

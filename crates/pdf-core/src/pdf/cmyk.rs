@@ -16,15 +16,20 @@
 //!   16-term SWOP approximation matrix that poppler and PDFium both use for
 //!   device CMYK; an embedded profile that Little CMS cannot parse falls
 //!   back to the same matrix, mirroring poppler's unusable-profile path.
-//! - Without the feature the naive ink-subtraction formula stays (0.6.0
-//!   behavior), still guarded by the opt-in `cmyk_conversion` setting.
+//!   This is the default conversion since 0.8.0.
+//! - Without the feature the naive ink-subtraction formula survives only as
+//!   the feed for luma-collapse requests (grayscale / G4, where the
+//!   CMYK→gray deviation is far below the intent's own loss); the color
+//!   conversion is refused at the settings gate
+//!   (`CompressionSettings::converts_cmyk`) — untouched beats
+//!   wrong-colored.
 //!
 //! [`decode_dct_cmyk_stream`] 补上 DCT 路径的最后一块：zune-jpeg 默认把
 //! Adobe CMYK/YCCK 在解码器内部折成 RGB（朴素公式），feature 开启时改为
 //! 取出原始 4 分量平面再走上面的校准转换。
 
 // ---------------------------------------------------------------------------
-// Naive ink-subtraction (feature-off path, unchanged since 0.6.0)
+// Naive ink-subtraction (luma-collapse feed in feature-off builds)
 // ---------------------------------------------------------------------------
 
 /// Convert one 8-bit CMYK sample to RGB with the ink-subtraction formula
@@ -34,15 +39,14 @@
 /// found inside some DCT streams, which the JPEG path resolves before the
 /// plane gets here.
 ///
-/// Compiled out of non-test `cmyk-cms` builds, where the calibrated paths
-/// fully replace it (tests keep it around as the naive baseline to diff
-/// against).
+/// In feature-off builds this formula only feeds grayscale/G4 collapse
+/// requests (`converts_cmyk` refuses the color path); tests keep it around
+/// as the naive baseline to diff against.
 #[cfg(any(not(feature = "cmyk-cms"), test))]
 pub(crate) fn cmyk_to_rgb(cyan: u8, magenta: u8, yellow: u8, key: u8) -> [u8; 3] {
     let white = 255u16 - u16::from(key);
-    let subtract = |channel: u8| -> u8 {
-        (((255u16 - u16::from(channel)) * white + 127) / 255) as u8
-    };
+    let subtract =
+        |channel: u8| -> u8 { (((255u16 - u16::from(channel)) * white + 127) / 255) as u8 };
     [subtract(cyan), subtract(magenta), subtract(yellow)]
 }
 
@@ -279,7 +283,11 @@ pub(super) fn decode_dct_cmyk_stream(
 #[cfg(feature = "cmyk-cms")]
 fn ycck_to_cmyk(samples: &mut [u8]) {
     for pixel in samples.as_chunks_mut::<4>().0 {
-        let (y, cb, cr) = (f64::from(pixel[0]), f64::from(pixel[1]), f64::from(pixel[2]));
+        let (y, cb, cr) = (
+            f64::from(pixel[0]),
+            f64::from(pixel[1]),
+            f64::from(pixel[2]),
+        );
         let red = y + 1.402 * (cr - 128.0);
         let green = y - 0.344_136 * (cb - 128.0) - 0.714_136 * (cr - 128.0);
         let blue = y + 1.772 * (cb - 128.0);
@@ -340,7 +348,12 @@ mod tests {
         let samples: Vec<u8> = (0..64u8).collect();
         let rgb = cmyk_samples_to_rgb(&samples, None);
         assert_eq!(rgb.len(), 48);
-        for (sample, pixel) in samples.as_chunks::<4>().0.iter().zip(rgb.as_chunks::<3>().0) {
+        for (sample, pixel) in samples
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(rgb.as_chunks::<3>().0)
+        {
             assert_eq!(
                 pixel,
                 &cmyk_to_rgb(sample[0], sample[1], sample[2], sample[3])
@@ -428,11 +441,16 @@ mod tests {
             let cms = cmyk_samples_to_rgb(&samples, Some(profile));
             let naive = calibrated::naive_samples_to_rgb(&samples);
             let matrix = calibrated::samples_to_rgb(&samples);
-            let max_delta = |a: &[u8], b: &[u8]| {
-                a.iter().zip(b).map(|(x, y)| x.abs_diff(*y)).max().unwrap()
-            };
-            assert!(max_delta(&cms, &naive) > 8, "CMS output equals naive formula");
-            assert!(max_delta(&cms, &matrix) > 2, "CMS output equals the bare matrix");
+            let max_delta =
+                |a: &[u8], b: &[u8]| a.iter().zip(b).map(|(x, y)| x.abs_diff(*y)).max().unwrap();
+            assert!(
+                max_delta(&cms, &naive) > 8,
+                "CMS output equals naive formula"
+            );
+            assert!(
+                max_delta(&cms, &matrix) > 2,
+                "CMS output equals the bare matrix"
+            );
 
             // Deterministic across calls (transform cache hit path).
             assert_eq!(cms, cmyk_samples_to_rgb(&samples, Some(profile)));

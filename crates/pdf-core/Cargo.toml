@@ -1,6 +1,6 @@
 [package]
 name = "pdf-core"
-version = "0.7.1"
+version = "0.8.0"
 description = "Pure-Rust PDF analysis and selective compression engine"
 authors = ["cosct"]
 license = "MIT"
@@ -46,8 +46,9 @@ jpx = ["dep:jpeg2k"]
 # runtime liblcms2 to ship). Profile-less CMYK (DeviceCMYK, JPX, CMYK-based
 # Indexed) converts through the calibrated SWOP matrix poppler/PDFium use.
 # Default OFF keeps default builds free of the C dependency and the lcms2
-# crate's newer MSRV; with the feature off, the opt-in `cmyk_conversion`
-# setting keeps the 0.6.0 naive ink-subtraction behavior. The direct
+# crate's newer MSRV; with the feature off, the color conversion is refused
+# at the settings gate (untouched beats wrong-colored) and only grayscale/G4
+# collapse requests still convert through the naive formula. The direct
 # `zune-jpeg` dependency (already in the tree via `image`) fetches raw CMYK
 # planes out of DCT streams instead of the decoder's own RGB conversion.
 cmyk-cms = ["dep:lcms2", "dep:zune-jpeg"]

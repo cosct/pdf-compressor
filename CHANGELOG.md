@@ -2,6 +2,27 @@
 
 本项目的所有显著变更都记录在此文件中。格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。日期为提交日期。
 
+## [0.8.0] - 2026-09-07
+
+### 变更
+
+- **CMYK 转换默认开启（0.7.0 路线 P0 收口，"翻转条件"兑现）**：release/AUR 产物已稳定携带 `cmyk-cms` 真转换一个版本（0.7.x），`cmyk_conversion` 默认翻转为**开**——GUI 三预设（`preset-defaults.json` 显式携带）、遗留预设回落、`normalizeSettings` 的 0.7.x 队列矫正、quick profile 回落链全部同步；CLI 新增 `--no-convert-cmyk` 退出旗标（`--convert-cmyk` 保留幂等，两者并给时退出优先）。feature-off（源码默认）构建按既定原则**拒绝彩色转换而非朴素转换**（宁可不压不偏色）：`converts_cmyk()` 只放行灰度/G4 亮度坍缩意图（朴素减色公式仅作其输入），CMYK 图保持原样、跳过原因指明需以 `cmyk-cms` 特性重建；分析器预估按构建镜像新默认（cms 构建把声明 CMYK 计为可压缩，feature-off 构建维持排除，宁低勿高）
+- **存量配置 v1→v2 迁移（随上项）**：0.7.x 的 GUI/CLI 把 `cmykConversion: false`（当时的默认态）显式持久化进 preset-user-config.json / quick-profile.json——读取时对 v1 配置把 `Some(false)` 重置为缺省（新默认生效），`Some(true)` 视为主动开启保留；0.8.0+ 写入的 `Some(false)` 是真实退出，v2 配置永不迁移。前端版本常量与 quick profile 写入同步升至 v2，避免新写的退出被误迁移
+
+### 新增
+
+- **CLI 管道模式（stdin/stdout，0.7.0 路线 P3 落地）**：`pdf-compressor-cli compress - --stdout [OPTIONS] < in.pdf > out.pdf`——PDF 字节写 stdout、JSON 摘要走 stderr（stdout 保持纯 PDF 流）；压不赢原文件时**直通原始字节**（下游管道永不断流，退出码仍 0），与 `--output-dir`/`--target-size` 互斥并有明确报错；写出失败（管道关闭等）按失败退出。stdin 经 `Take(MAX_INPUT_BYTES + 1)` 限量读取——超限流在缓冲完整内容之前即以 `InputTooLarge` 拒绝（与文件路径同款的友好预检，`MAX_INPUT_BYTES` 公开为引擎契约）。引擎新增 `compress_pdf_bytes_with_progress` 字节入口：`load_document_mem` 与文件路径共用同一密码/加密错误分类、同一优化管线与进度回调，写出路径共享的通知与计数组装抽为 `serialize_and_count`（文件路径与字节路径报告保持一致），"不写更大输出"在管道里语义化为"直通原始字节"；入口按值接收输入、直通时原缓冲归还（峰值内存 2× 输入而非 3×，`BytesCompressionOutcome` 携带结果字节与标准响应）
+- **quick 目录递归（同 P3）**：目录参数递归收集 `.pdf`（扩展名不分大小写），跳过符号链接目录（`file_type` 不跟随，遍历不可能成环），逐目录排序保证确定性；空参数与"目录里没有 PDF"分别明确报错
+
+### 验收
+
+- CMYK 门控双特性测试矩阵：设置默认值/显式退出、灰度/G4 隐式意图 × cms/feature-off 构建全组合钉断言（新增 `converts_cmyk_is_refused_without_cms_support`、`cmyk_with_partial_range_decode_stays_untouched`；三个彩色转码测试改为 cms 门控；"默认跳过"类测试改钉显式退出）。poppler 渲染保真门禁（≥25dB，实测 ≈54.6dB）继续通过
+- 存量配置迁移测试：v1 的 `Some(false)` 重置为缺省 / `Some(true)` 保留 / v2 的真实退出永不被迁移（preset-user-config 与 quick-profile 双侧，含无版本号文件的 serde 缺省路径）
+- 字节管道集成测试：压缩胜出（回报尺寸与字节一致、节省字节数/百分比精确到浮点、文本存活）、直通（字节恒等 + 标准警告通知 + 零节省字段）、加密分类（缺密码/空密码/错密码——空密码按缺密码分类钉死 `load_document_mem` 的过滤）
+- CLI 16 项单元测试（新增：cmyk 旗标解析优先级、目录递归展开、符号链接防环）；引擎 147 项（默认）/ 172 项（`jpx,cmyk-cms`）+ 桌面壳 10 项测试通过；workspace 与可选特性 Clippy `-D warnings` 通过；前端 65 项测试与构建通过；WIP 改动文件 rustfmt 清零（HEAD 基线本就干净）
+- `cargo mutants --in-diff` 定向验证（diff 内高危函数 40 个变异体，与外部审查漏杀清单同口径）：初跑 34 杀 + 2 超时计杀 + 3 不可行 + **1 漏**——`save_and_build_response_with_renumber` 的 `original_size_bytes > 0` 守卫（u64 上 `>=` 恒真）；补零字节原始输入契约测试后复验该函数 16 个变异体 **15 杀 + 1 不可行，0 漏**
+- 手工冒烟：367KB 噪声夹具经管道模式压至 75KB（摘要/字节分流正确）；quick 目录递归命中嵌套 `.PDF`；互斥旗标报错路径逐一验证
+
 ## [0.7.1] - 2026-09-07
 
 ### 修复（2026-09-07 二次外部审查，6 项引擎 P1 + 3 项交付 P2）

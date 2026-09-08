@@ -8,11 +8,11 @@
 
 | 层 | 命令 | 覆盖内容 | 规模 |
 | --- | --- | --- | --- |
-| 前端单元 | `pnpm test` | 队列/调度/取消（usePdfCompressor）、通知计时、设置面板、右键菜单键盘可达性、App 装配冒烟、en/zh-CN key 树一致性 | 64 项 |
+| 前端单元 | `pnpm test` | 队列/调度/取消（usePdfCompressor）、通知计时、设置面板、右键菜单键盘可达性、App 装配冒烟、en/zh-CN key 树一致性 | 65 项 |
 | 引擎单元 | `cargo test -p pdf-core --lib` | 设置夹紧与优先级、分析推荐公式、JPEG 头解析、worker 数量界（含 JPX/CMYK 内存估计）、resize 行为、目标大小搜索调度数学、CCITT 编解码 round-trip、CMYK 减色转换、细节分层 | 92+ 项 |
-| 引擎集成 | `cargo test -p pdf-core --lib`（`pdf/tests.rs`） | 真实 lopdf 构造的 PDF 端到端：往返保文本且缩减、去重、SMask、灰度、G3/G4 转码、CMYK（ICC/N=4、DeviceCMYK、CMYK 基 Indexed、/Decode 拒绝）、目标大小、加密拒绝/owner 解锁/密码解锁、大纲保留、96 用例变异语料不 panic、不写更大输出、多图目标搜索内存峰值护栏 | （含于上） |
+| 引擎集成 | `cargo test -p pdf-core --lib`（`pdf/tests.rs`） | 真实 lopdf 构造的 PDF 端到端：往返保文本且缩减、去重、SMask、灰度、G3/G4 转码、CMYK（ICC/N=4、DeviceCMYK、CMYK 基 Indexed、部分区间 /Decode 拒绝、feature-off 拒绝彩色转换）、目标大小、加密拒绝/owner 解锁/密码解锁、大纲保留、96 用例变异语料不 panic、不写更大输出、多图目标搜索内存峰值护栏、字节管道（stdin/stdout：压缩胜出/直通/加密分类） | （含于上） |
 | 引擎集成（jpx） | `cargo test -p pdf-core --features jpx` | 上面全部 + JPX 码流（J2K 裸流/JP2 容器）转码 JPEG、双级 JPX 转 G4、字典不一致/混合链保持原样、目标大小搜索覆盖新编解码 | （feature 门控） |
-| CLI 单元 | `cargo test -p pdf-core --bin pdf-compressor-cli` | 参数解析（`parse_size`/`flag_value`/`split_quick_inputs`）、通知文案双语 | 8 项 |
+| CLI 单元 | `cargo test -p pdf-core --bin pdf-compressor-cli` | 参数解析（`parse_size`/`flag_value`/`split_quick_inputs`、cmyk 开/关旗标）、目录递归展开（大小写扩展名、排序、符号链接防环）、通知文案双语 | 16 项 |
 | 桌面壳单元 | `cargo test -p app --lib` | 任务注册表、输出路径白名单、预设配置原子读写 | 7 项 |
 | Bindings | `cargo test --workspace` | 由 Rust 签名再生成 `frontend/src/lib/bindings.ts`——**命令签名变更后必须运行并提交** | 1 项 |
 | 基准 | `cargo bench -p pdf-core` | 全管线各预设、编码器对比（jpeg-encoder vs image crate） | criterion |

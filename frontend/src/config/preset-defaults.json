@@ -7,7 +7,8 @@
     "stripMetadata": false,
     "grayscale": false,
     "bilevelCodec": "jpeg",
-    "subsetFonts": false
+    "subsetFonts": false,
+    "cmykConversion": true
   },
   "balanced": {
     "imageQuality": 60,
@@ -17,7 +18,8 @@
     "stripMetadata": true,
     "grayscale": false,
     "bilevelCodec": "jpeg",
-    "subsetFonts": false
+    "subsetFonts": false,
+    "cmykConversion": true
   },
   "maximum": {
     "imageQuality": 46,
@@ -27,6 +29,7 @@
     "stripMetadata": true,
     "grayscale": false,
     "bilevelCodec": "jpeg",
-    "subsetFonts": true
+    "subsetFonts": true,
+    "cmykConversion": true
   }
 }
