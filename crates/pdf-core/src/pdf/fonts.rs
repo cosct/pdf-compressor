@@ -116,7 +116,10 @@ pub(crate) fn subset_embedded_fonts(
     // --- Phase 3: subset per font file (candidates may share one program) ---
     let mut files: HashMap<ObjectId, Vec<ObjectId>> = HashMap::new();
     for (type0_id, candidate) in &candidates {
-        files.entry(candidate.font_file_id).or_default().push(*type0_id);
+        files
+            .entry(candidate.font_file_id)
+            .or_default()
+            .push(*type0_id);
     }
     let consumers = font_file_consumers(document);
 
@@ -131,9 +134,10 @@ pub(crate) fn subset_embedded_fonts(
             .filter_map(|id| candidates.get(id))
             .map(|candidate| candidate.descendant_id)
             .collect();
-        if consumers.get(&font_file_id).is_some_and(|ids| {
-            ids.iter().any(|id| !candidate_descendants.contains(id))
-        }) {
+        if consumers
+            .get(&font_file_id)
+            .is_some_and(|ids| ids.iter().any(|id| !candidate_descendants.contains(id)))
+        {
             continue;
         }
 
@@ -283,8 +287,7 @@ fn index_candidates(document: &Document) -> HashMap<ObjectId, Type0Candidate> {
         let Object::Dictionary(font_dict) = object else {
             continue;
         };
-        if !matches!(font_dict.get(b"Type"), Ok(Object::Name(kind)) if kind.as_slice() == b"Font")
-        {
+        if !matches!(font_dict.get(b"Type"), Ok(Object::Name(kind)) if kind.as_slice() == b"Font") {
             continue;
         }
         if !matches!(font_dict.get(b"Subtype"), Ok(Object::Name(kind)) if kind.as_slice() == b"Type0")
@@ -347,11 +350,10 @@ fn index_candidates(document: &Document) -> HashMap<ObjectId, Type0Candidate> {
             // CID-keyed CFF (a CIDFontType0 with a SID-keyed or exotic
             // program is out of shape and skips).
             b"CIDFontType0" => {
-                let font_file_id =
-                    match font_file_key(document, descendant, b"FontFile3") {
-                        Some(id) => id,
-                        None => continue,
-                    };
+                let font_file_id = match font_file_key(document, descendant, b"FontFile3") {
+                    Some(id) => id,
+                    None => continue,
+                };
                 let Some(Object::Stream(font_file)) = document.objects.get(&font_file_id) else {
                     continue;
                 };
@@ -398,7 +400,10 @@ fn font_file_key(document: &Document, descendant: &Dictionary, key: &[u8]) -> Op
 fn cff_mapping(font_file: &Stream) -> Option<CidMapping> {
     let subtype = match font_file.dict.get(b"Subtype") {
         Ok(Object::Name(subtype))
-            if matches!(subtype.as_slice(), b"CIDFontType0C" | b"Type1C" | b"OpenType") =>
+            if matches!(
+                subtype.as_slice(),
+                b"CIDFontType0C" | b"Type1C" | b"OpenType"
+            ) =>
         {
             subtype.clone()
         }
@@ -460,8 +465,7 @@ fn font_file_consumers(document: &Document) -> HashMap<ObjectId, Vec<ObjectId>> 
         let Object::Dictionary(font_dict) = object else {
             continue;
         };
-        if !matches!(font_dict.get(b"Type"), Ok(Object::Name(kind)) if kind.as_slice() == b"Font")
-        {
+        if !matches!(font_dict.get(b"Type"), Ok(Object::Name(kind)) if kind.as_slice() == b"Font") {
             continue;
         }
         if matches!(font_dict.get(b"Subtype"), Ok(Object::Name(kind)) if kind.as_slice() == b"Type0")
@@ -475,12 +479,14 @@ fn font_file_consumers(document: &Document) -> HashMap<ObjectId, Vec<ObjectId>> 
             else {
                 continue;
             };
-            let Some(Object::Dictionary(descendant)) = document.objects.get(&descendant_id)
-            else {
+            let Some(Object::Dictionary(descendant)) = document.objects.get(&descendant_id) else {
                 continue;
             };
             if let Some(font_file_id) = font_file_of(document, descendant) {
-                consumers.entry(font_file_id).or_default().push(descendant_id);
+                consumers
+                    .entry(font_file_id)
+                    .or_default()
+                    .push(descendant_id);
             }
         } else if let Some(font_file_id) = font_file_of(document, font_dict) {
             // Simple (non-CID) fonts embed FontFile2 directly.
@@ -493,11 +499,7 @@ fn font_file_consumers(document: &Document) -> HashMap<ObjectId, Vec<ObjectId>> 
 /// `FontDescriptor → FontFile2/FontFile3` reference of one font or CIDFont
 /// dictionary (either key — the consumer map must see every program).
 fn font_file_of(document: &Document, font_dict: &Dictionary) -> Option<ObjectId> {
-    let descriptor_id = font_dict
-        .get(b"FontDescriptor")
-        .ok()?
-        .as_reference()
-        .ok()?;
+    let descriptor_id = font_dict.get(b"FontDescriptor").ok()?.as_reference().ok()?;
     let Some(Object::Dictionary(descriptor)) = document.objects.get(&descriptor_id) else {
         return None;
     };
@@ -519,12 +521,10 @@ fn effective_page_resources(document: &Document, page_id: ObjectId) -> Option<&D
         };
         match page_dict.get(b"Resources") {
             Ok(Object::Dictionary(resources)) => return Some(resources),
-            Ok(Object::Reference(resources_id)) => {
-                match document.objects.get(resources_id) {
-                    Some(Object::Dictionary(resources)) => return Some(resources),
-                    _ => return None,
-                }
-            }
+            Ok(Object::Reference(resources_id)) => match document.objects.get(resources_id) {
+                Some(Object::Dictionary(resources)) => return Some(resources),
+                _ => return None,
+            },
             _ => {
                 let parent = page_dict
                     .get(b"Parent")
@@ -551,17 +551,14 @@ fn collect_context_cids(
     used_cids: &mut HashMap<ObjectId, HashSet<u16>>,
     visited_forms: &mut HashSet<ObjectId>,
 ) -> Result<bool, AppError> {
-    let font_dict = resources
-        .get(b"Font")
-        .ok()
-        .and_then(|entry| match entry {
-            Object::Dictionary(dict) => Some(dict),
-            Object::Reference(dict_id) => match document.objects.get(dict_id) {
-                Some(Object::Dictionary(dict)) => Some(dict),
-                _ => None,
-            },
+    let font_dict = resources.get(b"Font").ok().and_then(|entry| match entry {
+        Object::Dictionary(dict) => Some(dict),
+        Object::Reference(dict_id) => match document.objects.get(dict_id) {
+            Some(Object::Dictionary(dict)) => Some(dict),
             _ => None,
-        });
+        },
+        _ => None,
+    });
 
     // name → Type0 object id for the fonts of this context we can subset.
     let mut subsettable_here: HashMap<Vec<u8>, ObjectId> = HashMap::new();
@@ -627,17 +624,18 @@ fn collect_context_cids(
                 let Some(Object::Name(name)) = operation.operands.first() else {
                     continue;
                 };
-                let Some(extgstate_dict) = resources
-                    .get(b"ExtGState")
-                    .ok()
-                    .and_then(|entry| match entry {
-                        Object::Dictionary(dict) => Some(dict),
-                        Object::Reference(dict_id) => match document.objects.get(dict_id) {
-                            Some(Object::Dictionary(dict)) => Some(dict),
+                let Some(extgstate_dict) =
+                    resources
+                        .get(b"ExtGState")
+                        .ok()
+                        .and_then(|entry| match entry {
+                            Object::Dictionary(dict) => Some(dict),
+                            Object::Reference(dict_id) => match document.objects.get(dict_id) {
+                                Some(Object::Dictionary(dict)) => Some(dict),
+                                _ => None,
+                            },
                             _ => None,
-                        },
-                        _ => None,
-                    })
+                        })
                 else {
                     return Ok(false);
                 };
@@ -704,17 +702,18 @@ fn collect_context_cids(
                 let Some(Object::Name(name)) = operation.operands.first() else {
                     continue;
                 };
-                let Some(xobject_dict) = resources
-                    .get(b"XObject")
-                    .ok()
-                    .and_then(|entry| match entry {
-                        Object::Dictionary(dict) => Some(dict),
-                        Object::Reference(dict_id) => match document.objects.get(dict_id) {
-                            Some(Object::Dictionary(dict)) => Some(dict),
+                let Some(xobject_dict) =
+                    resources
+                        .get(b"XObject")
+                        .ok()
+                        .and_then(|entry| match entry {
+                            Object::Dictionary(dict) => Some(dict),
+                            Object::Reference(dict_id) => match document.objects.get(dict_id) {
+                                Some(Object::Dictionary(dict)) => Some(dict),
+                                _ => None,
+                            },
                             _ => None,
-                        },
-                        _ => None,
-                    })
+                        })
                 else {
                     return Ok(false);
                 };
@@ -734,18 +733,18 @@ fn collect_context_cids(
                 }
                 // A form without its own /Resources may resolve fonts against
                 // the page's — unresolvable, so abort.
-                let Some(form_resources) = form
-                    .dict
-                    .get(b"Resources")
-                    .ok()
-                    .and_then(|entry| match entry {
-                        Object::Dictionary(dict) => Some(dict),
-                        Object::Reference(dict_id) => match document.objects.get(dict_id) {
-                            Some(Object::Dictionary(dict)) => Some(dict),
+                let Some(form_resources) =
+                    form.dict
+                        .get(b"Resources")
+                        .ok()
+                        .and_then(|entry| match entry {
+                            Object::Dictionary(dict) => Some(dict),
+                            Object::Reference(dict_id) => match document.objects.get(dict_id) {
+                                Some(Object::Dictionary(dict)) => Some(dict),
+                                _ => None,
+                            },
                             _ => None,
-                        },
-                        _ => None,
-                    })
+                        })
                 else {
                     return Ok(false);
                 };
@@ -771,7 +770,11 @@ fn collect_context_cids(
     Ok(true)
 }
 
-fn record_cid_bytes(bytes: &[u8], font_id: ObjectId, used_cids: &mut HashMap<ObjectId, HashSet<u16>>) {
+fn record_cid_bytes(
+    bytes: &[u8],
+    font_id: ObjectId,
+    used_cids: &mut HashMap<ObjectId, HashSet<u16>>,
+) {
     let entry = used_cids.entry(font_id).or_default();
     for pair in bytes.as_chunks::<2>().0 {
         entry.insert(u16::from_be_bytes([pair[0], pair[1]]));

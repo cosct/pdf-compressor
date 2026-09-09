@@ -109,9 +109,7 @@ where
         for _ in 0..expected {
             ensure_not_cancelled(cancel_flag, task_id)?;
             let result = result_rx.recv().map_err(|_| {
-                AppError::PdfBuild(
-                    "A worker exited before returning its result.".to_string(),
-                )
+                AppError::PdfBuild("A worker exited before returning its result.".to_string())
             })?;
             on_result(result)?;
         }

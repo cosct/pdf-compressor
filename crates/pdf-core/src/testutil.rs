@@ -297,7 +297,7 @@ endcmap
 CMapName currentdict /CMap defineresource pop
 end
 end"
-            .to_vec(),
+        .to_vec(),
     ));
 
     let type0_id = doc.add_object(dictionary! {
@@ -555,8 +555,13 @@ pub fn encode_ccitt_g4(image: &GrayImage) -> Vec<u8> {
     let mut encoder = fax::encoder::Encoder::new(fax::VecWriter::new());
     for row in image.as_raw().chunks(width as usize) {
         let _ = encoder.encode_line(
-            row.iter()
-                .map(|&luma| if luma >= 128 { fax::Color::Black } else { fax::Color::White }),
+            row.iter().map(|&luma| {
+                if luma >= 128 {
+                    fax::Color::Black
+                } else {
+                    fax::Color::White
+                }
+            }),
             width,
         );
     }
@@ -641,4 +646,3 @@ pub fn encode_ccitt_g3_1d(image: &GrayImage, byte_align: bool, with_eol: bool) -
     // `finish` pads the trailing partial byte with zeros — legal in both shapes.
     writer.finish()
 }
-

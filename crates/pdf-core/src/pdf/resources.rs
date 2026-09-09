@@ -230,7 +230,11 @@ pub(crate) fn remove_unused_resources(document: &mut Document) -> usize {
     removed_entries
 }
 
-fn merge_usage(target: &mut HashMap<ResourcesOwner, UsedNames>, owner: ResourcesOwner, usage: &UsedNames) {
+fn merge_usage(
+    target: &mut HashMap<ResourcesOwner, UsedNames>,
+    owner: ResourcesOwner,
+    usage: &UsedNames,
+) {
     let entry = target.entry(owner).or_default();
     entry.fonts.extend(usage.fonts.iter().cloned());
     entry.xobjects.extend(usage.xobjects.iter().cloned());
@@ -316,12 +320,10 @@ fn page_is_safe(document: &Document, page_dict: &Dictionary, resources_dict: &Di
     if let Ok(Object::Array(annotations)) = page_dict.get(b"Annots") {
         for annotation in annotations {
             let annotation_dict = match annotation {
-                Object::Reference(annotation_id) => {
-                    match document.objects.get(annotation_id) {
-                        Some(Object::Dictionary(dict)) => Some(dict),
-                        _ => None,
-                    }
-                }
+                Object::Reference(annotation_id) => match document.objects.get(annotation_id) {
+                    Some(Object::Dictionary(dict)) => Some(dict),
+                    _ => None,
+                },
                 Object::Dictionary(dict) => Some(dict),
                 _ => None,
             };
@@ -378,7 +380,10 @@ fn dereference<'a>(document: &'a Document, object: &'a Object) -> Option<&'a Obj
     }
 }
 
-fn dereference_dictionary<'a>(document: &'a Document, object: &'a Object) -> Option<&'a Dictionary> {
+fn dereference_dictionary<'a>(
+    document: &'a Document,
+    object: &'a Object,
+) -> Option<&'a Dictionary> {
     match dereference(document, object)? {
         Object::Dictionary(dict) => Some(dict),
         _ => None,
@@ -528,7 +533,11 @@ fn decode_form_content(document: &Document, form_id: ObjectId) -> Option<Content
 }
 
 /// Remove unused `/Font` and `/XObject` entries from one owner's resources.
-fn clean_owner_resources(document: &mut Document, owner: ResourcesOwner, usage: &UsedNames) -> usize {
+fn clean_owner_resources(
+    document: &mut Document,
+    owner: ResourcesOwner,
+    usage: &UsedNames,
+) -> usize {
     // Where the owner's dictionary lives: an indirect resources object, or
     // an inline entry carried by a holder (the page itself, a page-tree
     // node for inherited resources, or a form XObject).
@@ -548,9 +557,7 @@ fn clean_owner_resources(document: &mut Document, owner: ResourcesOwner, usage: 
                 _ => return 0,
             }
         }
-        ResourcesOwner::SharedResources(resources_id) => {
-            DictionaryLocation::Shared(resources_id)
-        }
+        ResourcesOwner::SharedResources(resources_id) => DictionaryLocation::Shared(resources_id),
         ResourcesOwner::Form(form_id) => {
             let Some(Object::Stream(form)) = document.objects.get(&form_id) else {
                 return 0;
@@ -581,8 +588,7 @@ fn clean_owner_resources(document: &mut Document, owner: ResourcesOwner, usage: 
                 clean_resource_dictionary(resources_dict, usage)
             }
             Some(Object::Stream(form)) => {
-                let Ok(Object::Dictionary(resources_dict)) = form.dict.get_mut(b"Resources")
-                else {
+                let Ok(Object::Dictionary(resources_dict)) = form.dict.get_mut(b"Resources") else {
                     return 0;
                 };
                 clean_resource_dictionary(resources_dict, usage)

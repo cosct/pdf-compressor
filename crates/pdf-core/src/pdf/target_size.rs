@@ -219,24 +219,25 @@ where
 
         let percent = (10.0 + 10.0 * attempts as f32).min(90.0);
         report_progress(
-            ProgressUpdate::new("compressing", percent).with_message(BackendNotice::new(
-                "compress.note.targetAttempt",
-                "neutral",
-                format!(
-                    "Fitting to the target size: trying JPEG quality {} (attempt {attempts}).",
-                    params.quality
-                ),
-            )
-            .with_value("quality", params.quality.to_string())
-            .with_value("attempt", attempts.to_string())),
+            ProgressUpdate::new("compressing", percent).with_message(
+                BackendNotice::new(
+                    "compress.note.targetAttempt",
+                    "neutral",
+                    format!(
+                        "Fitting to the target size: trying JPEG quality {} (attempt {attempts}).",
+                        params.quality
+                    ),
+                )
+                .with_value("quality", params.quality.to_string())
+                .with_value("attempt", attempts.to_string()),
+            ),
         );
 
         let estimated = match last_probed {
             Some((previous, previous_estimate)) if previous == params => previous_estimate,
             _ => {
                 let estimate =
-                    constant_bytes + run_probe_round(&mut entries, params, &search_context)?
-                        as u64;
+                    constant_bytes + run_probe_round(&mut entries, params, &search_context)? as u64;
                 last_probed = Some((params, estimate));
                 if smallest_probe.is_none_or(|(_, size)| estimate < size) {
                     smallest_probe = Some((params, estimate));
@@ -354,7 +355,9 @@ fn start_search_edge(entries: &[ImageSearchEntry]) -> u16 {
         .iter()
         .filter_map(|entry| longest_edge(&entry.stream))
         .max()
-        .map_or(MIN_SEARCH_EDGE, |edge| edge.clamp(u32::from(MIN_SEARCH_EDGE), u32::from(u16::MAX)) as u16)
+        .map_or(MIN_SEARCH_EDGE, |edge| {
+            edge.clamp(u32::from(MIN_SEARCH_EDGE), u32::from(u16::MAX)) as u16
+        })
 }
 
 /// Untouched byte footprint of an entry's streams.
@@ -570,7 +573,10 @@ mod tests {
             lo = next_lo;
             hi = next_hi;
         }
-        assert!(shrinks >= 1, "edge must shrink once the quality range fails");
+        assert!(
+            shrinks >= 1,
+            "edge must shrink once the quality range fails"
+        );
         assert!(edge >= MIN_SEARCH_EDGE);
     }
 }

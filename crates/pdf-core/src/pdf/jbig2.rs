@@ -100,7 +100,9 @@ impl PlaneSink {
         let mut remaining = count as usize;
         while remaining > 0 && self.written < limit {
             let row_end = (self.row + 1) * self.width as usize;
-            let take = remaining.min(row_end - self.written).min(limit - self.written);
+            let take = remaining
+                .min(row_end - self.written)
+                .min(limit - self.written);
             self.pixels[self.written..self.written + take].fill(value);
             self.written += take;
             remaining -= take;
@@ -200,7 +202,7 @@ mod tests {
         // pixel ground truth has no independent encoder to derive from, so
         // this asserts the structural contract (dimensions, bilevel, both
         // poles present); the end-to-end fidelity anchor is the poppler
-    // render comparison in the integration tests.
+        // render comparison in the integration tests.
         let (width, height) = crate::testutil::jbig2_scan_dimensions();
         let stream = jbig2_stream(JBIG2_SCAN, i64::from(width), i64::from(height));
         let plane = decode_jbig2_stream(&stream, None)
@@ -220,16 +222,20 @@ mod tests {
         assert!(jbig2_input_shape(&jbig2_stream(JBIG2_SCAN, 0, i64::from(height))).is_none());
         assert!(jbig2_input_shape(&jbig2_stream(JBIG2_SCAN, 65_536, i64::from(height))).is_none());
         let mut with_parms = jbig2_stream(JBIG2_SCAN, i64::from(width), i64::from(height));
-        with_parms.dict.set("DecodeParms", dictionary! { "K" => -1 });
+        with_parms
+            .dict
+            .set("DecodeParms", dictionary! { "K" => -1 });
         assert!(jbig2_input_shape(&with_parms).is_none());
         let mut with_decode = jbig2_stream(JBIG2_SCAN, i64::from(width), i64::from(height));
         with_decode.dict.set("Decode", vec![0.into(), 1.into()]);
         assert!(jbig2_input_shape(&with_decode).is_none());
         // The well-formed shape passes.
-        assert!(
-            jbig2_input_shape(&jbig2_stream(JBIG2_SCAN, i64::from(width), i64::from(height)))
-                .is_some()
-        );
+        assert!(jbig2_input_shape(&jbig2_stream(
+            JBIG2_SCAN,
+            i64::from(width),
+            i64::from(height)
+        ))
+        .is_some());
     }
 
     #[test]

@@ -36,9 +36,7 @@ pub(crate) enum DecodeColorSpace {
     /// `/ColorSpace`. `icc` carries the embedded profile bytes when the
     /// space resolved from an ICC stream — extracted only under the
     /// `cmyk-cms` feature, where the CMS converter consumes them.
-    Cmyk {
-        icc: Option<Arc<Vec<u8>>>,
-    },
+    Cmyk { icc: Option<Arc<Vec<u8>>> },
     /// Palette image: index bytes expand to `base_channels` channels
     /// (1 = gray base, 3 = RGB base, 4 = CMYK base) at decode time.
     /// A CMYK base keeps its profile bytes in `base_icc` the same way.
@@ -96,17 +94,18 @@ pub(crate) fn collect_color_space_aliases(document: &Document) -> HashMap<Vec<u8
         }) else {
             continue;
         };
-        let Some(color_spaces) = resources_dict
-            .get(b"ColorSpace")
-            .ok()
-            .and_then(|entry| match entry {
-                Object::Dictionary(dict) => Some(dict),
-                Object::Reference(dict_id) => match document.objects.get(dict_id) {
-                    Some(Object::Dictionary(dict)) => Some(dict),
+        let Some(color_spaces) =
+            resources_dict
+                .get(b"ColorSpace")
+                .ok()
+                .and_then(|entry| match entry {
+                    Object::Dictionary(dict) => Some(dict),
+                    Object::Reference(dict_id) => match document.objects.get(dict_id) {
+                        Some(Object::Dictionary(dict)) => Some(dict),
+                        _ => None,
+                    },
                     _ => None,
-                },
-                _ => None,
-            })
+                })
         else {
             continue;
         };
@@ -157,9 +156,7 @@ pub(crate) fn resolve_image_color_space(
 
     // Name: a device space (handled by the dict-driven path) or an alias.
     let value = match &declared {
-        Object::Name(name)
-            if matches!(name.as_slice(), b"DeviceGray" | b"DeviceRGB") =>
-        {
+        Object::Name(name) if matches!(name.as_slice(), b"DeviceGray" | b"DeviceRGB") => {
             return None;
         }
         Object::Name(name) => aliases.get(name)?.clone(),
@@ -174,8 +171,7 @@ fn resolve_value(document: &Document, value: &Object) -> Option<ImageColorSpaceI
     match value {
         // [/ICCBased <ref>] — channel count from the profile stream's /N.
         Object::Array(items) if items.len() == 2 => {
-            let (Object::Name(head), Object::Reference(profile_id)) = (&items[0], &items[1])
-            else {
+            let (Object::Name(head), Object::Reference(profile_id)) = (&items[0], &items[1]) else {
                 return resolve_indexed(document, value);
             };
             if head.as_slice() != b"ICCBased" {
@@ -254,10 +250,7 @@ fn resolve_indexed(document: &Document, value: &Object) -> Option<ImageColorSpac
                 // available for the conversion itself.
                 let (keep, icc) = match resolved.decode {
                     DecodeColorSpace::Cmyk { icc } => (None, icc),
-                    _ => (
-                        resolved.rebuild_color_space.map(|(object, _)| object),
-                        None,
-                    ),
+                    _ => (resolved.rebuild_color_space.map(|(object, _)| object), None),
                 };
                 (channels, keep, icc)
             }
@@ -312,7 +305,9 @@ fn icc_profile_bytes(profile: &Stream) -> Option<Arc<Vec<u8>>> {
     const MAX_ICC_BYTES: usize = 4 << 20;
     // A valid profile starts with a 128-byte header.
     let bytes = profile.get_plain_content().ok()?;
-    (128..=MAX_ICC_BYTES).contains(&bytes.len()).then(|| Arc::new(bytes))
+    (128..=MAX_ICC_BYTES)
+        .contains(&bytes.len())
+        .then(|| Arc::new(bytes))
 }
 
 #[cfg(not(feature = "cmyk-cms"))]
@@ -413,9 +408,7 @@ pub(crate) fn stream_channel_decodes(
             (Some(0.0), Some(1.0)) => decodes.push(ChannelDecode::Identity),
             (Some(1.0), Some(0.0)) => decodes.push(ChannelDecode::Invert),
             _ => {
-                return Err(
-                    "/Decode uses a partial range this engine cannot normalize".into(),
-                );
+                return Err("/Decode uses a partial range this engine cannot normalize".into());
             }
         }
     }

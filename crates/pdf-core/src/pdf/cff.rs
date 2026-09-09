@@ -375,10 +375,10 @@ pub(crate) fn extract_cff_table(data: &[u8]) -> Option<&[u8]> {
     for index in 0..count {
         let record = 12 + index * 16;
         if data.get(record..record + 4)? == b"CFF " {
-            let offset = u32::from_be_bytes(data.get(record + 8..record + 12)?.try_into().ok()?)
-                as usize;
-            let length = u32::from_be_bytes(data.get(record + 12..record + 16)?.try_into().ok()?)
-                as usize;
+            let offset =
+                u32::from_be_bytes(data.get(record + 8..record + 12)?.try_into().ok()?) as usize;
+            let length =
+                u32::from_be_bytes(data.get(record + 12..record + 16)?.try_into().ok()?) as usize;
             return data.get(offset..offset.checked_add(length)?);
         }
     }

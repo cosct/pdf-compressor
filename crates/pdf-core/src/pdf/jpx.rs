@@ -97,8 +97,9 @@ pub(super) fn decode_jpx_stream(
     allow_cmyk: bool,
     color_space: Option<&ImageColorSpaceInfo>,
 ) -> Result<DynamicImage, AppError> {
-    let shape = jpx_input_shape(stream)
-        .ok_or_else(|| AppError::PdfBuild("JPX stream does not use a supported decode shape".into()))?;
+    let shape = jpx_input_shape(stream).ok_or_else(|| {
+        AppError::PdfBuild("JPX stream does not use a supported decode shape".into())
+    })?;
     let image = jpeg2k::Image::from_bytes(&stream.content).map_err(|error| {
         AppError::PdfBuild(format!("failed to decode JPX image stream: {error:?}"))
     })?;
@@ -157,8 +158,9 @@ pub(super) fn decode_jpx_stream(
                 ));
             }
             let indices = component_plane(component, width, height);
-            let pixels = super::colorspace::expand_indexed_samples(&indices, *base_channels, palette)
-                .map_err(AppError::PdfBuild)?;
+            let pixels =
+                super::colorspace::expand_indexed_samples(&indices, *base_channels, palette)
+                    .map_err(AppError::PdfBuild)?;
             return match *base_channels {
                 1 => image::GrayImage::from_raw(width, height, pixels)
                     .map(DynamicImage::ImageLuma8)
@@ -202,10 +204,7 @@ pub(super) fn decode_jpx_stream(
             // codestreams carry no PDF-level ICC profile, so the calibrated
             // SWOP matrix applies (0 = no ink, same polarity as raw planes).
             let mut plane = Vec::with_capacity(cyan.len() * 4);
-            for (c, (m, (y, k))) in cyan
-                .iter()
-                .zip(magenta.iter().zip(yellow.iter().zip(key)))
-            {
+            for (c, (m, (y, k))) in cyan.iter().zip(magenta.iter().zip(yellow.iter().zip(key))) {
                 plane.extend_from_slice(&[*c, *m, *y, *k]);
             }
             let pixels = super::cmyk::cmyk_samples_to_rgb(&plane, None);
@@ -230,8 +229,13 @@ fn component_plane(component: &jpeg2k::ImageComponent, width: u32, height: u32) 
     }
     let source = image::GrayImage::from_raw(component.width(), component.height(), data)
         .expect("component buffer matches its declared grid");
-    image::imageops::resize(&source, width, height, image::imageops::FilterType::Triangle)
-        .into_raw()
+    image::imageops::resize(
+        &source,
+        width,
+        height,
+        image::imageops::FilterType::Triangle,
+    )
+    .into_raw()
 }
 
 /// Convert full-resolution YCbCr planes (SYCC subsampled codestreams) to
@@ -284,7 +288,7 @@ mod tests {
     use super::*;
     use crate::testutil::{
         jpx_bilevel_reference, jpx_gray_reference, jpx_rgb_reference, jpx_sub420_reference,
-        JPX_BILEVEL_J2K, JPX_BILEVEL_HEIGHT, JPX_BILEVEL_WIDTH, JPX_GRAY_J2K, JPX_PLANE_HEIGHT,
+        JPX_BILEVEL_HEIGHT, JPX_BILEVEL_J2K, JPX_BILEVEL_WIDTH, JPX_GRAY_J2K, JPX_PLANE_HEIGHT,
         JPX_PLANE_WIDTH, JPX_RGB_J2K, JPX_RGB_JP2, JPX_SUB420_HEIGHT, JPX_SUB420_JP2,
         JPX_SUB420_WIDTH,
     };
@@ -328,7 +332,11 @@ mod tests {
             let stream = fixture_stream(content, bilevel);
             let plane = decode_jpx_stream(&stream, true, None)
                 .unwrap_or_else(|error| panic!("{name}: {error}"));
-            assert_eq!(plane.dimensions(), fixture_dims(bilevel), "{name} dimensions");
+            assert_eq!(
+                plane.dimensions(),
+                fixture_dims(bilevel),
+                "{name} dimensions"
+            );
             let bytes = plane.as_bytes();
             assert_eq!(
                 bytes.chunks(channels).count(),
@@ -344,19 +352,22 @@ mod tests {
     /// planes).
     #[test]
     fn lossless_codestreams_round_trip_exactly() {
-        let rgb = decode_jpx_stream(&fixture_stream(JPX_RGB_J2K, false), true, None).expect("rgb j2k");
+        let rgb =
+            decode_jpx_stream(&fixture_stream(JPX_RGB_J2K, false), true, None).expect("rgb j2k");
         assert_eq!(
             rgb.to_rgb8().as_raw(),
             jpx_rgb_reference().as_raw(),
             "RGB codestream must decode to the reference plane"
         );
-        let rgb_jp2 = decode_jpx_stream(&fixture_stream(JPX_RGB_JP2, false), true, None).expect("rgb jp2");
+        let rgb_jp2 =
+            decode_jpx_stream(&fixture_stream(JPX_RGB_JP2, false), true, None).expect("rgb jp2");
         assert_eq!(
             rgb_jp2.to_rgb8().as_raw(),
             jpx_rgb_reference().as_raw(),
             "JP2 container must yield the same pixels as the raw codestream"
         );
-        let gray = decode_jpx_stream(&fixture_stream(JPX_GRAY_J2K, false), true, None).expect("gray j2k");
+        let gray =
+            decode_jpx_stream(&fixture_stream(JPX_GRAY_J2K, false), true, None).expect("gray j2k");
         assert_eq!(
             gray.to_luma8().as_raw(),
             jpx_gray_reference().as_raw(),
@@ -418,7 +429,9 @@ mod tests {
         assert!(jpx_input_shape(&jpx_stream(JPX_RGB_J2K, -1, height)).is_none());
         assert!(jpx_input_shape(&jpx_stream(JPX_RGB_J2K, 65_536, height)).is_none());
         let mut with_parms = jpx_stream(JPX_RGB_J2K, width, height);
-        with_parms.dict.set("DecodeParms", dictionary! { "K" => -1 });
+        with_parms
+            .dict
+            .set("DecodeParms", dictionary! { "K" => -1 });
         assert!(jpx_input_shape(&with_parms).is_none());
         let mut with_decode = jpx_stream(JPX_RGB_J2K, width, height);
         with_decode.dict.set(
