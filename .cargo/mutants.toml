@@ -1,5 +1,9 @@
 # cargo-mutants configuration — run from the workspace root or crates/pdf-core.
-# The weekly CI job lives in .github/workflows/mutants.yml.
+# Local, on-demand tool only (no CI job): the full pdf-core suite needs
+# >5h on a hosted runner, beyond GitHub's 6h hard job cap (measured
+# 2026-09-08 at ~110s/mutant). Prefer scoping a run to your change:
+#   git diff $(git merge-base origin/main HEAD) > wip.diff
+#   cargo mutants -p pdf-core --in-diff wip.diff
 # Paths are matched in workspace-relative form (crates/pdf-core/...).
 exclude_globs = ["crates/pdf-core/src/bin/**"]
 # Skip git-ignored build trees (src-tauri/target alone is tens of GB locally).

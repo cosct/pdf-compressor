@@ -17,7 +17,7 @@
 | Bindings | `cargo test --workspace` | 由 Rust 签名再生成 `frontend/src/lib/bindings.ts`——**命令签名变更后必须运行并提交** | 1 项 |
 | 基准 | `cargo bench -p pdf-core` | 全管线各预设、编码器对比（jpeg-encoder vs image crate） | criterion |
 | 模糊测试 | `cargo +nightly fuzz run pipeline` / `fuzz run jpx` | 任意字节跑 analyze+compress+目标大小搜索；jpx target 专打 OpenJPEG C 解码路径 | CI 每次 push 各 45s 冒烟 |
-| 变异测试 | `cargo mutants` | 引擎测试对实现的杀伤力 | 每周一 CI |
+| 变异测试 | `cargo mutants` | 引擎测试对实现的杀伤力 | 本地按需（无 CI 作业） |
 
 ## 一键全量
 
@@ -77,11 +77,15 @@ cargo +nightly fuzz run jpx -- -max_total_time=600          # JPX C 解码路径
 
 ## 变异测试
 
+本地按需工具（无 CI 作业——hosted runner 上全量套件需 5h+，超过 GitHub 6h 作业硬上限，2026-09-08 实测每变异体约 110s）。推荐按改动范围收窄：
+
 ```bash
-cd crates/pdf-core && cargo mutants          # 本地全量（较慢）
+git diff $(git merge-base origin/main HEAD) > wip.diff
+cargo mutants -p pdf-core --in-diff wip.diff    # 只变异本次改动的代码
+cd crates/pdf-core && cargo mutants            # 本地全量（数小时）
 ```
 
-每周一 CI 自动跑（`.github/workflows/mutants.yml`），报告在 `mutants.out/`。存活变异（survived mutant）= 测试盲区，修复优先级：纯函数（设置夹紧、搜索调度、编解码）> 编排逻辑 > 交互层。
+报告在 `mutants.out/`。存活变异（survived mutant）= 测试盲区，修复优先级：纯函数（设置夹紧、搜索调度、编解码）> 编排逻辑 > 交互层。
 
 ---
 
