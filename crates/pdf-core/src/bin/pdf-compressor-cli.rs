@@ -24,9 +24,10 @@
 //! always receive a valid PDF.
 
 use std::{
+    collections::HashSet,
     fs,
     io::{Read, Write},
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, ExitCode, Stdio},
     sync::atomic::AtomicBool,
     sync::Arc,
@@ -93,7 +94,8 @@ DIRECTORY INPUTS (quick):
 OTHER:
     -h, --help            Show this help";
 
-/// Parse a human size like `5MB`, `500K`, or a raw byte count.
+/// Parse a human size like `5MB`, `500K`, or a raw byte count. Negative,
+/// infinite, and NaN numbers are rejected (they would silently saturate).
 fn parse_size(text: &str) -> Option<u64> {
     let trimmed = text.trim();
     let split_at = trimmed
@@ -101,6 +103,9 @@ fn parse_size(text: &str) -> Option<u64> {
         .unwrap_or(trimmed.len());
     let (number, unit) = trimmed.split_at(split_at);
     let value: f64 = number.trim().parse().ok()?;
+    if !value.is_finite() || value < 0.0 {
+        return None;
+    }
     let multiplier = match unit.trim().to_ascii_uppercase().as_str() {
         "" | "B" => 1.0,
         "K" | "KB" | "KIB" => 1024.0,
@@ -111,7 +116,9 @@ fn parse_size(text: &str) -> Option<u64> {
     Some((value * multiplier) as u64)
 }
 
-/// Read `--name value` or `--name=value` from the argument list.
+/// Read `--name value` or `--name=value` from the argument list. A value
+/// that itself starts with `--` is rejected: it is almost certainly the
+/// next flag whose value went missing (`--password --grayscale`).
 fn flag_value(args: &[String], name: &str) -> Result<Option<String>, String> {
     let inline = format!("{name}=");
     for (index, arg) in args.iter().enumerate() {
@@ -122,6 +129,11 @@ fn flag_value(args: &[String], name: &str) -> Result<Option<String>, String> {
             let value = args
                 .get(index + 1)
                 .ok_or_else(|| format!("{name} requires a value"))?;
+            if value.starts_with("--") {
+                return Err(format!(
+                    "{name} requires a value, but the next argument looks like a flag: {value}"
+                ));
+            }
             return Ok(Some(value.clone()));
         }
     }
@@ -326,15 +338,36 @@ struct QuickSummary {
 /// `.pdf` files (extension matched case-insensitively), everything else
 /// passes through as given. Symlinked directories are skipped so the walk
 /// can never loop; plain files keep their exact argument form.
+///
+/// Results are deduplicated by canonical path, keeping first-seen order —
+/// passing a directory *and* a file inside it (or the same file twice)
+/// compresses each PDF exactly once instead of racing two outputs for the
+/// same name.
 fn expand_quick_inputs(inputs: &[String]) -> Result<Vec<String>, String> {
-    let mut expanded = Vec::new();
+    let mut expanded: Vec<String> = Vec::new();
+    let mut seen: HashSet<PathBuf> = HashSet::new();
     for input in inputs {
         let path = Path::new(input);
+        let mut push_deduped = |path: &Path| -> std::io::Result<()> {
+            // Canonicalize resolves `./a.pdf`, `a.pdf`, and `dir/../a.pdf`
+            // to one identity; missing files fall back to the given form
+            // (the engine reports them with a clear error later).
+            let identity = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+            if seen.insert(identity) {
+                expanded.push(path.to_string_lossy().into_owned());
+            }
+            Ok(())
+        };
         if path.is_dir() {
-            collect_pdfs(path, &mut expanded)
+            let mut walked: Vec<String> = Vec::new();
+            collect_pdfs(path, &mut walked)
                 .map_err(|error| format!("failed to walk directory {input}: {error}"))?;
+            for file in &walked {
+                push_deduped(Path::new(file))
+                    .map_err(|error| format!("failed to resolve {file}: {error}"))?;
+            }
         } else {
-            expanded.push(input.clone());
+            push_deduped(path).map_err(|error| format!("failed to resolve {input}: {error}"))?;
         }
     }
     Ok(expanded)
@@ -723,6 +756,13 @@ fn run(args: &[String]) -> Result<RunOutput, AppError> {
             if rest.iter().any(|arg| arg == "--stdout") {
                 return run_stdout_compress(rest, &input);
             }
+            if input == "-" {
+                return Err(AppError::Config(
+                    "compress - reads the PDF from stdin; add --stdout for pipeline mode \
+                     (the PDF bytes go to stdout, the JSON summary to stderr)"
+                        .to_string(),
+                ));
+            }
             // Flag parsing errors are surfaced through AppError::Config.
             let overrides = compression_overrides(rest)?;
             let target_bytes = target_size_bytes(rest)?;
@@ -995,17 +1035,15 @@ mod tests {
             root.to_string_lossy().into_owned(),
         ])
         .expect("expand");
-        // The explicit file comes first as given; the directory argument
-        // then walks its contents (sorted, nested directories between
-        // files by name), picking top.pdf up a second time — expansion
-        // keeps every match, dedupe is the caller's business.
+        // The explicit file comes first as given; the directory walk then
+        // yields the rest once — top.pdf is NOT repeated even though the
+        // directory contains it too (dedupe by canonical path).
         let expected = vec![
             root.join("top.pdf").to_string_lossy().into_owned(),
             root.join("nested")
                 .join("deep.Pdf")
                 .to_string_lossy()
                 .into_owned(),
-            root.join("top.pdf").to_string_lossy().into_owned(),
             root.join("upper.PDF").to_string_lossy().into_owned(),
         ];
         assert_eq!(expanded, expected, "files must be sorted per directory");
@@ -1019,6 +1057,60 @@ mod tests {
         assert_eq!(
             expanded,
             args(&["/tmp/a.pdf", "/tmp/missing.pdf", "relative.PDF"])
+        );
+    }
+
+    #[test]
+    fn expand_quick_inputs_dedupes_by_canonical_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        fs::write(root.join("a.pdf"), b"pdf").unwrap();
+
+        // Same file via three spellings + the containing directory: exactly
+        // one entry, in the first-seen (argument) form.
+        let expanded = expand_quick_inputs(&[
+            root.join("a.pdf").to_string_lossy().into_owned(),
+            format!("{}/./a.pdf", root.to_string_lossy()),
+            root.to_string_lossy().into_owned(),
+            root.join("a.pdf").to_string_lossy().into_owned(),
+        ])
+        .expect("expand");
+        assert_eq!(
+            expanded,
+            vec![root.join("a.pdf").to_string_lossy().into_owned()],
+            "each PDF must be compressed exactly once"
+        );
+    }
+
+    #[test]
+    fn parse_size_rejects_negative_and_non_finite_numbers() {
+        assert_eq!(parse_size("-5MB"), None, "negative budgets are nonsense");
+        assert_eq!(parse_size("NaN"), None);
+        assert_eq!(parse_size("inf"), None);
+        assert_eq!(parse_size("-infKB"), None);
+        // The finite non-negative domain keeps working.
+        assert_eq!(parse_size("5MB"), Some(5 * 1024 * 1024));
+        assert_eq!(parse_size("0"), Some(0));
+    }
+
+    #[test]
+    fn flag_value_rejects_a_flag_shaped_value() {
+        // `--password --grayscale` is a missing value, not a password.
+        let list = args(&["--password", "--grayscale"]);
+        assert!(flag_value(&list, "--password").is_err());
+
+        // Same for every value-taking flag. Inline values are taken
+        // verbatim (a literal "--x" password via `--password=--x` stays
+        // allowed).
+        assert!(flag_value(&args(&["--preset", "--quality"]), "--preset").is_err());
+        assert_eq!(
+            flag_value(&args(&["--password=--weird"]), "--password"),
+            Ok(Some("--weird".to_string()))
+        );
+        // Legitimate values are unaffected.
+        assert_eq!(
+            flag_value(&args(&["--password", "hunter2"]), "--password"),
+            Ok(Some("hunter2".to_string()))
         );
     }
 
