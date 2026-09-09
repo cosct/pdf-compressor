@@ -390,65 +390,71 @@ release overlay 而非主配置）。
   `compress.warning.targetSizeMissed` 提示；前端以警告 toast + 状态卡 notes 呈现。
 - **`cargo bench` 名字冲突**：基准每轮使用独立临时目录，避免 100 次重名上限。
 
-## 8. 版本路线（0.7.0 评估，2026-09；P0 开关与 P1 已随 0.6.0 落地）
+## 8. 版本路线（0.9.0 计划，2026-09-10 评估）
 
-0.6.0 收口范围：JPX 解码、CMYK 三路径（opt-in 开关）、搜索缓存淘汰与内存护栏、
-2GiB 友好报错、CFF/Type1C 字体子集化、审查修复 8 项、JBIG2 输入解码。
+历史收口：0.6.0（JPX 解码、CMYK opt-in、JBIG2 输入）；0.7.0（CMYK 真转换
+lcms2 + JPX 边缘补全）；0.7.1（二次审查 9 项 + globals 去重）；0.8.0（CMYK
+默认翻转 + feature-off 拒绝偏色转换 + 配置 v1→v2 迁移 + CLI 管道模式/目录
+递归 + fmt 基线与 CI 加固；发布后补：quick 去重、旗标硬化、app 特性腿、
+README/用户指南通俗化）。
 
-### P0：CMYK 色彩保真（✅ 0.7.0 已落地）
+0.9.0 主题：**工程深水区 + 诚实性**——合并重复路径、钉死进程契约、让界面
+如实反映构建能力与用户设置，为 1.0 清障。
 
-- **实测问题**（见上文 CMYK 段）：朴素减色公式与渲染器 CMS 的系统偏差
-  ≈7-9 dB（poppler 基准、质量档不敏感）。
-- **0.7.0 落地**：`cmyk-cms` feature（`lcms2` crate 6.2，Apache-2.0/MIT，
-  `lcms2-sys` vendored C 经 `cc` 静态编译，同 jpx 门控模式，默认关保持依赖轻量；
-  另加直依赖 `zune-jpeg` 取 DCT 原始 CMYK 平面）。有 ICC 用图像自带 profile
-  （lcms，与 poppler transform 同构）；无 profile 用 xpdf SWOP 矩阵（poppler/
-  PDFium 的 DeviceCMYK 解释，比"找一个校准 profile"更准——它们的默认态根本
-  不走 CMS）。验收实测 ≈54.6dB（门槛 ≥25dB，0.6.0 基线 ≈7.6dB），渲染比对
-  门禁 `cmyk_fidelity_matches_poppler_render` 进 CI 可选特性腿。
-- **默认值翻转（✅ 0.8.0 落地）**：release/AUR 产物稳定携带 `cmyk-cms` 一个
-  版本（0.7.x）后，`cmyk_conversion` 默认翻转为**开**（GUI 预设、CLI、quick
-  profile 回落链全部同步，`--no-convert-cmyk` 提供退出）。朴素路径（feature-off
-  构建）按既定原则**直接跳过而非转换**（宁可不压不偏色）：`converts_cmyk()`
-  仅放行灰度/G4 亮度坍缩意图，跳过原因指明需重建特性；分析器预估按构建镜像
-  新默认。
+### P0：双管道统一（主项，e2e 先行）
 
-### P1：JBIG2 输入解码（已随 0.6.0 落地）
+- **CLI 进程级 e2e（先行，重构的安全网）**：新增
+  `crates/pdf-core/tests/cli_e2e.rs`，经 `CARGO_BIN_EXE_pdf-compressor-cli`
+  起真进程，钉死只有真进程才能验证的契约——stdout 纯 PDF / stderr JSON
+  摘要 / 成功与失败退出码 / 管道破裂（SIGPIPE→EPIPE）退出码 / stdin 限量
+  读取超限报错 / 目录递归与去重 / 旗标互斥与缺值报错。当前 19 项 CLI 测试
+  全是单元级；此项成本中低、杠杆最高。
+- **合并 `compress_pdf_with_progress` 与 `compress_pdf_bytes_with_progress`**：
+  两入口的加载/密码与加密分类/optimize/进度回调编排重复（`serialize_and_count`
+  已于 0.8.0 抽出共享）。抽内部核心，以"输出策略"（写文件 / 归还字节+直通）
+  为参数；文件路径与字节路径行为差异（输出名占用守卫、not-smaller 的"不写"
+  vs"直通"语义）全部留在策略内。风险低（双特性 150/175 项测试 + e2e 兜底）。
+- **验收**：e2e 全绿；两入口对外签名与语义零变化（除新增能力）。
 
-- `hayro-jbig2` 0.3（Apache-2.0 OR MIT，纯 Rust，T.88 全量，hayro PDF
-  渲染器同源）已接入，无 feature 门控；形状门禁、`/JBIG2Globals` 预解析
-  管道、poppler 渲染门禁、conformance 语料夹具均已就位（见上文 JBIG2 段）。
-- **输出侧维持 JBIG2 门禁结论**（2026-08 备忘录）：G4 仍是唯一双级出口。
-- 0.7.0 增量：`/JBIG2Globals` 引用的共享字典在**多图共享一个 globals
-  对象**时的去重解码（✅ 0.7.1 落地，按对象 ID 共享解压）；随机接入组织的流内
-  形态（embedded 常见，随机接入罕见）**维持暂缓**——真实语料罕见，收益不成
-  比例。
+### P1：诚实性搭车
 
-### P2：JPX 边缘补全（✅ 0.7.0 已落地）
+- **GUI 构建能力感知**：后端新增 `build_features` 命令（specta 随 bindings
+  再生），暴露 `cmykCms/jpx/ccitt/subsetFonts`；前端对 feature-off 构建的
+  CMYK 开关给出"此构建不含色彩转换组件，CMYK 图片将保持原样"提示（或禁用）。
+  受众是源码自建用户（官方安装包全特性，不受影响）。
+- **分析器设置感知**：`analyze_pdf_with_progress` 增加可选设置上下文（调用点
+  6 处：tauri 命令/CLI/fuzz/tests），预估按用户实际开关计算（关掉 CMYK 转换
+  时印刷色图片不再计入可压缩字节），替换 0.8.0 的"按默认姿态"文档化假设。
+- **管道模式 `--target-size`**（依赖 P0 合并）：字节入口获得目标大小搜索，
+  0.8.0 因搜索物化写文件而拒绝的组合解除；搜索全程内存化，直通语义对齐。
 
-- `/SMask` 为 JPX/DCT 编码的图像：`decode_smask_gray` 复用主解码器（DCT 走
-  image crate、JPX 走 jpeg2k 单分量路径），此前整图跳过。
-- JPX 子采样分量（per-component dx/dy > 1）：双线性上采样到全网格；poppler
-  对这类码流拒渲，按 JPEG 2000 规范语义处理（SYCC+三分量 → BT.601 逆变换，
-  其余保持平面语义）。非子采样路径行为不变（零回归）。
+### P2：按余量取舍
 
-### P3：大文件与体验
+- CI 动作现代化：`checkout@v4`→`v5`（Node 20 弃用告警已在日志出现），
+  其余交给 Dependabot；
+- AUR 双包策略复审：仓库自 0.7.1 起同时维护 `-bin` 与源码包（有意恢复），
+  与 tauri-project-structure 技能模板"源码包已弃用"表述冲突——定夺"保留
+  双包"或"退役源码包"，同步修正模板与打包 README，消除两个权威来源打架；
+- 可选：`scripts/mutants-diff.sh`（封装 `git diff 基线 + cargo mutants
+  --in-diff`），把漏杀治理留给 PR 作者按需执行（CI 作业已于 0.8.0 后按
+  维护者决定移除）。
 
-- 2GiB 预检提示已做（0.6.0）；0.7.0 评估上限工程（lopdf 全内存对象图的
-  分页/惰性加载属多周工程，收益人群有限——倾向维持上限 + 文档明示）。
-- CLI 管道模式与批量目录递归（✅ 0.8.0 落地）：`compress - --stdout`
-  读 stdin 写 stdout（JSON 摘要走 stderr，压不赢时直通原始字节，管道永不断流；
-  引擎侧新增 `compress_pdf_bytes_with_progress` 字节入口，与文件路径共用优化
-  管线与"不写更大输出"语义）；`quick` 接受目录参数递归收集 `.pdf`（不分大小写，
-  跳过符号链接目录防环，逐目录排序保证确定性）。
+### 维持暂缓（2026-09-10 复核）
 
-### 维持暂缓
+- **线性化**：lopdf 0.44 仍只有读取侧的 `is_linearized` 探测，无写出支持、
+  无公开路线（2026-09 调研确认）；自研多周，维持等上游；
+- **JBIG2 随机接入组织**（真实语料罕见）、**JBIG2 输出编码**（许可）、
+  **简单字体子集化**（低收益）、**2GiB 流式**（收益人群有限）；
+- **PDF/A**：暂无计划。
 
-- 线性化（lopdf `SaveOptions::linearize` 空壳，自研多周）；
-- JBIG2 输出编码（许可）；简单字体（Type1/PFB、简单 TrueType）子集化（低收益）。
+### 依赖健康（随版本例行）
+
+- lopdf 0.44.0：RUSTSEC-2026-0187（深嵌套栈溢出）补丁版为 0.42.0，**当前
+  版本不受影响**；`save_modern` 加密 PDF 损坏 bug（上游 #479）不适用——本
+  引擎在写出前已剥离 `/Encrypt`。cargo audit 在 CI 每次推送执行，保持观察。
 
 ### 节奏建议
 
-0.7.0 主打 CMYK 真转换（lcms2）+ P2 搭车，P3 按余量取舍；0.8.0 主打 CMYK
-默认翻转（feature-off 拒绝偏色转换）+ P3 CLI 管道/目录递归。0.8.0 后路线池：
-JBIG2 随机接入（罕见，暂缓）、线性化（等上游）、PDF/A（暂无计划）。
+0.9.0 一句话：**e2e 钉契约 → 双管道合并 → 诚实性三件搭车，P2 按余量**。
+1.0 门槛＝0.9 收口（双管道统一 + 进程契约 + 构建感知全部落地）后评估；
+对外 API 与行为若在整个 0.x 系列保持兼容，1.0 仅为成熟度声明。
