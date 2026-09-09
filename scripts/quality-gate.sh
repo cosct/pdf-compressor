@@ -12,6 +12,9 @@ cd "$(dirname "$0")/.."
 
 log() { printf '\n\033[1;36m==> %s\033[0m\n' "$1"; }
 
+log "cargo fmt（workspace 格式检查）"
+cargo fmt --all -- --check
+
 log "cargo clippy（workspace，-D warnings）"
 cargo clippy --workspace --all-targets --locked -- -D warnings
 
@@ -23,6 +26,12 @@ cargo clippy -p pdf-core --all-targets --locked --features jpx,cmyk-cms -- -D wa
 
 log "cargo test（pdf-core 可选特性 jpx,cmyk-cms）"
 cargo test -p pdf-core --locked --features jpx,cmyk-cms
+
+log "cargo clippy（桌面壳可选特性 jpx,cmyk-cms，-D warnings）"
+cargo clippy -p app --all-targets --locked --features jpx,cmyk-cms -- -D warnings
+
+log "cargo test（桌面壳可选特性 jpx,cmyk-cms）"
+cargo test -p app --locked --features jpx,cmyk-cms
 
 log "前端格式化 + lint + 类型检查（vp check：oxfmt/oxlint/tsgo）"
 pnpm run check

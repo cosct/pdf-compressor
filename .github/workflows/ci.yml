@@ -54,9 +54,12 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all -- --check
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
@@ -69,6 +72,14 @@ jobs:
 
       - name: Tests with the optional features
         run: cargo test -p pdf-core --features jpx,cmyk-cms
+
+      # The desktop shell with the optional features was previously only
+      # compiled by the MSRV check — exercise its cfg(feature) surfaces.
+      - name: Clippy (desktop shell with the optional features)
+        run: cargo clippy -p app --all-targets --features jpx,cmyk-cms -- -D warnings
+
+      - name: Tests (desktop shell with the optional features)
+        run: cargo test -p app --features jpx,cmyk-cms
 
   msrv:
     name: MSRV check (${{ matrix.crate }})
