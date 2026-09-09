@@ -175,3 +175,29 @@ pub(crate) fn optional_integer(stream: &Stream, key: &[u8]) -> Option<i64> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod optional_integer_tests {
+    use super::*;
+    use lopdf::dictionary;
+
+    #[test]
+    fn optional_integer_reads_integer_and_truncated_real() {
+        // Producer PDFs occasionally store integral values as Real (e.g.
+        // `612.0`); the width/height readers rely on the truncating arm.
+        let integer = Stream::new(dictionary! { "Width" => 612 }, Vec::new());
+        assert_eq!(optional_integer(&integer, b"Width"), Some(612));
+
+        let real = Stream::new(dictionary! { "Width" => Object::Real(612.7) }, Vec::new());
+        assert_eq!(
+            optional_integer(&real, b"Width"),
+            Some(612),
+            "Real values truncate toward zero"
+        );
+
+        let textual = Stream::new(dictionary! { "Width" => "612" }, Vec::new());
+        assert_eq!(optional_integer(&textual, b"Width"), None);
+        let missing = Stream::new(dictionary! {}, Vec::new());
+        assert_eq!(optional_integer(&missing, b"Width"), None);
+    }
+}

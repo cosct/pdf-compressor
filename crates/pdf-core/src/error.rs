@@ -25,7 +25,9 @@ pub enum AppError {
     )]
     InputTooLarge { size_bytes: u64, limit_bytes: u64 },
 
-    #[error("The PDF is DRM-encrypted with an unsupported security handler; it cannot be processed")]
+    #[error(
+        "The PDF is DRM-encrypted with an unsupported security handler; it cannot be processed"
+    )]
     Encrypted,
 
     #[error("The PDF requires an open password; supply one to process the file")]
@@ -178,6 +180,12 @@ mod tests {
             "2.0 GB",
             "the 2 GiB limit reads naturally"
         );
+        // TB is the terminal tier: the unit cascade must stop there even
+        // for petabyte-scale inputs (a runaway loop indexes past UNITS).
+        assert_eq!(humanized_size(1024_u64.pow(5)), "1024 TB");
+        // The one-decimal form applies strictly below 10; 10 itself is plain.
+        assert_eq!(humanized_size(9 * 1024 + 512), "9.5 KB");
+        assert_eq!(humanized_size(10 * 1024), "10 KB");
     }
 
     #[test]
@@ -187,7 +195,10 @@ mod tests {
             limit_bytes: 2 * 1024 * 1024 * 1024,
         });
         assert_eq!(payload.code, "error.inputTooLarge");
-        assert_eq!(payload.values.get("limit").map(String::as_str), Some("2.0 GB"));
+        assert_eq!(
+            payload.values.get("limit").map(String::as_str),
+            Some("2.0 GB")
+        );
         assert!(payload.fallback.contains("2.0 GB"));
     }
 }

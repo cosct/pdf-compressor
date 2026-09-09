@@ -3486,6 +3486,61 @@ fn target_size_mode_with_bilevel_g4() {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn target_size_report_reflects_the_winning_round_params() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = fresh_fixture(dir.path());
+    let original = fs::metadata(&path).expect("fixture metadata").len();
+
+    // A tight budget under a high-quality, no-resize request: the search
+    // must end on lower quality and a smaller edge, and the applied-profile
+    // notice must report the winning round's params — not the request's.
+    let target = original / 4;
+    let settings = CompressionSettings::from_sources(
+        None,
+        CompressionSettingsOverrides {
+            image_quality: Some(95),
+            max_image_size_px: Some(4000),
+            ..Default::default()
+        },
+    );
+    let mut progress = |_| {};
+    let response = compress_pdf_to_target_size(
+        path.to_str().unwrap(),
+        None,
+        target,
+        settings,
+        noop_cancel_flag(),
+        &mut progress,
+    )
+    .expect("target-size compression must succeed");
+
+    assert!(response.output_was_smaller);
+    let notice = response
+        .notices
+        .iter()
+        .find(|n| n.code == "compress.note.appliedProfile")
+        .expect("applied profile notice");
+    let reported_quality: u8 = notice
+        .values
+        .get("quality")
+        .and_then(|value| value.parse().ok())
+        .expect("quality value");
+    let reported_edge: u16 = notice
+        .values
+        .get("maxImageSizePx")
+        .and_then(|value| value.parse().ok())
+        .expect("edge value");
+    assert!(
+        reported_quality < 95,
+        "the winning round's quality ({reported_quality}) must drop below the request"
+    );
+    assert!(
+        reported_edge < 4000,
+        "the winning round's edge ({reported_edge}) must drop below the request"
+    );
+}
+
+#[test]
 fn target_size_mode_meets_budget() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = fresh_fixture(dir.path());
