@@ -1,56 +1,71 @@
 # PDF Compressor
 
+[![CI](https://github.com/cosct/pdf-compressor/actions/workflows/ci.yml/badge.svg)](https://github.com/cosct/pdf-compressor/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/cosct/pdf-compressor.svg)](https://github.com/cosct/pdf-compressor/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 English | [简体中文](README.zh-CN.md)
 
-A local-first desktop app that makes PDFs smaller — without breaking what matters. Text stays text, vectors stay vectors; only the heavy parts (images, fonts, redundant objects) are optimized.
+Make PDFs smaller **without breaking them**: text stays searchable and copyable, images get re-encoded to your quality target, everything else is left untouched. All processing happens on your own machine — no uploads, no accounts, no network required.
 
 ![Main window](docs/screenshots/app-main.png)
 
-## Why this one
+## What it does
 
-- **Selective, not blind**: an analysis pass classifies each document and recommends a preset; the optimizer only rewrites what is provably safe (text and vector instructions are never rasterized)
-- **Serious image codec work**: JPEG re-encoding with SIMD, downsampling, grayscale conversion, and lossless CCITT G4 for black-and-white scans; G3/G4 fax inputs decode and transcode
-- **Structural lossless passes**: byte-identical streams deduplicate, unused font/XObject resources are removed, embedded CID TrueType fonts subset to used glyphs (opt-in)
-- **Target-size mode**: give it a byte budget (e.g. under 5 MB for an email attachment) and it searches quality/resolution parameters until the output fits — distributing quality across images by content detail
-- **Safe by construction**: encrypted files that need a password are handled explicitly (prompt, or `--password`), owner-password files unlock cleanly, and an output that wouldn't beat the original is never written
-- **Local-first**: no uploads, no telemetry, everything on your machine
-- **Batch-friendly**: multi-file queue in the GUI, one-liner CLI for scripts, and right-click integration on Windows Explorer, macOS Finder, KDE Dolphin, and GNOME Files
+- **Touches only what matters**: an analysis pass figures out where the bytes actually go (images? embedded fonts? leftover cruft?) and optimizes just that; text and line art are never converted to pictures
+- **Serious image compression**: JPEG re-encoding at your target quality, automatic downsampling of oversized images, color-to-grayscale; black-and-white scans use the lossless fax codec (G4) and often shrink to a fraction of their size
+- **Budget for your attachments**: target-size mode takes "under 5 MB" and searches the quality/resolution combinations until one fits — spending budget wisely, less on text pages and more on photo pages
+- **Cleans up invisible bloat**: byte-identical duplicates are merged into one, unused resources left behind by editors are removed, and embedded fonts are trimmed to the characters actually used (a big win for CJK documents)
+- **Plays it safe**: an output that wouldn't beat the original is never written; password-protected files follow an explicit flow; your original file is never overwritten
+- **Fully offline**: your files never leave your machine, and nothing is tracked
+- **Fits your workflow**: multi-file queue in the GUI, one-liner CLI for batches, and right-click integration in Windows Explorer, macOS Finder, KDE Dolphin, and GNOME Files
 
 ## Install
 
-| Platform | Source |
+| Platform | How |
 | --- | --- |
-| Arch Linux | AUR: `yay -S pdf-compressor-bin` (binary package built from [Releases](https://github.com/cosct/pdf-compressor/releases) assets) or `yay -S pdf-compressor` (source package); or `pnpm run tauri:arch` for a local zst |
-| Windows | NSIS installer from [Releases](https://github.com/cosct/pdf-compressor/releases) (ships the CLI and an Explorer context menu) |
-| macOS | `.dmg` from [Releases](https://github.com/cosct/pdf-compressor/releases) (+ optional Finder Quick Action, see user guide) |
-| Any | Build from source: `pnpm install && pnpm run tauri build` (Rust 1.93+, Node 22+) |
+| Windows | Grab the installer (`.exe`) from [Releases](https://github.com/cosct/pdf-compressor/releases) — ships the CLI and an Explorer context menu |
+| macOS | Grab the `.dmg` from [Releases](https://github.com/cosct/pdf-compressor/releases) (universal, Intel / Apple Silicon) |
+| Arch Linux | AUR: `yay -S pdf-compressor-bin` (binary) or `yay -S pdf-compressor` (source) |
+| Other Linux | Grab the `.AppImage` or `.deb` from [Releases](https://github.com/cosct/pdf-compressor/releases) |
+| From source | `pnpm install && pnpm run tauri build` (Rust 1.93+, Node.js 22+) |
 
 ## Quick start
 
-**GUI** — drag PDFs in, review the analysis, press *Start compression*. Outputs land next to the originals as `name__optimized-<preset>.pdf`.
+**GUI** — drag PDFs in, glance at the analysis (expected savings and a recommended preset), press *Start compression*. Results land next to the originals; the original file is never touched.
 
-**CLI** — analyze, compress, or right-click-style quick mode:
+**CLI** —
 
 ```bash
-pdf-compressor-cli analyze input.pdf
-pdf-compressor-cli compress input.pdf --preset maximum
-pdf-compressor-cli compress input.pdf --target-size 5MB   # fit under a budget
-pdf-compressor-cli compress - --stdout < in.pdf > out.pdf # pipe mode (stdin→stdout)
-pdf-compressor-cli quick input.pdf --bilevel g4            # headless + notification
-pdf-compressor-cli quick scans/ --no-notify                # recurse a directory
+pdf-compressor-cli analyze input.pdf                          # see where the bytes go
+pdf-compressor-cli compress input.pdf --preset maximum        # compress (aggressive)
+pdf-compressor-cli compress input.pdf --target-size 5MB       # fit under a budget
+pdf-compressor-cli quick scans/ --no-notify                   # batch a directory, headless
+curl -s https://example.com/big.pdf | pdf-compressor-cli compress - --stdout > small.pdf
+                                                              # drop into a pipe, no temp files
 ```
+
+The CLI drives the same engine as the GUI with identical parameter semantics — see the [user guide](docs/USER-GUIDE.zh-CN.md) (中文) for the full reference.
+
+## How it works (one-minute version)
+
+A PDF is usually big because images are stored larger than needed, whole fonts are embedded, or years of edits left redundant data behind. This tool inspects each of those and reorganizes them to **shrink bytes without changing appearance**: images are re-encoded to the target quality, duplicates merged, unused font data trimmed. Text, bookmarks, links, and page structure are always preserved — so the compressed file still searches, copies, and prints like the original.
+
+Curious what each setting means and the trade-offs behind it? Read the [settings walkthrough](docs/USER-GUIDE.zh-CN.md#3-压缩参数详解) in the user guide.
 
 ## Documentation
 
 | Document | Audience |
 | --- | --- |
-| [User guide (中文)](docs/USER-GUIDE.zh-CN.md) | Everyone — install, GUI & CLI usage, context menus, password handling, FAQ |
+| [User guide (中文)](docs/USER-GUIDE.zh-CN.md) | Everyone — install, GUI & CLI usage, context menus, password handling, FAQ, glossary |
 | [Changelog](CHANGELOG.md) | Everyone — release history |
 | [Development guide](docs/DEVELOPMENT.md) | Contributors — architecture, conventions, packaging, maintainer notes |
-| [Testing guide](docs/TESTING.md) | Contributors / QA — test pyramid, quality gates, fuzzing, mutation testing |
+| [Testing guide](docs/TESTING.md) | Contributors / QA — test pyramid and quality gates |
 
-## Tech stack
+## Contributing
 
-Rust engine (`lopdf`, `jpeg-encoder`, `fax`, `subsetter`, SIMD resize) · Vue 3 + TypeScript · Tauri 2 · MIT licensed
+Issues and pull requests are welcome. See the [development guide](docs/DEVELOPMENT.md) for environment setup, code layout, and conventions — please run the local quality gate (`pnpm gate`) before opening a PR.
 
-Output behavior, limitations, and troubleshooting are covered in the user guide.
+## License
+
+[MIT](LICENSE)
