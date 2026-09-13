@@ -90,7 +90,7 @@ rustc-hash = "2"
 fast_image_resize = { version = "6", features = ["image"] }
 
 [dev-dependencies]
-criterion = "0.5"
+criterion = "0.8"
 # Self dev-dependency: turns on the `testutil` feature for tests, benches,
 # and examples only (resolver = "2" keeps it out of normal builds).
 pdf-core = { path = ".", features = ["testutil"] }
