@@ -14,11 +14,11 @@ jobs:
     name: Frontend (tests, type-check & build)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: pnpm/action-setup@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -39,7 +39,7 @@ jobs:
     name: Rust workspace (clippy & tests)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Install Tauri system dependencies
         run: |
@@ -95,7 +95,7 @@ jobs:
           - crate: src-tauri
             features: "--all-features"
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Install Tauri system dependencies
         run: |
@@ -137,7 +137,7 @@ jobs:
     name: Fuzz (60s smoke run)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@nightly
       - uses: dtolnay/rust-toolchain@stable
@@ -161,7 +161,7 @@ jobs:
     name: Dependency audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: taiki-e/install-action@cargo-audit
 
