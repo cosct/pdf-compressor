@@ -8,7 +8,9 @@ use std::{
     sync::{atomic::AtomicBool, Arc},
 };
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
+use std::hint::black_box;
+
+use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 use lopdf::{dictionary, Document, Object, Stream};
 
 use pdf_core::pdf::{
