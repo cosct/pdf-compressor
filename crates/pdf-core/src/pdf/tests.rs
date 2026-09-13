@@ -282,6 +282,16 @@ fn noop_cancel_flag() -> Arc<AtomicBool> {
     Arc::new(AtomicBool::new(false))
 }
 
+/// Pin an absolute cap at the fixture's own edge for fidelity tests: the
+/// 0.9.0 percent-based preset table resamples any image by design, which
+/// would mix scaling loss into (or break the dimension checks of) the
+/// pixel-for-pixel transcode comparisons.
+fn no_downscale(mut settings: CompressionSettings, edge: u32) -> CompressionSettings {
+    settings.max_image_size_px = u16::try_from(edge.max(100)).unwrap_or(8_000);
+    settings.max_image_size_percent = None;
+    settings
+}
+
 fn extracted_text(path: &Path) -> String {
     Document::load(path)
         .and_then(|doc| doc.extract_text(&[1]))
@@ -304,7 +314,7 @@ fn analyze_reports_expected_signals() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = fresh_fixture(dir.path());
 
-    let response = analyze_pdf_with_progress(path.to_str().unwrap(), None, |_| {})
+    let response = analyze_pdf_with_progress(path.to_str().unwrap(), None, None, |_| {})
         .expect("analysis must succeed");
 
     assert_eq!(response.page_count, 1);
@@ -352,7 +362,7 @@ fn encrypted_document_without_password_reports_password_required() {
     for label in ["analyze", "compress", "target-size"] {
         let result = match label {
             "analyze" => {
-                analyze_pdf_with_progress(path.to_str().unwrap(), None, |_| {}).map(|_| ())
+                analyze_pdf_with_progress(path.to_str().unwrap(), None, None, |_| {}).map(|_| ())
             }
             "compress" => compress_pdf_with_progress(
                 path.to_str().unwrap(),
@@ -458,8 +468,9 @@ fn encrypted_document_with_password_compresses_to_plain_output() {
     .expect("target-size search must honor the password");
     assert!(target.compressed_size_bytes > 0.0);
 
-    let analysis = analyze_pdf_with_progress(path.to_str().unwrap(), Some("open-secret"), |_| {})
-        .expect("analysis must honor the password");
+    let analysis =
+        analyze_pdf_with_progress(path.to_str().unwrap(), Some("open-secret"), None, |_| {})
+            .expect("analysis must honor the password");
     assert_eq!(analysis.page_count, 1);
 }
 
@@ -470,7 +481,7 @@ fn owner_password_only_document_unlocks_and_compresses() {
     // Empty user password (owner-password-only): readable without a password.
     encrypt_fixture(&path, "owner-secret", "");
 
-    let analysis = analyze_pdf_with_progress(path.to_str().unwrap(), None, |_| {})
+    let analysis = analyze_pdf_with_progress(path.to_str().unwrap(), None, None, |_| {})
         .expect("owner-password-only PDF must analyze");
     assert_eq!(analysis.page_count, 1);
     assert!(analysis
@@ -556,6 +567,64 @@ fn compress_round_trip_preserves_text_and_shrinks() {
 
     // The original must be left untouched.
     assert_eq!(fs::read(&path).expect("re-read original"), original_bytes);
+}
+
+#[test]
+fn percent_preset_adapts_the_cap_to_the_document_edge() {
+    // 0.9.0 unified semantics: without an explicit pixel value, the preset
+    // caps at a percentage of the document's own largest image edge — big
+    // scans keep more pixels, small documents are capped tighter, and the
+    // applied-profile notice reports the resolved absolute number.
+    let build = |edge: u32| {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let jpeg = encode_jpeg(fixture_rgb_image(edge, edge / 2), 90);
+        let path = write_fixture(
+            dir.path(),
+            "percent.pdf",
+            &build_pdf_bytes(jpeg, edge, edge / 2),
+        );
+        (dir, path)
+    };
+
+    let (_big_dir, big) = build(2000);
+    let response = compress_pdf_with_progress(
+        big.to_str().unwrap(),
+        None,
+        balanced_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+    // 68% of 2000 px, rounded to hundreds → 1400.
+    let notice = response
+        .notices
+        .iter()
+        .find(|n| n.code == "compress.note.appliedProfile")
+        .expect("appliedProfile notice");
+    assert_eq!(
+        notice.values.get("maxImageSizePx").map(String::as_str),
+        Some("1400")
+    );
+
+    let (_small_dir, small) = build(800);
+    let response = compress_pdf_with_progress(
+        small.to_str().unwrap(),
+        None,
+        balanced_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+    // 68% of 800 px → 500 (the same relative posture on a smaller document).
+    let notice = response
+        .notices
+        .iter()
+        .find(|n| n.code == "compress.note.appliedProfile")
+        .expect("appliedProfile notice");
+    assert_eq!(
+        notice.values.get("maxImageSizePx").map(String::as_str),
+        Some("500")
+    );
 }
 
 #[test]
@@ -1397,6 +1466,9 @@ fn subset_fonts_off_keeps_font_program_unchanged() {
         None,
         CompressionSettingsOverrides {
             preset: Some("maximum".to_string()),
+            // The 0.9.0 preset table enables subsetting for maximum by
+            // default; this test pins the explicit opt-out path.
+            subset_fonts: Some(false),
             ..Default::default()
         },
     );
@@ -2203,7 +2275,7 @@ fn icc_cmyk_raw_image_transcodes_to_rgb() {
     let response = compress_pdf_with_progress(
         path.to_str().unwrap(),
         None,
-        cmyk_settings(),
+        no_downscale(cmyk_settings(), 1200),
         noop_cancel_flag(),
         |_| {},
     )
@@ -2278,7 +2350,7 @@ fn device_cmyk_raw_image_transcodes_to_rgb() {
     let response = compress_pdf_with_progress(
         path.to_str().unwrap(),
         None,
-        cmyk_settings(),
+        no_downscale(cmyk_settings(), 1200),
         noop_cancel_flag(),
         |_| {},
     )
@@ -2955,7 +3027,7 @@ fn indexed_cmyk_image_expands_palette_and_converts() {
     let response = compress_pdf_with_progress(
         path.to_str().unwrap(),
         None,
-        cmyk_settings(),
+        no_downscale(cmyk_settings(), 1200),
         noop_cancel_flag(),
         |_| {},
     )
@@ -3271,13 +3343,10 @@ fn bilevel_mode_rewrites_near_bilevel_jpegs_as_ccitt_g4() {
     assert!(
         matches!(stream.dict.get(b"ColorSpace"), Ok(Object::Name(cs)) if cs.as_slice() == b"DeviceGray")
     );
-    // Max-edge of the maximum preset is 1400 px — the 2000 px input must be
-    // resampled accordingly.
-    assert_eq!(stream.dict.get(b"Width").ok(), Some(&Object::Integer(1400)));
-    assert_eq!(
-        stream.dict.get(b"Height").ok(),
-        Some(&Object::Integer(1050))
-    );
+    // The maximum preset caps at 52% of the document's largest image edge
+    // (0.9.0 unified table): 52% × 2000 = 1040 → rounded to hundreds = 1000.
+    assert_eq!(stream.dict.get(b"Width").ok(), Some(&Object::Integer(1000)));
+    assert_eq!(stream.dict.get(b"Height").ok(), Some(&Object::Integer(750)));
 
     assert!(
         extracted_text(Path::new(&response.output_path)).contains(FIXTURE_TEXT),
@@ -3337,20 +3406,19 @@ fn ccitt_g4_input_transcodes_when_resize_needed() {
     assert!(
         matches!(stream.dict.get(b"Filter"), Ok(Object::Name(name)) if name.as_slice() == b"CCITTFaxDecode")
     );
-    assert_eq!(stream.dict.get(b"Width").ok(), Some(&Object::Integer(1400)));
-    assert_eq!(
-        stream.dict.get(b"Height").ok(),
-        Some(&Object::Integer(1050))
-    );
+    // 52% of the 2400 px input edge (0.9.0 unified preset table), rounded
+    // to hundreds.
+    assert_eq!(stream.dict.get(b"Width").ok(), Some(&Object::Integer(1200)));
+    assert_eq!(stream.dict.get(b"Height").ok(), Some(&Object::Integer(900)));
 
     // The rewritten payload must still be a decodable G4 stream with the
     // declared dimensions.
     let mut rows = 0u32;
-    let decoded = fax::decoder::decode_g4(stream.content.iter().copied(), 1400, Some(1050), |_| {
+    let decoded = fax::decoder::decode_g4(stream.content.iter().copied(), 1200, Some(900), |_| {
         rows += 1
     });
     assert!(decoded.is_some(), "output G4 payload must decode");
-    assert_eq!(rows, 1050);
+    assert_eq!(rows, 900);
 
     assert!(
         extracted_text(Path::new(&response.output_path)).contains(FIXTURE_TEXT),
@@ -3759,10 +3827,14 @@ fn small_document_keeps_skipping_small_streams() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = build_many_small_image_pdf(dir.path(), 4);
 
+    // Absolute cap at the fixture images' own edge: the percent preset table
+    // (0.9.0) would cap 68% of 800 px and turn these into rescale targets —
+    // this test pins the image-count skip heuristic, not resampling.
+    let settings = no_downscale(balanced_settings(), 800);
     let response = compress_pdf_with_progress(
         path.to_str().unwrap(),
         None,
-        balanced_settings(),
+        settings,
         noop_cancel_flag(),
         |_| {},
     )
@@ -4008,6 +4080,53 @@ fn bytes_pipeline_passes_the_original_through_when_not_smaller() {
 }
 
 #[test]
+fn bytes_pipeline_target_size_searches_in_memory() {
+    // 0.9.0: the bytes pipeline gained the target-size search — the same
+    // bisection the file path runs, but every probe stays in memory and the
+    // pipe semantics (valid PDF out, passthrough when nothing wins) hold.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = fresh_fixture(dir.path());
+    let input = fs::read(&path).expect("read fixture");
+
+    let target = 60 * 1024;
+    let outcome = super::compress_pdf_bytes_to_target_size(
+        input,
+        None,
+        target as u64,
+        balanced_settings(),
+        noop_cancel_flag(),
+        &mut |_| {},
+    )
+    .expect("target-size bytes compression must succeed");
+
+    let codes: Vec<&str> = outcome
+        .response
+        .notices
+        .iter()
+        .map(|notice| notice.code.as_str())
+        .collect();
+    let met = codes.contains(&"compress.note.targetSizeMet");
+    let missed = codes.contains(&"compress.warning.targetSizeMissed");
+    assert!(
+        met ^ missed,
+        "exactly one of targetSizeMet/targetSizeMissed must appear, got {codes:?}"
+    );
+    if met {
+        assert!(
+            outcome.bytes.len() as u64 <= target as u64,
+            "a met target must produce at most {} bytes, got {}",
+            target,
+            outcome.bytes.len()
+        );
+    }
+    assert!(
+        lopdf::Document::load_mem(&outcome.bytes).is_ok(),
+        "the pipe must always carry a valid PDF"
+    );
+    assert_eq!(outcome.response.output_path, "<stdout>");
+}
+
+#[test]
 fn bytes_pipeline_classifies_encrypted_inputs() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = fresh_fixture(dir.path());
@@ -4143,7 +4262,7 @@ fn jpx_rgb_codestream_transcodes_to_jpeg() {
     let response = compress_pdf_with_progress(
         path.to_str().unwrap(),
         None,
-        maximum_settings(),
+        no_downscale(maximum_settings(), JPX_PLANE_WIDTH.max(JPX_PLANE_HEIGHT)),
         noop_cancel_flag(),
         |_| {},
     )
@@ -4259,7 +4378,7 @@ fn jpx_subsampled_sycc_transcodes_with_upsampled_chroma() {
     let response = compress_pdf_with_progress(
         path.to_str().unwrap(),
         None,
-        maximum_settings(),
+        no_downscale(maximum_settings(), JPX_SUB420_WIDTH.max(JPX_SUB420_HEIGHT)),
         noop_cancel_flag(),
         |_| {},
     )
@@ -4316,7 +4435,7 @@ fn jpx_subsampled_unspecified_keeps_plane_semantics() {
     let response = compress_pdf_with_progress(
         path.to_str().unwrap(),
         None,
-        maximum_settings(),
+        no_downscale(maximum_settings(), JPX_SUB420_WIDTH.max(JPX_SUB420_HEIGHT)),
         noop_cancel_flag(),
         |_| {},
     )
@@ -4387,7 +4506,9 @@ fn smask_dct_encoded_image_transcodes() {
     let response = compress_pdf_with_progress(
         path.to_str().unwrap(),
         None,
-        maximum_settings(),
+        // Absolute cap at the fixture's own edge — the alpha round-trip
+        // assertions compare against the unscaled ramp coordinates.
+        no_downscale(maximum_settings(), 1300),
         noop_cancel_flag(),
         |_| {},
     )
@@ -4505,7 +4626,7 @@ fn jpx_bilevel_scan_transcodes_to_g4() {
     let response = compress_pdf_with_progress(
         path.to_str().unwrap(),
         None,
-        g4_settings(),
+        no_downscale(g4_settings(), JPX_BILEVEL_WIDTH.max(JPX_BILEVEL_HEIGHT)),
         noop_cancel_flag(),
         |_| {},
     )
@@ -4684,7 +4805,7 @@ fn analysis_estimate_excludes_undecodable_codecs() {
     }
     document.save(&path).expect("save relabeled fixture");
 
-    let analysis = analyze_pdf_with_progress(path.to_str().unwrap(), None, |_| {})
+    let analysis = analyze_pdf_with_progress(path.to_str().unwrap(), None, None, |_| {})
         .expect("analysis must succeed");
     assert!(analysis
         .notices
@@ -4697,6 +4818,42 @@ fn analysis_estimate_excludes_undecodable_codecs() {
         "estimate must exclude undecodable image bytes, got {}",
         analysis.estimated_savings_percent
     );
+}
+
+#[test]
+fn analysis_with_settings_context_follows_the_caller_toggles() {
+    // The 0.9.0 honesty pass: with the job's live settings in hand, the
+    // estimate counts only what those settings would actually do. A caller
+    // that refused the CMYK conversion must not be promised the CMYK bytes
+    // as savings, and their preset drives the ratio (conservative < maximum).
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = fresh_fixture(dir.path());
+
+    let plain = analyze_pdf_with_progress(path.to_str().unwrap(), None, None, |_| {})
+        .expect("context-free analysis");
+    let conservative = analyze_pdf_with_progress(
+        path.to_str().unwrap(),
+        None,
+        Some(&balanced_settings()),
+        |_| {},
+    )
+    .expect("settings-aware analysis");
+
+    // The fixture is DeviceRGB (no CMYK bytes to exclude), so the settings
+    // context only tightens the posture — never inflates the promise.
+    assert!(
+        conservative.estimated_savings_percent <= plain.estimated_savings_percent + f32::EPSILON,
+        "a balanced caller context must not promise more than the recommended posture: \
+         {} vs {}",
+        conservative.estimated_savings_percent,
+        plain.estimated_savings_percent
+    );
+
+    // The percent cap resolves against this document's own edge (1600 px):
+    // balanced 68% → 1100 px, visible through a settings clone.
+    let mut resolved = balanced_settings();
+    resolved.resolve_max_image_size_px(Some(1600));
+    assert_eq!(resolved.max_image_size_px, 1100, "68% of 1600 px");
 }
 
 // ---------------------------------------------------------------------------
@@ -4722,10 +4879,16 @@ fn compress_g3_fixture(
         &build_ccitt_pdf_bytes_with_parms(g3, width, height, parms),
     );
 
+    // Absolute 1400 px cap (the pre-0.9.0 maximum default): below the
+    // 1728 px input edge, so the image stays actionable, with the same
+    // ~81% resample ratio these transcode fixtures were tuned against.
+    // The percent table's 52% resample turns the bilevel pattern's edges
+    // gray enough to fail the near-bilevel gate on some fixtures.
+    let settings = no_downscale(g4_settings(), 1400);
     let response = compress_pdf_with_progress(
         path.to_str().unwrap(),
         None,
-        g4_settings(),
+        settings,
         noop_cancel_flag(),
         |_| {},
     )
@@ -5304,12 +5467,20 @@ fn compress_and_measure(
         "quality.pdf",
         &build_pdf_bytes(jpeg.to_vec(), 1200, 900),
     );
-    let settings = CompressionSettings::from_sources(
-        None,
-        CompressionSettingsOverrides {
-            preset: Some(preset.to_string()),
-            ..Default::default()
-        },
+    // Absolute cap at the fixture's own edge: the 0.9.0 preset table
+    // is percent-based (a fixed fraction of the document's largest
+    // image edge), which would rescale even this modest fixture and
+    // mix scaling loss into what these floors measure — the quality
+    // knob only.
+    let settings = no_downscale(
+        CompressionSettings::from_sources(
+            None,
+            CompressionSettingsOverrides {
+                preset: Some(preset.to_string()),
+                ..Default::default()
+            },
+        ),
+        1200,
     );
     let response = compress_pdf_with_progress(
         path.to_str().unwrap(),
@@ -5338,14 +5509,16 @@ fn preset_quality_is_monotonic_and_above_floors() {
     // Floors measured with ~3 dB headroom below typical values; a drop past
     // them means a code change made the same quality number visibly worse.
     // Floors pinned ~2 dB below the measured values on the noise fixture
-    // (the PSNR worst case: conservative ≈ 30.1, balanced ≈ 27.4, maximum ≈
-    // 24.3 dB). A drop past them means a code change made the same quality
-    // number visibly worse.
+    // (the PSNR worst case, re-measured for the 0.9.0 unified preset table:
+    // conservative ≈ 27.4, balanced ≈ 24.7, maximum ≈ 22.5 dB at qualities
+    // 72/60/46 — the pre-0.9.0 engine defaults were 82/72/58 ≈ +2.7 dB
+    // higher across the board). A drop past them means a code change made
+    // the same quality number visibly worse.
     let mut measured: Vec<(&str, f64)> = Vec::new();
     for (preset, floor) in [
-        ("conservative", 28.0),
-        ("balanced", 25.5),
-        ("maximum", 22.5),
+        ("conservative", 25.5),
+        ("balanced", 23.0),
+        ("maximum", 20.5),
     ] {
         let dir = tempfile::tempdir().expect("tempdir");
         let (response, psnr) = compress_and_measure(dir.path(), &source, &jpeg, preset);
@@ -6010,8 +6183,8 @@ fn review_wrong_password_analysis_keeps_retry_error_code() {
     doc.encrypt(&state).unwrap();
     doc.save(&input).unwrap();
 
-    let error =
-        analyze_pdf_with_progress(input.to_str().unwrap(), Some("wrong"), |_| {}).unwrap_err();
+    let error = analyze_pdf_with_progress(input.to_str().unwrap(), Some("wrong"), None, |_| {})
+        .unwrap_err();
     let payload = crate::AppErrorPayload::from(error);
     assert_eq!(
         payload.code, "error.wrongPassword",

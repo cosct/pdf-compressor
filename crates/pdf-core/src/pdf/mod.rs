@@ -28,7 +28,7 @@ pub use compressor::{
     MAX_INPUT_BYTES,
 };
 pub use settings::{BilevelCodec, CompressionSettings, CompressionSettingsOverrides};
-pub use target_size::compress_pdf_to_target_size;
+pub use target_size::{compress_pdf_bytes_to_target_size, compress_pdf_to_target_size};
 
 use std::sync::{
     atomic::{AtomicBool, Ordering},

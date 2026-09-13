@@ -37,7 +37,7 @@ jobs:
 
       # The tag's tree is what the source package builds from — check out the
       # released tag, not the branch head.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ inputs.tag || github.event.release.tag_name }}
 

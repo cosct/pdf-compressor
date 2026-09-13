@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "0.8.0"
+version = "0.9.0"
 description = "A selective PDF compression desktop app built with Tauri and Rust"
 authors = ["cosct"]
 license = "MIT"

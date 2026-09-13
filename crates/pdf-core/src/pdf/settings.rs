@@ -14,6 +14,28 @@ pub enum CompressionPreset {
     Maximum,
 }
 
+/// Reference edge for percent-based size caps when a document carries no
+/// readable image dimensions (or none at all): the same fallback the GUI
+/// panel uses (`DEFAULT_REFERENCE_IMAGE_EDGE_PX` in compressionSettings.ts).
+pub const DEFAULT_REFERENCE_IMAGE_EDGE_PX: u32 = 3200;
+
+/// Lower/upper clamp for the resolved absolute cap, in pixels.
+const MIN_RESOLVED_EDGE_PX: u16 = 100;
+const MAX_RESOLVED_EDGE_PX: u16 = 8_000;
+
+/// Resolve a percent-of-reference-edge cap into an absolute pixel value,
+/// rounded to hundreds — the exact formula the GUI panel uses
+/// (`calculateMaxImageSizePx`), so a preset's effective numbers are identical
+/// wherever they get resolved.
+pub fn percent_to_px(percent: u16, reference_edge: u32) -> u16 {
+    let calculated = f64::from(reference_edge) * f64::from(percent) / 100.0;
+    let rounded = (calculated / 100.0).round() * 100.0;
+    rounded.clamp(
+        f64::from(MIN_RESOLVED_EDGE_PX),
+        f64::from(MAX_RESOLVED_EDGE_PX),
+    ) as u16
+}
+
 impl CompressionPreset {
     pub fn as_label(self) -> &'static str {
         match self {
@@ -35,20 +57,51 @@ impl CompressionPreset {
         }
     }
 
+    /// The preset table — the single source of truth shared by the GUI panel,
+    /// the right-click quick mode, and the CLI (0.9.0 unification). Values
+    /// mirror `frontend/src/config/preset-defaults.json`; changing one side
+    /// must change the other (and the user-guide table).
     pub fn default_quality(self) -> u8 {
         match self {
-            Self::Conservative => 82,
-            Self::Balanced => 72,
-            Self::Maximum => 58,
+            Self::Conservative => 72,
+            Self::Balanced => 60,
+            Self::Maximum => 46,
         }
     }
 
-    pub fn default_max_image_size_px(self) -> u16 {
+    /// Size cap as a percentage of the document's largest image edge
+    /// (adaptive: big scans keep more pixels, small images stay untouched).
+    pub fn default_max_image_size_percent(self) -> u16 {
         match self {
-            Self::Conservative => 2400,
-            Self::Balanced => 1800,
-            Self::Maximum => 1400,
+            Self::Conservative => 84,
+            Self::Balanced => 68,
+            Self::Maximum => 52,
         }
+    }
+
+    /// Legacy absolute-cap view of the preset table, resolved against the
+    /// default reference edge — for callers without document context (the
+    /// analyzer's no-images fallback).
+    pub fn default_max_image_size_px(self) -> u16 {
+        percent_to_px(
+            self.default_max_image_size_percent(),
+            DEFAULT_REFERENCE_IMAGE_EDGE_PX,
+        )
+    }
+
+    /// Metadata stripping per preset: conservative keeps document metadata
+    /// (the safest posture), the others remove it.
+    pub fn default_strip_metadata(self) -> bool {
+        match self {
+            Self::Conservative => false,
+            Self::Balanced | Self::Maximum => true,
+        }
+    }
+
+    /// Font subsetting per preset: only the most aggressive preset opts in
+    /// (inert in builds without the `subset-fonts` feature).
+    pub fn default_subset_fonts(self) -> bool {
+        matches!(self, Self::Maximum)
     }
 }
 
@@ -90,7 +143,15 @@ impl BilevelCodec {
 pub struct CompressionSettings {
     pub preset: CompressionPreset,
     pub image_quality: u8,
+    /// Absolute maximum image edge in pixels. When [`Self::max_image_size_percent`]
+    /// is set this holds a provisional value (percent against the default
+    /// reference edge) that the compression entry points re-resolve against
+    /// the document's own largest image edge once loaded.
     pub max_image_size_px: u16,
+    /// Percent-of-document-max-image-edge cap. `None` when an absolute pixel
+    /// value was supplied explicitly (`--max-edge`, a saved quick profile
+    /// with pixels); `Some` otherwise, including the preset-table default.
+    pub max_image_size_percent: Option<u16>,
     pub optimize_images: bool,
     pub compress_streams: bool,
     pub strip_metadata: bool,
@@ -122,6 +183,7 @@ pub struct CompressionSettingsOverrides {
     pub preset: Option<String>,
     pub image_quality: Option<u8>,
     pub max_image_size_px: Option<u16>,
+    pub max_image_size_percent: Option<u16>,
     pub optimize_images: Option<bool>,
     pub compress_streams: Option<bool>,
     pub strip_metadata: Option<bool>,
@@ -140,6 +202,9 @@ impl CompressionSettingsOverrides {
             preset: self.preset.or(fallback.preset),
             image_quality: self.image_quality.or(fallback.image_quality),
             max_image_size_px: self.max_image_size_px.or(fallback.max_image_size_px),
+            max_image_size_percent: self
+                .max_image_size_percent
+                .or(fallback.max_image_size_percent),
             optimize_images: self.optimize_images.or(fallback.optimize_images),
             compress_streams: self.compress_streams.or(fallback.compress_streams),
             strip_metadata: self.strip_metadata.or(fallback.strip_metadata),
@@ -163,6 +228,9 @@ impl CompressionSettings {
 
         let payload_quality = payload.as_ref().and_then(|value| value.image_quality);
         let payload_max_image_size = payload.as_ref().and_then(|value| value.max_image_size_px);
+        let payload_max_image_size_percent = payload
+            .as_ref()
+            .and_then(|value| value.max_image_size_percent);
         let payload_optimize_images = payload.as_ref().and_then(|value| value.optimize_images);
         let payload_compress_streams = payload.as_ref().and_then(|value| value.compress_streams);
         let payload_strip_metadata = payload.as_ref().and_then(|value| value.strip_metadata);
@@ -175,18 +243,41 @@ impl CompressionSettings {
             .map(|value| BilevelCodec::from_optional_str(Some(value)));
         let payload_output_dir = payload.and_then(|value| value.output_dir);
 
+        // Size cap: an explicit absolute pixel value wins outright (CLI
+        // `--max-edge`, saved quick profiles with pixels); otherwise the
+        // percent semantics apply — an explicit percent, else the preset
+        // table's. Percent mode keeps a provisional px against the default
+        // reference edge; the compression entry points re-resolve it against
+        // the loaded document's own largest image edge (the GUI's adaptive
+        // design, now shared by every entry point).
+        let explicit_max_image_size_px = overrides
+            .max_image_size_px
+            .or(payload_max_image_size)
+            .map(|value| value.clamp(100, 8_000));
+        let (max_image_size_px, max_image_size_percent) = match explicit_max_image_size_px {
+            Some(px) => (px, None),
+            None => {
+                let percent = overrides
+                    .max_image_size_percent
+                    .or(payload_max_image_size_percent)
+                    .unwrap_or_else(|| resolved_preset.default_max_image_size_percent())
+                    .clamp(5, 100);
+                (
+                    percent_to_px(percent, DEFAULT_REFERENCE_IMAGE_EDGE_PX),
+                    Some(percent),
+                )
+            }
+        };
+
         Self {
             preset: resolved_preset,
             image_quality: overrides
                 .image_quality
                 .or(payload_quality)
-                .unwrap_or(resolved_preset.default_quality())
+                .unwrap_or_else(|| resolved_preset.default_quality())
                 .clamp(10, 100),
-            max_image_size_px: overrides
-                .max_image_size_px
-                .or(payload_max_image_size)
-                .unwrap_or(resolved_preset.default_max_image_size_px())
-                .clamp(100, 8_000),
+            max_image_size_px,
+            max_image_size_percent,
             optimize_images: overrides
                 .optimize_images
                 .or(payload_optimize_images)
@@ -198,7 +289,7 @@ impl CompressionSettings {
             strip_metadata: overrides
                 .strip_metadata
                 .or(payload_strip_metadata)
-                .unwrap_or(true),
+                .unwrap_or_else(|| resolved_preset.default_strip_metadata()),
             grayscale: overrides.grayscale.or(payload_grayscale).unwrap_or(false),
             bilevel_codec: overrides
                 .bilevel_codec
@@ -207,13 +298,25 @@ impl CompressionSettings {
             subset_fonts: overrides
                 .subset_fonts
                 .or(payload_subset_fonts)
-                .unwrap_or(false),
+                .unwrap_or_else(|| resolved_preset.default_subset_fonts()),
             cmyk_conversion: overrides
                 .cmyk_conversion
                 .or(payload_cmyk_conversion)
                 .unwrap_or(true),
             output_dir: overrides.output_dir.or(payload_output_dir),
         }
+    }
+
+    /// Re-resolve a percent-based cap against the document's largest image
+    /// edge (called by the compression entry points right after loading, so
+    /// big scans keep more pixels while small images stay untouched). No-op
+    /// when an absolute pixel value was supplied explicitly.
+    pub fn resolve_max_image_size_px(&mut self, reference_edge: Option<u32>) {
+        let Some(percent) = self.max_image_size_percent else {
+            return;
+        };
+        let reference = reference_edge.unwrap_or(DEFAULT_REFERENCE_IMAGE_EDGE_PX);
+        self.max_image_size_px = percent_to_px(percent, reference);
     }
 
     /// Whether CMYK images may be converted for re-encoding under these
@@ -250,6 +353,7 @@ mod tests {
             preset: preset.map(str::to_string),
             image_quality: quality,
             max_image_size_px: max_px,
+            max_image_size_percent: None,
             optimize_images: None,
             compress_streams: None,
             strip_metadata: None,
@@ -302,6 +406,149 @@ mod tests {
         assert!(settings.compress_streams);
         assert!(settings.strip_metadata);
         assert!(settings.output_dir.is_none());
+    }
+
+    #[test]
+    fn preset_table_is_the_single_source_of_truth() {
+        // 0.9.0 unification: quality/percent/booleans must mirror
+        // frontend/src/config/preset-defaults.json exactly — same preset,
+        // same effective parameters in the GUI, quick mode, and the CLI.
+        let table = [
+            (CompressionPreset::Conservative, 72, 84, false, false),
+            (CompressionPreset::Balanced, 60, 68, true, false),
+            (CompressionPreset::Maximum, 46, 52, true, true),
+        ];
+        for (preset, quality, percent, strip, subset) in table {
+            assert_eq!(preset.default_quality(), quality, "{preset:?}");
+            assert_eq!(
+                preset.default_max_image_size_percent(),
+                percent,
+                "{preset:?}"
+            );
+            assert_eq!(preset.default_strip_metadata(), strip, "{preset:?}");
+            assert_eq!(preset.default_subset_fonts(), subset, "{preset:?}");
+        }
+        // The provisional absolute view resolves against the default
+        // reference edge, rounded to hundreds.
+        assert_eq!(
+            CompressionPreset::Conservative.default_max_image_size_px(),
+            2700
+        );
+        assert_eq!(
+            CompressionPreset::Balanced.default_max_image_size_px(),
+            2200
+        );
+        assert_eq!(CompressionPreset::Maximum.default_max_image_size_px(), 1700);
+    }
+
+    #[test]
+    fn percent_to_px_mirrors_the_gui_formula() {
+        // round(edge × percent / 100 / 100) × 100, clamped [100, 8000].
+        assert_eq!(percent_to_px(68, 3200), 2200);
+        assert_eq!(percent_to_px(84, 3200), 2700);
+        assert_eq!(percent_to_px(52, 2000), 1000);
+        assert_eq!(percent_to_px(52, 2400), 1200);
+        // Rounding to hundreds, never fractional edges.
+        assert_eq!(percent_to_px(50, 1234), 600);
+        // Clamped at both ends.
+        assert_eq!(percent_to_px(1, 100), 100);
+        assert_eq!(percent_to_px(100, 100_000), 8_000);
+    }
+
+    #[test]
+    fn from_sources_resolves_percent_and_absolute_caps() {
+        // Default: the preset table's percent, with a provisional px.
+        let settings =
+            CompressionSettings::from_sources(None, CompressionSettingsOverrides::default());
+        assert_eq!(settings.max_image_size_percent, Some(68));
+        assert_eq!(settings.max_image_size_px, 2200);
+
+        // An explicit percent (override or payload) replaces the table's.
+        let explicit = CompressionSettings::from_sources(
+            None,
+            CompressionSettingsOverrides {
+                max_image_size_percent: Some(75),
+                ..Default::default()
+            },
+        );
+        assert_eq!(explicit.max_image_size_percent, Some(75));
+        assert_eq!(explicit.max_image_size_px, 2400);
+
+        // An absolute pixel value wins outright and drops percent mode —
+        // `--max-edge` stays an absolute override in every entry point.
+        let absolute = CompressionSettings::from_sources(
+            Some(CompressionSettingsPayload {
+                max_image_size_percent: Some(75),
+                max_image_size_px: Some(1500),
+                ..Default::default()
+            }),
+            CompressionSettingsOverrides {
+                max_image_size_px: Some(1800),
+                ..Default::default()
+            },
+        );
+        assert_eq!(absolute.max_image_size_percent, None);
+        assert_eq!(absolute.max_image_size_px, 1800);
+    }
+
+    #[test]
+    fn resolve_max_image_size_px_adapts_to_the_document_edge() {
+        let mut settings =
+            CompressionSettings::from_sources(None, CompressionSettingsOverrides::default());
+        settings.resolve_max_image_size_px(Some(2000));
+        assert_eq!(settings.max_image_size_px, 1400, "68% of 2000 px");
+
+        settings.resolve_max_image_size_px(Some(600));
+        assert_eq!(settings.max_image_size_px, 400, "68% of 600 px");
+
+        // No readable dimensions: the default reference edge.
+        settings.resolve_max_image_size_px(None);
+        assert_eq!(settings.max_image_size_px, 2200);
+
+        // Absolute mode is untouched by resolution.
+        let mut absolute = CompressionSettings::from_sources(
+            None,
+            CompressionSettingsOverrides {
+                max_image_size_px: Some(1800),
+                ..Default::default()
+            },
+        );
+        absolute.resolve_max_image_size_px(Some(2000));
+        assert_eq!(absolute.max_image_size_px, 1800);
+    }
+
+    #[test]
+    fn from_sources_applies_preset_boolean_defaults() {
+        let conservative = CompressionSettings::from_sources(
+            None,
+            CompressionSettingsOverrides {
+                preset: Some("conservative".to_string()),
+                ..Default::default()
+            },
+        );
+        assert!(!conservative.strip_metadata, "conservative keeps metadata");
+        assert!(!conservative.subset_fonts);
+
+        let maximum = CompressionSettings::from_sources(
+            None,
+            CompressionSettingsOverrides {
+                preset: Some("maximum".to_string()),
+                ..Default::default()
+            },
+        );
+        assert!(maximum.strip_metadata);
+        assert!(maximum.subset_fonts, "maximum subsets fonts by default");
+
+        // Explicit values override the table in both directions.
+        let opted_out = CompressionSettings::from_sources(
+            None,
+            CompressionSettingsOverrides {
+                preset: Some("maximum".to_string()),
+                subset_fonts: Some(false),
+                ..Default::default()
+            },
+        );
+        assert!(!opted_out.subset_fonts);
     }
 
     #[test]

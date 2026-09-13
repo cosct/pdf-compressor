@@ -20,9 +20,22 @@ pub mod quick_profile;
 pub mod testutil;
 
 pub use error::{AppError, AppErrorPayload};
-pub use models::{migrate_cmyk_default_flip, CompressionResponse};
+pub use models::{migrate_cmyk_default_flip, BuildFeatures, CompressionResponse};
 pub use pdf::{
-    analyze_pdf_with_progress, compress_pdf_bytes_with_progress, compress_pdf_to_target_size,
-    compress_pdf_with_progress, BilevelCodec, BytesCompressionOutcome, CompressionSettings,
-    CompressionSettingsOverrides, MAX_INPUT_BYTES,
+    analyze_pdf_with_progress, compress_pdf_bytes_to_target_size, compress_pdf_bytes_with_progress,
+    compress_pdf_to_target_size, compress_pdf_with_progress, BilevelCodec, BytesCompressionOutcome,
+    CompressionSettings, CompressionSettingsOverrides, MAX_INPUT_BYTES,
 };
+
+/// Which optional codec/engine components this build carries — surfaced to
+/// the desktop shell so the UI can honestly reflect what a feature-off
+/// build will and will not do (e.g. the CMYK toggle on a `cmyk-cms`-less
+/// build: CMYK images stay untouched no matter what the setting says).
+pub fn build_features() -> BuildFeatures {
+    BuildFeatures {
+        cmyk_cms: cfg!(feature = "cmyk-cms"),
+        jpx: cfg!(feature = "jpx"),
+        ccitt: cfg!(feature = "ccitt"),
+        subset_fonts: cfg!(feature = "subset-fonts"),
+    }
+}

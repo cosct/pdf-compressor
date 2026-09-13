@@ -27,7 +27,7 @@ jobs:
             args: '--config src-tauri/tauri.release.conf.json'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: pnpm/action-setup@v6
 
@@ -119,7 +119,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Fill the draft release body
         env:
@@ -143,7 +143,7 @@ jobs:
       - name: Install container tools
         run: pacman -Syu --noconfirm archlinux-keyring git github-cli openssh
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Restore the release binaries into target/release
         uses: actions/download-artifact@v4

@@ -11,6 +11,7 @@ import {
 } from '../config/presets'
 import type { AnalysisSummary, CompressionPreset, CompressionSettings } from '../types/pdf'
 import { normalizeSettings } from '../composables/usePdfCompressor'
+import { getBuildFeatures } from '../lib/tauri'
 import {
   clampImageQuality,
   clampMaxImageSizePercent,
@@ -80,6 +81,22 @@ const presetOptions = computed<Array<{ value: CompressionPreset; title: string }
   { value: 'maximum', title: t('app.preset.maximum') },
   { value: 'custom', title: t('app.preset.custom') },
 ])
+
+// Build capability (0.9.0 honesty pass): a build without the `cmyk-cms`
+// component cannot honor the CMYK toggle — the engine keeps such images
+// untouched instead of converting them naively. The toggle stays clickable
+// (the setting is remembered), with a note stating what this build does.
+// Official installers ship the component; only source builds differ.
+const cmykUnavailableInBuild = ref(false)
+
+onMounted(async () => {
+  try {
+    const features = await getBuildFeatures()
+    cmykUnavailableInBuild.value = features !== null && !features.cmykCms
+  } catch {
+    // Capability probe is best-effort; the panel works without it.
+  }
+})
 
 async function refreshPresetProfiles() {
   presetConfigBusy.value = true
@@ -522,7 +539,14 @@ function presetSnapshotLabel(preset: CompressionPreset): string {
             <span class="toggle-chip__label">{{ t('settings.subsetFonts') }}</span>
           </label>
 
-          <label class="toggle-chip" :title="t('settings.cmykConversionHint')">
+          <label
+            class="toggle-chip"
+            :title="
+              cmykUnavailableInBuild
+                ? t('settings.cmykConversionBuildMissing')
+                : t('settings.cmykConversionHint')
+            "
+          >
             <span class="fd-toggle">
               <input
                 type="checkbox"
@@ -536,6 +560,10 @@ function presetSnapshotLabel(preset: CompressionPreset): string {
             <span class="toggle-chip__label">{{ t('settings.cmykConversion') }}</span>
           </label>
         </div>
+
+        <p v-if="cmykUnavailableInBuild" class="build-capability-note" role="note">
+          {{ t('settings.cmykConversionBuildMissing') }}
+        </p>
       </div>
     </div>
   </section>
@@ -849,6 +877,13 @@ input[type='range']:disabled {
   font: var(--fd-text-body);
   font-weight: 500;
   color: var(--fd-text-primary);
+}
+
+.build-capability-note {
+  margin: 0;
+  font: var(--fd-text-caption);
+  line-height: 1.5;
+  color: var(--fd-text-secondary);
 }
 
 @media (max-width: 1080px) {

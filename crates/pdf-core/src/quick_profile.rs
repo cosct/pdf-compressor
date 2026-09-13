@@ -101,7 +101,14 @@ pub fn quick_profile_overrides(profile: &QuickProfilePayload) -> CompressionSett
     CompressionSettingsOverrides {
         preset: profile.preset.clone(),
         image_quality: profile.image_quality,
-        max_image_size_px: profile.max_image_size_px,
+        // Percent wins when both spellings are present (0.9.0+ saves the
+        // percent form; the px field only survives in pre-0.9.0 profiles).
+        max_image_size_px: if profile.max_image_size_percent.is_some() {
+            None
+        } else {
+            profile.max_image_size_px
+        },
+        max_image_size_percent: profile.max_image_size_percent.map(u16::from),
         optimize_images: profile.optimize_images,
         compress_streams: profile.compress_streams,
         strip_metadata: profile.strip_metadata,

@@ -99,10 +99,139 @@ where
     // cancelled search must not leave the empty claimed name behind.
     let _claim_guard = super::compressor::OutputClaimGuard(output_path.clone());
 
+    let run = run_target_size_search(
+        TargetSource::File {
+            input_path: &input_path,
+            original_size_bytes,
+        },
+        TargetSink::File {
+            output_path: &output_path,
+        },
+        password,
+        settings,
+        &cancel_flag,
+        path,
+        started_at,
+        target_bytes,
+        report_progress,
+    )?;
+
+    Ok(run.response)
+}
+
+/// Bytes-pipeline twin of [`compress_pdf_to_target_size`] (0.9.0): the same
+/// in-memory search with the pipe's output semantics — no probe file ever
+/// touches the disk, and a result that cannot beat the input passes the
+/// original bytes through so downstream stages always receive a valid PDF.
+/// The CLI's `compress - --stdout --target-size` mode runs on this.
+pub fn compress_pdf_bytes_to_target_size<F>(
+    input: Vec<u8>,
+    password: Option<&str>,
+    target_bytes: u64,
+    settings: CompressionSettings,
+    cancel_flag: Arc<AtomicBool>,
+    report_progress: &mut F,
+) -> Result<super::compressor::BytesCompressionOutcome, AppError>
+where
+    F: FnMut(ProgressUpdate),
+{
+    if target_bytes == 0 {
+        return Err(AppError::Config(
+            "Target size must be greater than zero bytes.".to_string(),
+        ));
+    }
+
+    const PIPE_TASK_ID: &str = "<stdin>";
+    let started_at = Instant::now();
+    ensure_not_cancelled(&cancel_flag, PIPE_TASK_ID)?;
+    report_progress(ProgressUpdate::new("compressing", 5.0));
+
+    let run = run_target_size_search(
+        TargetSource::Bytes(input),
+        TargetSink::Bytes,
+        password,
+        settings,
+        &cancel_flag,
+        PIPE_TASK_ID,
+        started_at,
+        target_bytes,
+        report_progress,
+    )?;
+
+    Ok(super::compressor::BytesCompressionOutcome {
+        bytes: run.bytes.expect("the bytes sink always yields bytes"),
+        response: run.response,
+    })
+}
+
+/// Where the search's input document comes from.
+enum TargetSource<'a> {
+    File {
+        input_path: &'a Path,
+        original_size_bytes: u64,
+    },
+    /// Owned so the final passthrough can hand the original bytes back
+    /// without a copy.
+    Bytes(Vec<u8>),
+}
+
+/// Where materialized probe rounds go: the file path writes (and removes
+/// non-improving outputs), the bytes sink keeps the serialized round in
+/// memory.
+#[derive(Clone, Copy)]
+enum TargetSink<'a> {
+    File { output_path: &'a Path },
+    Bytes,
+}
+
+/// Result of a completed target-size run: the response plus, in bytes mode,
+/// the payload destined for the pipe.
+struct TargetRunOutput {
+    response: CompressionResponse,
+    bytes: Option<Vec<u8>>,
+}
+
+/// The search itself, shared by both public entries: load once, prepare,
+/// fix the non-image baseline, then bisect quality (shrinking the edge when
+/// the whole range is over budget) and materialize each fitting round for
+/// real-budget verification. See the module docs for the size model.
+#[allow(clippy::too_many_arguments)]
+fn run_target_size_search<F>(
+    source: TargetSource<'_>,
+    sink: TargetSink<'_>,
+    password: Option<&str>,
+    settings: CompressionSettings,
+    cancel_flag: &Arc<AtomicBool>,
+    task_id: &str,
+    started_at: Instant,
+    target_bytes: u64,
+    report_progress: &mut F,
+) -> Result<TargetRunOutput, AppError>
+where
+    F: FnMut(ProgressUpdate),
+{
     // --- Load the document once for the whole search ---
-    ensure_not_cancelled(&cancel_flag, path)?;
+    ensure_not_cancelled(cancel_flag, task_id)?;
     let password_attempted = password.is_some_and(|value| !value.is_empty());
-    let mut document = super::load_document(&input_path, password)?;
+    let (mut document, original_size_bytes, passthrough_input) = match source {
+        TargetSource::File {
+            input_path,
+            original_size_bytes,
+        } => {
+            ensure_input_size_supported(original_size_bytes)?;
+            (
+                super::load_document(input_path, password)?,
+                original_size_bytes,
+                None,
+            )
+        }
+        TargetSource::Bytes(bytes) => {
+            let size = bytes.len() as u64;
+            ensure_input_size_supported(size)?;
+            let document = super::load_document_mem(&bytes, password)?;
+            (document, size, Some(bytes))
+        }
+    };
     let mut stats = CompressionStats {
         decrypted_with_empty_password: super::ensure_not_encrypted(
             &mut document,
@@ -111,14 +240,21 @@ where
         ..CompressionStats::default()
     };
 
+    // Same percent-cap resolution as the single-pass entries: the preset's
+    // percent against this document's largest image edge (mostly cosmetic
+    // here — the search spans the full range — but keeps the materialized
+    // notice and skip policy honest about the starting posture).
+    let mut settings = settings;
+    settings.resolve_max_image_size_px(super::compressor::document_max_image_edge(&document));
+
     // --- Preparation shared by every probe round ---
     let preparation = prepare_document(
         &mut document,
         &settings,
-        &cancel_flag,
+        cancel_flag,
         &mut stats,
         report_progress,
-        path,
+        task_id,
     )?;
 
     // --- Baseline: the prepared document with images still in place ---
@@ -128,7 +264,7 @@ where
     // renumbering — the scan's object ids must stay valid for the take below)
     // matches the final save's object set; the residual id-width drift is a
     // few bytes per object and covered by the post-materialize verification.
-    ensure_not_cancelled(&cancel_flag, path)?;
+    ensure_not_cancelled(cancel_flag, task_id)?;
     document.prune_objects();
     let mut baseline = Vec::new();
     document
@@ -168,19 +304,19 @@ where
     let search_context = SearchContext {
         settings: &settings,
         skip_policy,
-        cancel_flag: &cancel_flag,
-        task_id: path,
+        cancel_flag,
+        task_id,
     };
     let materialize_context = MaterializeContext {
         search: search_context,
-        output_path: &output_path,
+        sink,
         original_size_bytes,
         started_at,
     };
     let mut lo = i32::from(MIN_SEARCH_QUALITY);
     let mut hi = i32::from(u8::MAX);
     let mut edge = start_search_edge(&entries);
-    let mut best: Option<(RoundParams, CompressionResponse)> = None;
+    let mut best: Option<(RoundParams, TargetRunOutput)> = None;
     let mut last_materialized: Option<RoundParams> = None;
     // Quality whose failure collapsed the current range — the next smaller
     // edge restarts the range at that quality instead of the top, because
@@ -197,7 +333,7 @@ where
 
     while attempts < MAX_ATTEMPTS {
         if cancel_flag.load(Ordering::Relaxed) {
-            return Err(AppError::Cancelled(path.to_string()));
+            return Err(AppError::Cancelled(task_id.to_string()));
         }
 
         if lo > hi {
@@ -251,9 +387,10 @@ where
         if estimated <= target_bytes {
             // Materialize the round and verify against the real budget —
             // the estimate ignores per-image dictionary shape shifts of a
-            // few dozen bytes, so trust the file, not the model.
+            // few dozen bytes, so trust the written file (or the serialized
+            // bytes), not the model.
             report_progress(ProgressUpdate::new("writing", 92.0));
-            let response = materialize_and_save(
+            let run = materialize_round(
                 &mut document,
                 &mut entries,
                 params,
@@ -262,14 +399,15 @@ where
                 false,
             )?;
             last_materialized = Some(params);
-            fits = response.compressed_size_bytes <= target_bytes as f64;
+            fits = run.response.compressed_size_bytes <= target_bytes as f64;
 
             if fits {
-                best = Some((params, response));
+                best = Some((params, run));
                 // The budget has headroom: try to spend it on quality.
             }
-            // An optimistic estimate (fits == false) leaves the file on disk
-            // for now; the finish step restores the best round if one exists.
+            // An optimistic estimate (fits == false) leaves the round's
+            // output in place for now; the finish step restores the best
+            // round if one exists.
         }
         let (next_lo, next_hi) = update_quality_range(lo, hi, i32::from(params.quality), fits);
         lo = next_lo;
@@ -278,12 +416,12 @@ where
 
     // --- Finish: keep the best verified fit, else best effort at the floor ---
     let met = best.as_ref().map(|(params, _)| *params);
-    let response = match best {
-        Some((params, response)) if last_materialized == Some(params) => response,
+    let mut run = match best {
+        Some((params, run)) if last_materialized == Some(params) => run,
         Some((params, _)) => {
-            // A later optimistic round clobbered the best file — restore it.
+            // A later optimistic round clobbered the best output — restore it.
             report_progress(ProgressUpdate::new("writing", 92.0));
-            materialize_and_save(
+            materialize_round(
                 &mut document,
                 &mut entries,
                 params,
@@ -302,7 +440,7 @@ where
                     edge,
                 });
             report_progress(ProgressUpdate::new("writing", 92.0));
-            materialize_and_save(
+            materialize_round(
                 &mut document,
                 &mut entries,
                 final_params,
@@ -312,14 +450,43 @@ where
             )?
         }
     };
+    run.response = with_target_notice(run.response, target_bytes, met);
 
-    Ok(with_target_notice(response, target_bytes, met))
+    // --- Pipe sink: never hand downstream more than the input ---
+    // The file path's "remove a non-improving output" rule becomes the
+    // passthrough: a best-effort result that still cannot beat the original
+    // yields the caller's bytes back (same rule as the single-pass pipe).
+    if matches!(sink, TargetSink::Bytes) {
+        if let Some(serialized) = run.bytes.as_ref().filter(|bytes| {
+            bytes.len() as u64 >= original_size_bytes && passthrough_input.is_some()
+        }) {
+            if let Some(original) = passthrough_input {
+                run.response.notices.insert(
+                    0,
+                    BackendNotice::new(
+                        "compress.warning.outputNotSmaller",
+                        "warning",
+                        format!(
+                            "Optimization could not beat the original {original_size_bytes} bytes \
+                             (best result: {} bytes); the original bytes were passed through.",
+                            serialized.len()
+                        ),
+                    )
+                    .with_value("originalBytes", original_size_bytes.to_string())
+                    .with_value("bestBytes", serialized.len().to_string()),
+                );
+                run.bytes = Some(original);
+            }
+        }
+    }
+
+    Ok(run)
 }
 
 /// Everything the materialize step needs besides the document and entries.
 struct MaterializeContext<'a> {
     search: SearchContext<'a>,
-    output_path: &'a Path,
+    sink: TargetSink<'a>,
     original_size_bytes: u64,
     started_at: Instant,
 }
@@ -369,19 +536,19 @@ fn original_entry_bytes(entry: &ImageSearchEntry) -> usize {
             .map_or(0, |(_, mask)| mask.content.len())
 }
 
-/// Apply one round of parameters to the document and write the output file.
-/// Image counters are reset first: a previous over-budget materialization
-/// already counted its images, and stats must reflect the final parameters.
-/// `final_write` controls object renumbering — see
+/// Apply one round of parameters to the document and materialize it through
+/// the sink. Image counters are reset first: a previous over-budget
+/// materialization already counted its images, and stats must reflect the
+/// final parameters. `final_write` controls object renumbering — see
 /// `save_and_build_response_with_renumber`.
-fn materialize_and_save(
+fn materialize_round(
     document: &mut Document,
     entries: &mut [ImageSearchEntry],
     params: RoundParams,
     context: &MaterializeContext<'_>,
     stats: &mut CompressionStats,
     final_write: bool,
-) -> Result<CompressionResponse, AppError> {
+) -> Result<TargetRunOutput, AppError> {
     stats.images_recompressed = 0;
     stats.images_skipped = 0;
     stats.images_bilevel_encoded = 0;
@@ -396,17 +563,44 @@ fn materialize_and_save(
     let final_settings = CompressionSettings {
         image_quality: params.quality,
         max_image_size_px: params.edge,
+        // The search's rounds are absolute by construction.
+        max_image_size_percent: None,
         ..context.search.settings.clone()
     };
-    super::compressor::save_and_build_response_with_renumber(
-        document,
-        context.output_path,
-        context.original_size_bytes,
-        context.started_at,
-        &final_settings,
-        stats,
-        final_write,
-    )
+    match context.sink {
+        TargetSink::File { output_path } => {
+            let response = super::compressor::save_and_build_response_with_renumber(
+                document,
+                output_path,
+                context.original_size_bytes,
+                context.started_at,
+                &final_settings,
+                stats,
+                final_write,
+            )?;
+            Ok(TargetRunOutput {
+                response,
+                bytes: None,
+            })
+        }
+        TargetSink::Bytes => {
+            // Serialize in memory: the same measurement the file write
+            // would produce, without a probe file ever touching the disk.
+            let (serialized, mut response) = super::compressor::serialize_and_count(
+                document,
+                context.original_size_bytes,
+                context.started_at,
+                &final_settings,
+                stats,
+                final_write,
+            )?;
+            response.output_path = "<stdout>".to_string();
+            Ok(TargetRunOutput {
+                response,
+                bytes: Some(serialized),
+            })
+        }
+    }
 }
 
 /// Run one probe round across all images, in parallel when the pool sizing
