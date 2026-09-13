@@ -55,7 +55,7 @@ cmyk-cms = ["dep:lcms2", "dep:zune-jpeg"]
 
 [dependencies]
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
-lopdf = "0.44"
+lopdf = "0.45"
 # Pure-Rust JBIG2 (ITU T.88) decode for scanned text pages — no feature
 # gate needed (no C toolchain). `std` only: the decode sink is local, so
 # neither the `image` integration nor `simd` features are required.
