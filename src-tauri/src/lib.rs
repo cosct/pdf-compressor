@@ -24,6 +24,7 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         commands::save_quick_profile,
         commands::open_path,
         commands::reveal_path_in_folder,
+        commands::build_features,
         commands::analyze_pdf,
         commands::compress_pdf,
         commands::compress_scanned_pdf,

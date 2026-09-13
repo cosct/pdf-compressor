@@ -26,7 +26,7 @@ fuzz_target!(|data: &[u8]| {
     }
     let path_str = path.to_string_lossy().into_owned();
 
-    let _ = analyze_pdf_with_progress(&path_str, None, |_| {});
+    let _ = analyze_pdf_with_progress(&path_str, None, None, |_| {});
 
     // Font subsetting on: its embedded-program parsers (TrueType via the
     // subsetter, CFF via pdf/cff.rs) face the same hostile input surface as

@@ -33,6 +33,64 @@ pub const TEST_CFF_FONT: &[u8] = include_bytes!("../assets/test-font-cid.cff");
 /// FontFile3 inputs.
 pub const TEST_CFF_FONT_OTF: &[u8] = include_bytes!("../assets/test-font-cid.otf");
 
+/// One-page PDF with visible text and one embedded JPEG image — the plain
+/// end-to-end fixture for process-level CLI tests (a text + image document
+/// that reliably compresses). `quality` shapes the JPEG so callers can trade
+/// fixture size for compressibility.
+pub fn jpeg_page_pdf_bytes(width: u32, height: u32, quality: u8) -> Vec<u8> {
+    let jpeg = encode_jpeg(fixture_rgb_image(width, height), quality);
+    let mut doc = lopdf::Document::with_version("1.5");
+    let pages_id = doc.new_object_id();
+    let font_id = doc.add_object(dictionary! {
+        "Type" => "Font",
+        "Subtype" => "Type1",
+        "BaseFont" => "Helvetica",
+    });
+    let image_id = doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Image",
+            "Width" => width as i64,
+            "Height" => height as i64,
+            "ColorSpace" => "DeviceRGB",
+            "BitsPerComponent" => 8,
+            "Filter" => "DCTDecode",
+        },
+        jpeg,
+    ));
+    let resources_id = doc.add_object(dictionary! {
+        "Font" => dictionary! { "F1" => font_id },
+        "XObject" => dictionary! { "Im0" => image_id },
+    });
+    let content = "q 400 0 0 300 72 400 cm /Im0 Do Q\nBT /F1 24 Tf 72 720 Td (Fixture) Tj ET\n";
+    let content_id = doc.add_object(Stream::new(dictionary! {}, content.as_bytes().to_vec()));
+    let page_id = doc.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => pages_id,
+        "Contents" => content_id,
+        "Resources" => resources_id,
+        "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+    });
+    doc.objects.insert(
+        pages_id,
+        Object::Dictionary(dictionary! {
+            "Type" => "Pages",
+            "Kids" => vec![Object::Reference(page_id)],
+            "Count" => 1,
+        }),
+    );
+    let catalog_id = doc.add_object(dictionary! {
+        "Type" => "Catalog",
+        "Pages" => pages_id,
+    });
+    doc.trailer.set("Root", catalog_id);
+
+    let mut bytes = Vec::new();
+    doc.save_modern(&mut bytes)
+        .expect("failed to save fixture PDF");
+    bytes
+}
+
 /// CIDs of the glyphs the CFF fixture draws ("PDF压缩测试"); A is embedded but
 /// never drawn (the unused-glyph probe).
 pub const TEST_CFF_CID_P: u16 = 49;

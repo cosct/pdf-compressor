@@ -390,65 +390,42 @@ release overlay 而非主配置）。
   `compress.warning.targetSizeMissed` 提示；前端以警告 toast + 状态卡 notes 呈现。
 - **`cargo bench` 名字冲突**：基准每轮使用独立临时目录，避免 100 次重名上限。
 
-## 8. 版本路线（0.9.0 计划，2026-09-10 评估）
+## 8. 版本路线（0.9.0 已落地，2026-09-10）
 
 历史收口：0.6.0（JPX 解码、CMYK opt-in、JBIG2 输入）；0.7.0（CMYK 真转换
 lcms2 + JPX 边缘补全）；0.7.1（二次审查 9 项 + globals 去重）；0.8.0（CMYK
 默认翻转 + feature-off 拒绝偏色转换 + 配置 v1→v2 迁移 + CLI 管道模式/目录
 递归 + fmt 基线与 CI 加固；发布后补：quick 去重、旗标硬化、app 特性腿、
-README/用户指南通俗化）。
+README/用户指南通俗化）；**0.9.0（工程深水区 + 诚实性：e2e 钉契约 →
+双管道合并 → 预设单一事实源 + 构建能力感知 + 分析器设置感知 + 管道
+`--target-size`；CI checkout@v5、AUR 双包定夺保留、mutants-diff.sh）**。
+详见 CHANGELOG 0.9.0 条目；关键工程事实：
 
-0.9.0 主题：**工程深水区 + 诚实性**——合并重复路径、钉死进程契约、让界面
-如实反映构建能力与用户设置，为 1.0 清障。
-
-### P0：双管道统一（主项，e2e 先行）
-
-- **CLI 进程级 e2e（先行，重构的安全网）**：新增
-  `crates/pdf-core/tests/cli_e2e.rs`，经 `CARGO_BIN_EXE_pdf-compressor-cli`
-  起真进程，钉死只有真进程才能验证的契约——stdout 纯 PDF / stderr JSON
-  摘要 / 成功与失败退出码 / 管道破裂（SIGPIPE→EPIPE）退出码 / stdin 限量
-  读取超限报错 / 目录递归与去重 / 旗标互斥与缺值报错。当前 19 项 CLI 测试
-  全是单元级；此项成本中低、杠杆最高。
-- **合并 `compress_pdf_with_progress` 与 `compress_pdf_bytes_with_progress`**：
-  两入口的加载/密码与加密分类/optimize/进度回调编排重复（`serialize_and_count`
-  已于 0.8.0 抽出共享）。抽内部核心，以"输出策略"（写文件 / 归还字节+直通）
-  为参数；文件路径与字节路径行为差异（输出名占用守卫、not-smaller 的"不写"
-  vs"直通"语义）全部留在策略内。风险低（双特性 150/175 项测试 + e2e 兜底）。
-- **验收**：e2e 全绿；两入口对外签名与语义零变化（除新增能力）。
-
-### P1：诚实性搭车
-
-- **预设参数单一事实源（行为统一，用户指南 2026-09-10 复核触发）**：当前
-  三套默认并存且互不一致——GUI 主面板预设（质量 72/60/46、上限
-  84/68/52%，按文档最大图边自适应，无分析时参考边 3200px）、右键 quick
-  兜底（质量 72/72/58、100/80/60% × 3200px → 有效 3200/2560/1920px）、
-  CLI/引擎默认（质量 82/72/58、绝对 2400/1800/1400px）。**同名档位在
-  不同入口的实际行为不同**（指南 §3 已如实标注两套语义）。统一方向：
-  预设表收进引擎作为唯一事实源，上限语义统一为"文档最大图边的百分比"
-  （保留 GUI 的自适应设计，`--max-edge` 保持绝对像素覆盖）；CLI 压缩前
-  复用分析器的轻量边长扫描取参考边；quick 兜底直接读同一张表；具体
-  数值以 criterion 基准复核后定稿，行为变化记 CHANGELOG。验收：任一
-  档位在 GUI/quick/CLI 三入口的有效参数一致，用户指南表格回归一张。
-- **GUI 构建能力感知**：后端新增 `build_features` 命令（specta 随 bindings
-  再生），暴露 `cmykCms/jpx/ccitt/subsetFonts`；前端对 feature-off 构建的
-  CMYK 开关给出"此构建不含色彩转换组件，CMYK 图片将保持原样"提示（或禁用）。
-  受众是源码自建用户（官方安装包全特性，不受影响）。
-- **分析器设置感知**：`analyze_pdf_with_progress` 增加可选设置上下文（调用点
-  6 处：tauri 命令/CLI/fuzz/tests），预估按用户实际开关计算（关掉 CMYK 转换
-  时印刷色图片不再计入可压缩字节），替换 0.8.0 的"按默认姿态"文档化假设。
-- **管道模式 `--target-size`**（依赖 P0 合并）：字节入口获得目标大小搜索，
-  0.8.0 因搜索物化写文件而拒绝的组合解除；搜索全程内存化，直通语义对齐。
-
-### P2：按余量取舍
-
-- CI 动作现代化：`checkout@v4`→`v5`（Node 20 弃用告警已在日志出现），
-  其余交给 Dependabot；
-- AUR 双包策略复审：仓库自 0.7.1 起同时维护 `-bin` 与源码包（有意恢复），
-  与 tauri-project-structure 技能模板"源码包已弃用"表述冲突——定夺"保留
-  双包"或"退役源码包"，同步修正模板与打包 README，消除两个权威来源打架；
-- 可选：`scripts/mutants-diff.sh`（封装 `git diff 基线 + cargo mutants
-  --in-diff`），把漏杀治理留给 PR 作者按需执行（CI 作业已于 0.8.0 后按
-  维护者决定移除）。
+- **预设表**唯一事实源在 `pdf-core/src/pdf/settings.rs` 的
+  `CompressionPreset`（质量 72/60/46、上限 84/68/52%、conservative 保留
+  元数据、maximum 子集化字体），与 `frontend/src/config/preset-defaults.json`
+  逐值镜像（`preset_table_is_the_single_source_of_truth` 钉死）——改一侧
+  必须同步另一侧与用户指南表格。上限语义为"文档最大图边的百分比"，
+  `resolve_max_image_size_px` 在两条压缩入口（含目标搜索）加载文档后解析；
+  `--max-edge` 与保存了像素的旧 quick 档案走绝对覆盖。
+- **双入口核心** `compress_document`（compressor.rs）：输入源（文件/字节）
+  × 输出策略（写文件/直通字节）参数化，目标搜索侧对应
+  `run_target_size_search`；新入口遵循同一模式（bytes 目标搜索 =
+  `compress_pdf_bytes_to_target_size`）。
+- **e2e 契约**在 `crates/pdf-core/tests/cli_e2e.rs`：改 CLI 的进程级行为
+  （流纪律、退出码、stdin 限量、互斥报错）必须同步更新；2GiB 超限探针
+  默认 `#[ignore]`（`cargo test --test cli_e2e -- --ignored` 手动跑）。
+- **诚实性三件**：`build_features` 命令（specta 注册）暴露构建能力，GUI
+  对 feature-off 构建的 CMYK 开关给提示；`analyze_pdf_with_progress` 接受
+  可选设置上下文（预估按调用方开关计算，None = 默认姿态）；分析器/压缩器
+  共享 `document_max_image_edge` 参考边扫描。
+- **保真类测试**用 `no_downscale()`（tests.rs）固定绝对上限，与 percent
+  语义的缩放解耦；percent 语义自身的回归靠
+  `percent_preset_adapts_the_cap_to_the_document_edge`（经 appliedProfile
+  通知断言解析结果）。
+- **AUR 双包定夺（P2 复审）**：保留 `-bin` + 源码包双维护——源码包服务
+  AUR 社区偏好，aur-publish 工作流已同时渲染两份模板，边际成本极低；
+  tauri-project-structure 技能模板已同步修正（其"源码包已弃用"表述过时）。
 
 ### 维持暂缓（2026-09-10 复核）
 
@@ -466,6 +443,6 @@ README/用户指南通俗化）。
 
 ### 节奏建议
 
-0.9.0 一句话：**e2e 钉契约 → 双管道合并 → 诚实性三件搭车，P2 按余量**。
 1.0 门槛＝0.9 收口（双管道统一 + 进程契约 + 构建感知全部落地）后评估；
 对外 API 与行为若在整个 0.x 系列保持兼容，1.0 仅为成熟度声明。
+

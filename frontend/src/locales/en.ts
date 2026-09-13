@@ -117,6 +117,8 @@ const en = {
     cmykConversion: 'Convert CMYK images',
     cmykConversionHint:
       'Re-encode CMYK images as RGB, matching how color-managed viewers render them (on by default; grayscale mode always converts)',
+    cmykConversionBuildMissing:
+      'This build does not include the color-conversion component, so CMYK images stay as-is regardless of this switch (official installers include it; source builds need the cmyk-cms feature)',
     outputDir: 'Output directory',
     outputDirDefault: 'Same as source',
     outputDirBrowse: 'Browse',

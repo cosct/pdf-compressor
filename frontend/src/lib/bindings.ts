@@ -15,7 +15,48 @@ export const commands = {
 	saveQuickProfile: (profile: QuickProfilePayload) => typedError<QuickProfilePayload, AppErrorPayload>(__TAURI_INVOKE("save_quick_profile", { profile })),
 	openPath: (path: string) => typedError<null, AppErrorPayload>(__TAURI_INVOKE("open_path", { path })),
 	revealPathInFolder: (path: string) => typedError<null, AppErrorPayload>(__TAURI_INVOKE("reveal_path_in_folder", { path })),
-	analyzePdf: (path: string | null, inputPath: string | null, password: string | null, onProgress: Channel<ProgressUpdate>) => typedError<AnalysisResponse, AppErrorPayload>(__TAURI_INVOKE("analyze_pdf", { path, inputPath, password, onProgress })),
+	/**
+	 *  Which optional engine components this build carries (0.9.0 honesty
+	 *  pass): lets the UI state plainly what a feature-off source build will
+	 *  not do instead of silently accepting toggles it cannot honor. Release
+	 *  artifacts ship all features; only source builds differ.
+	 */
+	buildFeatures: () => typedError<BuildFeatures, AppErrorPayload>(__TAURI_INVOKE("build_features")),
+	analyzePdf: (path: string | null, inputPath: string | null, password: string | null, settings: {
+	preset: string | null,
+	imageQuality: number | null,
+	/**
+	 *  Absolute maximum image edge in pixels. When neither this nor
+	 *  `max_image_size_percent` is set, the preset table's percent applies;
+	 *  when both are given, this absolute value wins.
+	 */
+	maxImageSizePx?: number | null,
+	/**
+	 *  Size cap as a percentage of the document's largest image edge (the
+	 *  0.9.0 unified semantics; `max_image_size_px` stays the absolute
+	 *  override).
+	 */
+	maxImageSizePercent?: number | null,
+	optimizeImages: boolean | null,
+	compressStreams: boolean | null,
+	stripMetadata: boolean | null,
+	/**  Re-encode color images as grayscale (best for black-and-white scans). */
+	grayscale?: boolean | null,
+	/**
+	 *  Output codec for near-bilevel scanned images: `"jpeg"` (default) or
+	 *  `"ccitt-g4"` (lossless ITU T.6, best for text scans).
+	 */
+	bilevelCodec?: string | null,
+	/**  Shrink embedded Type0/CIDFontType2 TrueType fonts to the used glyphs. */
+	subsetFonts?: boolean | null,
+	/**
+	 *  Convert CMYK images to RGB for re-encoding (default on since 0.8.0;
+	 *  builds without the `cmyk-cms` feature keep CMYK untouched instead of
+	 *  converting naively — grayscale requests still imply the collapse).
+	 */
+	cmykConversion?: boolean | null,
+	outputDir: string | null,
+} | null, onProgress: Channel<ProgressUpdate>) => typedError<AnalysisResponse, AppErrorPayload>(__TAURI_INVOKE("analyze_pdf", { path, inputPath, password, settings, onProgress })),
 	compressPdf: (request: CompressPdfRequest, onProgress: Channel<ProgressUpdate>) => typedError<CompressionResponse, AppErrorPayload>(__TAURI_INVOKE("compress_pdf", { request, onProgress })),
 	compressScannedPdf: (request: CompressScannedPdfRequest_Deserialize, onProgress: Channel<ProgressUpdate>) => typedError<CompressionResponse, AppErrorPayload>(__TAURI_INVOKE("compress_scanned_pdf", { request, onProgress })),
 	cancelCompression: (taskId: string) => typedError<null, AppErrorPayload>(__TAURI_INVOKE("cancel_compression", { taskId })),
@@ -63,6 +104,21 @@ export type BackendNotice = {
 	fallback: string,
 };
 
+export type BuildFeatures = {
+	/**
+	 *  Real CMYK→sRGB color management (`cmyk-cms` feature, vendored
+	 *  LittleCMS). Feature-off builds refuse the color conversion and keep
+	 *  CMYK images untouched (except grayscale/G4 collapse intents).
+	 */
+	cmykCms: boolean,
+	/**  JPX (JPEG 2000) decoding (`jpx` feature, vendored OpenJPEG). */
+	jpx: boolean,
+	/**  CCITT Group 4 bi-level encode/decode (`ccitt` feature). */
+	ccitt: boolean,
+	/**  Embedded font subsetting (`subset-fonts` feature). */
+	subsetFonts: boolean,
+};
+
 export type CompressPdfRequest = {
 	path: string | null,
 	inputPath: string | null,
@@ -76,6 +132,11 @@ export type CompressPdfRequest = {
 	preset: string | null,
 	imageQuality: number | null,
 	maxImageSizePx: number | null,
+	/**
+	 *  Percent-of-document-max-image-edge cap (0.9.0 unified semantics);
+	 *  `max_image_size_px` stays the absolute override.
+	 */
+	maxImageSizePercent?: number | null,
 	optimizeImages: boolean | null,
 	compressStreams: boolean | null,
 	stripMetadata: boolean | null,
@@ -102,6 +163,11 @@ export type CompressScannedPdfRequest_Deserialize = {
 	settings: CompressionSettingsPayload | null,
 	preset: string | null,
 	imageQuality: number | null,
+	/**
+	 *  Percent-of-document-max-image-edge cap — same semantics as
+	 *  `CompressPdfRequest`.
+	 */
+	maxImageSizePercent?: number | null,
 	grayscale: boolean | null,
 	/**
 	 *  Output codec for near-bilevel scanned images: `"jpeg"` (default) or
@@ -157,6 +223,11 @@ export type CompressScannedPdfRequest_Serialize = {
 	 *  value was always consumed as a pixel bound, not a DPI.)
 	 */
 	maxImageSizePx: number | null,
+	/**
+	 *  Percent-of-document-max-image-edge cap — same semantics as
+	 *  `CompressPdfRequest`.
+	 */
+	maxImageSizePercent: number | null,
 	grayscale: boolean | null,
 	/**
 	 *  Output codec for near-bilevel scanned images: `"jpeg"` (default) or
@@ -192,7 +263,18 @@ export type CompressionResponse = {
 export type CompressionSettingsPayload = {
 	preset: string | null,
 	imageQuality: number | null,
-	maxImageSizePx: number | null,
+	/**
+	 *  Absolute maximum image edge in pixels. When neither this nor
+	 *  `max_image_size_percent` is set, the preset table's percent applies;
+	 *  when both are given, this absolute value wins.
+	 */
+	maxImageSizePx?: number | null,
+	/**
+	 *  Size cap as a percentage of the document's largest image edge (the
+	 *  0.9.0 unified semantics; `max_image_size_px` stays the absolute
+	 *  override).
+	 */
+	maxImageSizePercent?: number | null,
 	optimizeImages: boolean | null,
 	compressStreams: boolean | null,
 	stripMetadata: boolean | null,
@@ -249,7 +331,16 @@ export type QuickProfilePayload = {
 	version?: number,
 	preset?: string | null,
 	imageQuality?: number | null,
+	/**
+	 *  Absolute pixel cap. Since 0.9.0 the panel stores the percent form;
+	 *  this field keeps reading profiles saved by earlier versions.
+	 */
 	maxImageSizePx?: number | null,
+	/**
+	 *  Percent-of-document-max-image-edge cap (0.9.0 unified semantics —
+	 *  quick mode resolves against each file's own images, like the GUI).
+	 */
+	maxImageSizePercent?: number | null,
 	optimizeImages?: boolean | null,
 	compressStreams?: boolean | null,
 	stripMetadata?: boolean | null,

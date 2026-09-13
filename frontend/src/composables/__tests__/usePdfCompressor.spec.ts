@@ -574,6 +574,9 @@ describe('password retry', () => {
       '/tmp/locked.pdf',
       'open-secret',
       expect.any(Function),
+      // The job's live settings ride along as the analysis context (0.9.0
+      // honesty pass) — the balanced draft defaults in this test.
+      expect.objectContaining({ preset: 'balanced' }),
     )
 
     mockedCompress.mockResolvedValue(compressionResponse())

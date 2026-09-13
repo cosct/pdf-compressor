@@ -18,7 +18,7 @@ use crate::{
     error::AppError,
     models::{AnalysisResponse, BackendNotice, ProgressUpdate},
     pdf::encode::SkipPolicy,
-    pdf::settings::CompressionPreset,
+    pdf::settings::{CompressionPreset, CompressionSettings},
 };
 
 use super::compressor::ensure_input_size_supported;
@@ -59,6 +59,7 @@ struct ImageDimensionStats {
 }
 
 /// One image XObject observed during the object scan.
+#[derive(Debug, Clone)]
 struct ImageStreamRecord {
     bytes: u64,
     longest_edge: Option<u32>,
@@ -76,12 +77,20 @@ struct ImageStreamRecord {
 /// mirrors the compressor's skip heuristics so the estimate only counts
 /// images the compressor can actually act on.
 ///
+/// `settings` is the optional caller context (the job's current settings in
+/// the GUI): when present, the estimate follows the caller's actual toggles
+/// instead of the default posture — e.g. with the CMYK conversion switched
+/// off, print-color images no longer count as compressible bytes, and a
+/// percent-based size cap resolves against this document's own edge. `None`
+/// analyzes under the default settings (what a bare CLI `analyze` does).
+///
 /// `password` unlocks open-password-encrypted files; see
 /// [`crate::pdf::compress_pdf_with_progress`] for the encrypted-input matrix.
 /// 分析 PDF：分类文档、估算可节省比例并推荐预设，不产生任何输出。
 pub fn analyze_pdf_with_progress<F>(
     path: &str,
     password: Option<&str>,
+    settings: Option<&CompressionSettings>,
     mut report_progress: F,
 ) -> Result<AnalysisResponse, AppError>
 where
@@ -188,15 +197,47 @@ where
         CompressionPreset::Conservative
     };
 
+    // Settings context (0.9.0 honesty pass): when the caller passes the
+    // job's live settings, the estimate follows them — the caller's preset
+    // drives the re-encode ratios, their size cap (percent resolved against
+    // this document's own edge) drives the skip heuristics, and their CMYK
+    // stance decides whether print-color images count as actionable. No
+    // context analyzes under the default posture.
+    let document_edge = longest_edges.iter().copied().max();
+    let (estimate_preset, effective_edge, converts_cmyk) = match settings {
+        Some(settings) => {
+            let mut resolved = settings.clone();
+            resolved.resolve_max_image_size_px(document_edge);
+            (
+                settings.preset,
+                u32::from(resolved.max_image_size_px),
+                resolved.converts_cmyk(),
+            )
+        }
+        None => {
+            // Default posture: the recommended preset's adaptive edge, and
+            // the default CMYK stance of the build (`cmyk-cms` builds
+            // convert by default, feature-off builds refuse — exactly what
+            // `CompressionSettings::from_sources` defaults produce).
+            (
+                recommended_preset,
+                u32::from(recommend_max_image_size_px(
+                    recommended_preset,
+                    &longest_edges,
+                )),
+                cfg!(feature = "cmyk-cms"),
+            )
+        }
+    };
+
     let recommended_max_image_size_px =
         recommend_max_image_size_px(recommended_preset, &longest_edges);
-    // Fold the raw records into stats under the recommended edge so the
+    // Fold the raw records into stats under the effective edge so the
     // estimate mirrors the compressor's skip heuristics.
-    let image_stats =
-        summarize_image_records(image_records, u32::from(recommended_max_image_size_px));
+    let image_stats = summarize_image_records(image_records, effective_edge, converts_cmyk);
 
     let estimated_savings_percent = estimate_savings_percent(
-        recommended_preset,
+        estimate_preset,
         image_stats.actionable_image_bytes,
         file_size_bytes,
     );
@@ -451,11 +492,14 @@ fn collect_image_stream_records(document: &Document) -> Vec<ImageStreamRecord> {
     records
 }
 
-/// Fold raw records into stats under the recommended preset's edge and the
-/// document-shaped skip policy.
+/// Fold raw records into stats under the effective size cap and the
+/// document-shaped skip policy. `converts_cmyk` decides whether declared-CMYK
+/// images count as actionable (the caller's settings, or the default
+/// posture of the build when analyzing context-free).
 fn summarize_image_records(
     records: Vec<ImageStreamRecord>,
     recommended_edge: u32,
+    converts_cmyk: bool,
 ) -> ImageDimensionStats {
     let mut stats = ImageDimensionStats {
         image_object_count: records.len(),
@@ -479,11 +523,10 @@ fn summarize_image_records(
             record.pixels,
             recommended_edge,
             skip_policy,
-            // The analyzer runs settings-free, so it mirrors the default
-            // conversion stance of the build: `cmyk-cms` builds convert
-            // CMYK by default (actionable), feature-off builds refuse the
-            // conversion (excluded — err low rather than promise shifts).
-            record.cmyk_declared && !cfg!(feature = "cmyk-cms"),
+            // Declared-CMYK actionability follows the conversion stance:
+            // whatever converts stays countable, what gets refused is
+            // preserved untouched and must not promise savings.
+            record.cmyk_declared && !converts_cmyk,
         ) {
             stats.actionable_image_bytes += record.bytes;
         }
@@ -837,29 +880,29 @@ mod tests {
             cmyk_declared: cmyk,
         };
         // One plainly actionable image, one unsupported codec, one
-        // declared-CMYK image whose actionability follows the build.
+        // declared-CMYK image whose actionability follows the conversion
+        // stance (not the build alone, since 0.9.0's settings context).
         let records = vec![
             record(10_000, 2000, false, true),
             record(5_000, 2000, false, false),
             record(7_000, 2000, true, true),
         ];
-        let stats = summarize_image_records(records, 1800);
 
-        assert_eq!(stats.image_object_count, 3);
-        assert_eq!(stats.total_image_bytes, 22_000);
-        assert_eq!(stats.unsupported_codec_count, 1);
-        assert_eq!(stats.longest_edges, vec![2000, 2000, 2000]);
-        if cfg!(feature = "cmyk-cms") {
-            assert_eq!(
-                stats.actionable_image_bytes, 17_000,
-                "cms builds convert declared CMYK by default"
-            );
-        } else {
-            assert_eq!(
-                stats.actionable_image_bytes, 10_000,
-                "feature-off builds exclude declared CMYK from the estimate"
-            );
-        }
+        let converting = summarize_image_records(records.clone(), 1800, true);
+        assert_eq!(converting.image_object_count, 3);
+        assert_eq!(converting.total_image_bytes, 22_000);
+        assert_eq!(converting.unsupported_codec_count, 1);
+        assert_eq!(converting.longest_edges, vec![2000, 2000, 2000]);
+        assert_eq!(
+            converting.actionable_image_bytes, 17_000,
+            "a converting stance counts declared CMYK"
+        );
+
+        let refusing = summarize_image_records(records, 1800, false);
+        assert_eq!(
+            refusing.actionable_image_bytes, 10_000,
+            "a refusing stance excludes declared CMYK from the estimate"
+        );
     }
 
     #[test]

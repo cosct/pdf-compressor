@@ -115,6 +115,8 @@ const zhCN = {
     cmykConversion: '转换 CMYK 图片',
     cmykConversionHint:
       '把 CMYK 图片转为 RGB 后重编码，色彩与专业色彩管理查看器一致（默认开启；灰度模式始终转换）',
+    cmykConversionBuildMissing:
+      '此构建不含色彩转换组件，无论开关如何，CMYK 图片都将保持原样（官方安装包已包含；源码自建需启用 cmyk-cms 特性）',
     outputDir: '输出目录',
     outputDirDefault: '与原文件相同',
     outputDirBrowse: '选择',

@@ -17,10 +17,6 @@ import { loadPresetProfiles } from '../config/presets'
 import type { QuickProfilePayload } from '../lib/bindings'
 import { getQuickProfile, saveQuickProfile } from '../lib/tauri'
 import type { PresetProfileMap } from '../types/pdf'
-import {
-  calculateMaxImageSizePx,
-  DEFAULT_REFERENCE_IMAGE_EDGE_PX,
-} from '../utils/compressionSettings'
 import UnitSelect from './UnitSelect.vue'
 
 defineProps<{ nativeAvailable: boolean }>()
@@ -50,14 +46,15 @@ const loading = ref(true)
 const saving = ref(false)
 const presetProfiles = ref<PresetProfileMap | null>(null)
 
-// Engine-side fallbacks per preset (pdf-core settings.rs) — used until the
-// (possibly user-customized) preset profiles finish loading. Presets store a
-// percentage; quick mode has no per-file analysis reference, so the px value
-// is derived against the shared reference edge.
+// Engine-side fallback per preset (pdf-core settings.rs — the 0.9.0 unified
+// preset table, mirrored from preset-defaults.json) — used until the
+// (possibly user-customized) preset profiles finish loading. The cap is a
+// percent of each document's largest image edge; the CLI resolves it per
+// file, so no pixel value is stored here anymore.
 const ENGINE_FALLBACK = {
-  conservative: { imageQuality: 82, maxImageSizePercent: 100 },
-  balanced: { imageQuality: 72, maxImageSizePercent: 80 },
-  maximum: { imageQuality: 58, maxImageSizePercent: 60 },
+  conservative: { imageQuality: 72, maxImageSizePercent: 84 },
+  balanced: { imageQuality: 60, maxImageSizePercent: 68 },
+  maximum: { imageQuality: 46, maxImageSizePercent: 52 },
 } as const
 
 /**
@@ -69,10 +66,7 @@ function presetParams(preset: PresetMode) {
   if (profile) {
     return {
       imageQuality: profile.imageQuality,
-      maxImageSizePx: calculateMaxImageSizePx(
-        profile.maxImageSizePercent,
-        DEFAULT_REFERENCE_IMAGE_EDGE_PX,
-      ),
+      maxImageSizePercent: profile.maxImageSizePercent,
       optimizeImages: profile.optimizeImages ?? true,
       compressStreams: profile.compressStreams ?? true,
       stripMetadata: profile.stripMetadata ?? true,
@@ -85,10 +79,7 @@ function presetParams(preset: PresetMode) {
   const base = ENGINE_FALLBACK[preset === 'custom' ? 'maximum' : preset]
   return {
     imageQuality: base.imageQuality,
-    maxImageSizePx: calculateMaxImageSizePx(
-      base.maxImageSizePercent,
-      DEFAULT_REFERENCE_IMAGE_EDGE_PX,
-    ),
+    maxImageSizePercent: base.maxImageSizePercent,
     optimizeImages: true,
     compressStreams: true,
     stripMetadata: true,

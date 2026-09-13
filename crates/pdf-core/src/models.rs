@@ -35,7 +35,16 @@ pub fn migrate_cmyk_default_flip(version: u32, cmyk_conversion: &mut Option<bool
 pub struct CompressionSettingsPayload {
     pub preset: Option<String>,
     pub image_quality: Option<u8>,
+    /// Absolute maximum image edge in pixels. When neither this nor
+    /// `max_image_size_percent` is set, the preset table's percent applies;
+    /// when both are given, this absolute value wins.
+    #[serde(default)]
     pub max_image_size_px: Option<u16>,
+    /// Size cap as a percentage of the document's largest image edge (the
+    /// 0.9.0 unified semantics; `max_image_size_px` stays the absolute
+    /// override).
+    #[serde(default)]
+    pub max_image_size_percent: Option<u16>,
     pub optimize_images: Option<bool>,
     pub compress_streams: Option<bool>,
     pub strip_metadata: Option<bool>,
@@ -72,6 +81,10 @@ pub struct CompressPdfRequest {
     pub preset: Option<String>,
     pub image_quality: Option<u8>,
     pub max_image_size_px: Option<u16>,
+    /// Percent-of-document-max-image-edge cap (0.9.0 unified semantics);
+    /// `max_image_size_px` stays the absolute override.
+    #[serde(default)]
+    pub max_image_size_percent: Option<u16>,
     pub optimize_images: Option<bool>,
     pub compress_streams: Option<bool>,
     pub strip_metadata: Option<bool>,
@@ -101,6 +114,10 @@ pub struct CompressScannedPdfRequest {
     /// value was always consumed as a pixel bound, not a DPI.)
     #[serde(default, alias = "downsampleDpi", alias = "targetDpi")]
     pub max_image_size_px: Option<u16>,
+    /// Percent-of-document-max-image-edge cap — same semantics as
+    /// `CompressPdfRequest`.
+    #[serde(default)]
+    pub max_image_size_percent: Option<u16>,
     pub grayscale: Option<bool>,
     /// Output codec for near-bilevel scanned images: `"jpeg"` (default) or
     /// `"ccitt-g4"`.
@@ -188,8 +205,14 @@ pub struct QuickProfilePayload {
     pub preset: Option<String>,
     #[serde(default)]
     pub image_quality: Option<u8>,
+    /// Absolute pixel cap. Since 0.9.0 the panel stores the percent form;
+    /// this field keeps reading profiles saved by earlier versions.
     #[serde(default)]
     pub max_image_size_px: Option<u16>,
+    /// Percent-of-document-max-image-edge cap (0.9.0 unified semantics —
+    /// quick mode resolves against each file's own images, like the GUI).
+    #[serde(default)]
+    pub max_image_size_percent: Option<u8>,
     #[serde(default)]
     pub optimize_images: Option<bool>,
     #[serde(default)]
@@ -218,6 +241,7 @@ impl Default for QuickProfilePayload {
             preset: None,
             image_quality: None,
             max_image_size_px: None,
+            max_image_size_percent: None,
             optimize_images: None,
             compress_streams: None,
             strip_metadata: None,
@@ -228,6 +252,22 @@ impl Default for QuickProfilePayload {
             target_size_bytes: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(rename_all = "camelCase")]
+pub struct BuildFeatures {
+    /// Real CMYK→sRGB color management (`cmyk-cms` feature, vendored
+    /// LittleCMS). Feature-off builds refuse the color conversion and keep
+    /// CMYK images untouched (except grayscale/G4 collapse intents).
+    pub cmyk_cms: bool,
+    /// JPX (JPEG 2000) decoding (`jpx` feature, vendored OpenJPEG).
+    pub jpx: bool,
+    /// CCITT Group 4 bi-level encode/decode (`ccitt` feature).
+    pub ccitt: bool,
+    /// Embedded font subsetting (`subset-fonts` feature).
+    pub subset_fonts: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

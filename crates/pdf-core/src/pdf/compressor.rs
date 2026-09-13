@@ -22,6 +22,7 @@ use lopdf::{Dictionary, Document, Object, ObjectId, Stream};
 
 use super::encode::{optimize_image_stream, pixel_count, ImageOptimization, SkipPolicy};
 use super::ensure_not_cancelled;
+use super::optional_integer;
 use super::settings::CompressionSettings;
 use super::validate_input_path;
 use super::workers::{run_worker_pool, CHANNEL_BUFFER_MULTIPLIER};
@@ -174,44 +175,20 @@ where
     // name claim created behind (it would steal the name from the retry).
     let _claim_guard = OutputClaimGuard(output_path.clone());
 
-    // --- Load the PDF document ---
-    ensure_not_cancelled(&cancel_flag, path)?;
-    let password_attempted = password.is_some_and(|value| !value.is_empty());
-    let mut document = super::load_document(&input_path, password)?;
-    let mut stats = CompressionStats {
-        decrypted_with_empty_password: super::ensure_not_encrypted(
-            &mut document,
-            password_attempted,
-        )?,
-        ..CompressionStats::default()
-    };
-
-    report_progress(ProgressUpdate::new(
-        "compressing",
-        OBJECT_SCAN_PROGRESS_START,
-    ));
-
-    // --- Core optimization pass ---
-    optimize_document(
-        &mut document,
-        &settings,
+    let run = compress_document(
+        DocumentSource::File {
+            input_path: &input_path,
+            original_size_bytes,
+        },
+        OutputSink::File {
+            output_path: &output_path,
+        },
+        password,
+        settings,
         &cancel_flag,
-        &mut stats,
-        &mut report_progress,
         path,
-    )?;
-
-    report_progress(ProgressUpdate::new("writing", 92.0));
-    ensure_not_cancelled(&cancel_flag, path)?;
-
-    // --- Cleanup, write output & build response ---
-    let response = save_and_build_response(
-        &mut document,
-        &output_path,
-        original_size_bytes,
         started_at,
-        &settings,
-        &mut stats,
+        &mut report_progress,
     )?;
 
     report_progress(
@@ -222,7 +199,7 @@ where
         )),
     );
 
-    Ok(response)
+    Ok(run.response)
 }
 
 /// Outcome of a bytes-pipeline compression: the bytes to hand downstream
@@ -261,16 +238,108 @@ where
 {
     const PIPE_TASK_ID: &str = "<stdin>";
 
-    let started_at = Instant::now();
-    ensure_not_cancelled(&cancel_flag, PIPE_TASK_ID)?;
+    let run = compress_document(
+        DocumentSource::Bytes(input),
+        OutputSink::Pipe,
+        password,
+        settings,
+        &cancel_flag,
+        PIPE_TASK_ID,
+        Instant::now(),
+        &mut report_progress,
+    )?;
+
+    report_progress(
+        ProgressUpdate::new("done", 100.0).with_message(BackendNotice::new(
+            "compress.progress.done",
+            "success",
+            "Compression finished.",
+        )),
+    );
+
+    Ok(BytesCompressionOutcome {
+        bytes: run.bytes.expect("the pipe sink always yields bytes"),
+        response: run.response,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Shared pipeline core (0.9.0 dual-entry merge)
+// ---------------------------------------------------------------------------
+
+/// Where the input document comes from. Both sources share the load →
+/// optimize → serialize pipeline; only the loading call and the size
+/// pre-check differ. The bytes variant owns its buffer so the pipe's
+/// passthrough can hand it back without a copy.
+enum DocumentSource<'a> {
+    File {
+        input_path: &'a Path,
+        original_size_bytes: u64,
+    },
+    Bytes(Vec<u8>),
+}
+
+/// Where the optimized document goes. The sink owns every behavioral
+/// difference between the two public entries: the file path writes (and
+/// removes non-improving outputs), the pipe hands bytes back with the
+/// passthrough rule.
+enum OutputSink<'a> {
+    File { output_path: &'a Path },
+    Pipe,
+}
+
+/// Unified result of one compression run: the standard response plus, in
+/// pipe mode, the payload bytes destined for stdout.
+struct CompressionRunOutput {
+    response: CompressionResponse,
+    bytes: Option<Vec<u8>>,
+}
+
+/// The single load/optimize/serialize pipeline behind both public entries
+/// (`compress_pdf_with_progress` and its bytes twin): password and encrypted
+/// input classification, the optimization pass, progress orchestration, and
+/// sink-specific materialization. The file entry keeps its path validation,
+/// size probe, output-name claim, and claim guard in its thin wrapper — they
+/// must run before any document work starts.
+#[allow(clippy::too_many_arguments)]
+fn compress_document<F>(
+    source: DocumentSource<'_>,
+    sink: OutputSink<'_>,
+    password: Option<&str>,
+    settings: CompressionSettings,
+    cancel_flag: &Arc<AtomicBool>,
+    task_id: &str,
+    started_at: Instant,
+    report_progress: &mut F,
+) -> Result<CompressionRunOutput, AppError>
+where
+    F: FnMut(ProgressUpdate),
+{
+    ensure_not_cancelled(cancel_flag, task_id)?;
     report_progress(ProgressUpdate::new("compressing", 5.0));
 
-    ensure_input_size_supported(input.len() as u64)?;
-
-    // --- Load the PDF document (same password/encryption taxonomy) ---
-    ensure_not_cancelled(&cancel_flag, PIPE_TASK_ID)?;
+    // --- Load the document (same password/encryption taxonomy) ---
+    ensure_not_cancelled(cancel_flag, task_id)?;
     let password_attempted = password.is_some_and(|value| !value.is_empty());
-    let mut document = super::load_document_mem(&input, password)?;
+    let (mut document, original_size_bytes, passthrough_input) = match source {
+        DocumentSource::File {
+            input_path,
+            original_size_bytes,
+        } => {
+            ensure_input_size_supported(original_size_bytes)?;
+            (
+                super::load_document(input_path, password)?,
+                original_size_bytes,
+                None,
+            )
+        }
+        DocumentSource::Bytes(bytes) => {
+            let size = bytes.len() as u64;
+            ensure_input_size_supported(size)?;
+            let document = super::load_document_mem(&bytes, password)?;
+            (document, size, Some(bytes))
+        }
+    };
     let mut stats = CompressionStats {
         decrypted_with_empty_password: super::ensure_not_encrypted(
             &mut document,
@@ -278,6 +347,14 @@ where
         )?,
         ..CompressionStats::default()
     };
+
+    // --- Resolve the percent-based size cap against this document ---
+    // The unified preset semantics (0.9.0): the cap is a percentage of the
+    // document's own largest image edge, so big scans keep more pixels and
+    // small images stay untouched. Documents without readable image
+    // dimensions fall back to the default reference edge.
+    let mut settings = settings;
+    settings.resolve_max_image_size_px(document_max_image_edge(&document));
 
     report_progress(ProgressUpdate::new(
         "compressing",
@@ -288,69 +365,75 @@ where
     optimize_document(
         &mut document,
         &settings,
-        &cancel_flag,
+        cancel_flag,
         &mut stats,
-        &mut report_progress,
-        PIPE_TASK_ID,
+        report_progress,
+        task_id,
     )?;
 
     report_progress(ProgressUpdate::new("writing", 92.0));
-    ensure_not_cancelled(&cancel_flag, PIPE_TASK_ID)?;
+    ensure_not_cancelled(cancel_flag, task_id)?;
 
-    // --- Serialize & build the response ---
-    let original_size_bytes = input.len() as u64;
-    let (serialized, mut response) = serialize_and_count(
-        &mut document,
-        original_size_bytes,
-        started_at,
-        &settings,
-        &mut stats,
-        true,
-    )?;
-    response.output_path = "<stdout>".to_string();
-
-    // --- Never hand downstream a result that did not improve the input ---
-    // The file path writes nothing; a pipe passes the original bytes
-    // through instead, so the receiving stage always gets a valid PDF.
-    let outcome = if serialized.len() as u64 >= original_size_bytes {
-        response.notices.insert(
-            0,
-            BackendNotice::new(
-                "compress.warning.outputNotSmaller",
-                "warning",
-                format!(
-                    "Optimization could not beat the original {original_size_bytes} bytes \
-                     (best result: {} bytes); the original bytes were passed through.",
-                    serialized.len()
-                ),
-            )
-            .with_value("originalBytes", original_size_bytes.to_string())
-            .with_value("bestBytes", serialized.len().to_string()),
-        );
-        BytesCompressionOutcome {
-            bytes: input,
-            response,
-        }
-    } else {
-        let saved_bytes = original_size_bytes - serialized.len() as u64;
-        response.saved_bytes = saved_bytes as f64;
-        response.savings_percent = (saved_bytes as f32 / original_size_bytes as f32) * 100.0;
-        response.output_was_smaller = true;
-        BytesCompressionOutcome {
-            bytes: serialized,
-            response,
+    // --- Materialize through the sink ---
+    let run = match sink {
+        OutputSink::File { output_path } => CompressionRunOutput {
+            response: save_and_build_response(
+                &mut document,
+                output_path,
+                original_size_bytes,
+                started_at,
+                &settings,
+                &mut stats,
+            )?,
+            bytes: None,
+        },
+        OutputSink::Pipe => {
+            // --- Never hand downstream a result that did not improve the input ---
+            // The file path writes nothing; a pipe passes the original bytes
+            // through instead, so the receiving stage always gets a valid PDF.
+            let (serialized, mut response) = serialize_and_count(
+                &mut document,
+                original_size_bytes,
+                started_at,
+                &settings,
+                &mut stats,
+                true,
+            )?;
+            response.output_path = "<stdout>".to_string();
+            if serialized.len() as u64 >= original_size_bytes {
+                response.notices.insert(
+                    0,
+                    BackendNotice::new(
+                        "compress.warning.outputNotSmaller",
+                        "warning",
+                        format!(
+                            "Optimization could not beat the original {original_size_bytes} bytes \
+                             (best result: {} bytes); the original bytes were passed through.",
+                            serialized.len()
+                        ),
+                    )
+                    .with_value("originalBytes", original_size_bytes.to_string())
+                    .with_value("bestBytes", serialized.len().to_string()),
+                );
+                CompressionRunOutput {
+                    response,
+                    bytes: passthrough_input,
+                }
+            } else {
+                let saved_bytes = original_size_bytes - serialized.len() as u64;
+                response.saved_bytes = saved_bytes as f64;
+                response.savings_percent =
+                    (saved_bytes as f32 / original_size_bytes as f32) * 100.0;
+                response.output_was_smaller = true;
+                CompressionRunOutput {
+                    response,
+                    bytes: Some(serialized),
+                }
+            }
         }
     };
 
-    report_progress(
-        ProgressUpdate::new("done", 100.0).with_message(BackendNotice::new(
-            "compress.progress.done",
-            "success",
-            "Compression finished.",
-        )),
-    );
-
-    Ok(outcome)
+    Ok(run)
 }
 
 /// Serialize the optimized document, compute result metrics, and assemble the
@@ -445,7 +528,7 @@ pub(crate) fn save_and_build_response_with_renumber(
 /// pipeline), so their reports stay identical.
 /// 序列化优化后的文档并组装两条写出路径共享的通知与计数骨架。
 #[allow(clippy::too_many_arguments)]
-fn serialize_and_count(
+pub(crate) fn serialize_and_count(
     document: &mut Document,
     original_size_bytes: u64,
     started_at: Instant,
@@ -1476,6 +1559,27 @@ fn is_image_stream(stream: &Stream) -> bool {
     // Byte-wise comparison — allocation-free, unlike optional_name, because
     // this runs against every stream in the document.
     matches!(stream.dict.get(b"Subtype"), Ok(Object::Name(name)) if name.as_slice() == b"Image")
+}
+
+/// The document's largest image edge (max of `/Width`//`/Height` over all
+/// image XObjects) — the reference edge for percent-based size caps. `None`
+/// when the document carries no readable image dimensions.
+pub(crate) fn document_max_image_edge(document: &Document) -> Option<u32> {
+    document
+        .objects
+        .values()
+        .filter_map(|object| {
+            let Object::Stream(stream) = object else {
+                return None;
+            };
+            if !is_image_stream(stream) {
+                return None;
+            }
+            let width = optional_integer(stream, b"Width").filter(|value| *value > 0)?;
+            let height = optional_integer(stream, b"Height").filter(|value| *value > 0)?;
+            u32::try_from(width.max(height)).ok()
+        })
+        .max()
 }
 
 // ---------------------------------------------------------------------------

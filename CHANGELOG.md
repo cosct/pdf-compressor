@@ -2,6 +2,34 @@
 
 本项目的所有显著变更都记录在此文件中。格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。日期为提交日期。
 
+## [0.9.0] - 2026-09-10
+
+主题：**工程深水区 + 诚实性**——合并重复路径、钉死进程契约、让界面如实反映构建能力与用户设置（开发文档 §8 路线）。
+
+### 变更
+
+- **预设参数单一事实源（诚实性 P1 主项）**：此前三套默认并存且互不一致——GUI 主面板（质量 72/60/46、上限 84/68/52% 按文档最大图边自适应）、右键 quick 兜底（质量 82/72/58、100/80/60% × 3200px）、CLI/引擎默认（质量 82/72/58、绝对 2400/1800/1400px），同名档位在不同入口实际行为不同。现预设表收进引擎（`CompressionPreset`：质量 72/60/46、上限 84/68/52%、conservative 保留元数据、maximum 默认子集化字体），上限语义统一为"**文档最大图边的百分比**"（保留 GUI 自适应设计；无图或尺寸不可读时回退 3200px 参考边）；GUI/quick/CLI 三入口的有效参数一致。**CLI/quick 行为变化**：`--preset` 各档质量下调（82/72/58 → 72/60/46），上限从绝对像素改为按文档自适应（大图保留更多像素、小图压得更紧），`--max-edge` 保持绝对像素覆盖不变
+- **GUI 压缩请求改发百分比**：前端不再本地换算 `maxImageSizePx` 后发送，改发 `maxImageSizePercent`，由引擎加载文档后按其自身最大图边解析（`resolve_max_image_size_px`）——参考边不再依赖可能过期的分析缓存；`appliedProfile` 通知报告解析后的绝对值。quick profile 自 0.9.0 存储百分比形式（旧档案的像素值仍被读取，百分比存在时优先）
+
+### 新增
+
+- **CLI 进程级 e2e 契约测试（P0 先行，重构安全网）**：新增 `crates/pdf-core/tests/cli_e2e.rs`，经真进程钉死只有真进程才能验证的契约——stdout 纯 PDF / stderr JSON 摘要、成功与失败退出码、管道破裂（SIGPIPE→EPIPE）按 JSON 错误失败退出、stdin 限量读取超限报 `error.inputTooLarge`（2GiB 探针默认 ignored）、quick 目录递归与去重、旗标互斥与缺值报错；测试经 `XDG_CONFIG_HOME` 隔离 quick profile、以字面量程序名 + PATH 注入钉住 cargo 构建产物
+- **管道模式 `--target-size`（诚实性 P1，解除 0.8.0 拒绝组合）**：字节入口获得目标大小搜索——`compress_pdf_bytes_to_target_size` 与文件路径共用同一二分搜索核心（`run_target_size_search`），探测轮全程内存化（序列化即测量，无探测文件落盘），压不赢原始输入时直通语义与单程管道一致；CLI `compress - --stdout --target-size 5MB` 组合解除并回归测试
+- **双入口合并（P0 主项）**：`compress_pdf_with_progress` 与 `compress_pdf_bytes_with_progress` 的加载/密码与加密分类/优化/进度编排重复收进单一核心 `compress_document`，以输入源（文件/字节）与输出策略（写文件/直通字节）参数化；输出名占用守卫与"不写更大输出 vs 直通"语义全部留在策略内，两入口对外签名与语义零变化
+- **`build_features` 命令（诚实性）**：后端暴露构建能力（`cmykCms`/`jpx`/`ccitt`/`subsetFonts`，specta 随 bindings 再生）；GUI 设置面板对 feature-off 构建的 CMYK 开关给出如实提示（"此构建不含色彩转换组件，CMYK 图片将保持原样"），受众为源码自建用户（官方安装包全特性）
+- **分析器设置感知（诚实性）**：`analyze_pdf_with_progress` 增加可选设置上下文——预估按调用方实际开关计算（关掉 CMYK 转换时印刷色图片不再计入可压缩字节、百分比上限按文档解析、调用方预设驱动比率），替换 0.8.0 的"按默认姿态"文档化假设；GUI 分析携带任务当前设置
+- `scripts/mutants-diff.sh`：封装 `git diff 基线 + cargo mutants --in-diff`，漏杀治理按需本地执行
+
+### 维护
+
+- CI 全部 workflow 的 `actions/checkout@v4` → `@v5`（Node 20 弃用告警）；AUR 双包策略复审定夺为**保留双包**（源码包服务 AUR 社区偏好、aur-publish 工作流已覆盖双模板、边际成本极低），同步修正 tauri-project-structure 技能模板的"源码包已弃用"过时表述
+
+### 验收
+
+- e2e 11 项（+1 项 2GiB 探针 `--ignored` 本地验证）全绿；引擎 158 项（默认）/ 183 项（`jpx,cmyk-cms`）+ CLI 19 项单元 + 桌面壳 10 项测试通过；workspace 与可选特性 Clippy `-D warnings` 通过；前端 65 项测试、lint/type-check 与构建通过
+- 新增钉死契约：引擎预设表与 `preset-defaults.json` 逐值一致（`preset_table_is_the_single_source_of_truth`）、`percent_to_px` 与 GUI 公式逐点一致、percent 上限按文档边解析的端到端断言（2000px→1400 / 800px→500，经 `appliedProfile` 通知可见）、字节管道目标搜索（met/missed 恰一、输出恒为合法 PDF、`<stdout>` 路径）
+- 保真类既有测试（PSNR/逐像素/近黑白门控）统一改为显式绝对上限（`no_downscale`），与 percent 语义的缩放解耦；预设质量地板按新表重测（conservative ≈27.4 / balanced ≈24.7 / maximum ≈22.5 dB，地板留 ~2dB 余量）
+
 ## [0.8.0] - 2026-09-07
 
 ### 变更

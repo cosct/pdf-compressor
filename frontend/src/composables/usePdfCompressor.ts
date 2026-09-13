@@ -523,11 +523,18 @@ export function usePdfCompressor() {
     applyProgress(job, { phase: 'analyzing', percent: 0 })
 
     try {
-      const response = await analyzePdf(requestedPath, job.password, (update) => {
-        if (job.sourcePath === requestedPath) {
-          applyProgress(job, update)
-        }
-      })
+      const response = await analyzePdf(
+        requestedPath,
+        job.password,
+        (update) => {
+          if (job.sourcePath === requestedPath) {
+            applyProgress(job, update)
+          }
+        },
+        // The job's live settings make the estimate honest about what a
+        // run with them would do (CMYK stance, size cap, preset ratios).
+        job.settings,
+      )
 
       if (job.sourcePath !== requestedPath) {
         return

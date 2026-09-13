@@ -22,10 +22,11 @@ use tauri::ipc::Channel;
 use tauri::{Manager, State};
 
 use pdf_core::{
-    analyze_pdf_with_progress, compress_pdf_to_target_size, compress_pdf_with_progress,
+    analyze_pdf_with_progress, build_features as engine_build_features,
+    compress_pdf_to_target_size, compress_pdf_with_progress,
     models::{
-        AnalysisResponse, CompressPdfRequest, CompressScannedPdfRequest, CompressionResponse,
-        PresetUserConfigPayload, ProgressUpdate, QuickProfilePayload,
+        AnalysisResponse, BuildFeatures, CompressPdfRequest, CompressScannedPdfRequest,
+        CompressionResponse, PresetUserConfigPayload, ProgressUpdate, QuickProfilePayload,
     },
     AppError, AppErrorPayload, BilevelCodec, CompressionSettings, CompressionSettingsOverrides,
 };
@@ -336,12 +337,23 @@ pub fn reveal_path_in_folder(
     reveal_path_in_folder_with_system(&PathBuf::from(path)).map_err(AppErrorPayload::from)
 }
 
+/// Which optional engine components this build carries (0.9.0 honesty
+/// pass): lets the UI state plainly what a feature-off source build will
+/// not do instead of silently accepting toggles it cannot honor. Release
+/// artifacts ship all features; only source builds differ.
+#[tauri::command]
+#[specta::specta]
+pub fn build_features() -> Result<BuildFeatures, AppErrorPayload> {
+    Ok(engine_build_features())
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn analyze_pdf(
     path: Option<String>,
     input_path: Option<String>,
     password: Option<String>,
+    settings: Option<pdf_core::models::CompressionSettingsPayload>,
     on_progress: Channel<ProgressUpdate>,
 ) -> Result<AnalysisResponse, AppErrorPayload> {
     let requested_path = input_path.or(path).ok_or_else(|| {
@@ -350,10 +362,21 @@ pub async fn analyze_pdf(
         ))
     })?;
 
+    // Settings context: the estimate follows the caller's actual toggles
+    // (CMYK conversion, size cap, preset) instead of the default posture.
+    let analysis_settings = settings.map(|payload| {
+        CompressionSettings::from_sources(Some(payload), CompressionSettingsOverrides::default())
+    });
+
     tauri::async_runtime::spawn_blocking(move || {
-        analyze_pdf_with_progress(&requested_path, password.as_deref(), |update| {
-            let _ = on_progress.send(update);
-        })
+        analyze_pdf_with_progress(
+            &requested_path,
+            password.as_deref(),
+            analysis_settings.as_ref(),
+            |update| {
+                let _ = on_progress.send(update);
+            },
+        )
     })
     .await
     .map_err(|error| {
@@ -455,6 +478,7 @@ pub async fn compress_pdf(
             preset: request.preset,
             image_quality: request.image_quality,
             max_image_size_px: request.max_image_size_px,
+            max_image_size_percent: request.max_image_size_percent,
             optimize_images: request.optimize_images,
             compress_streams: request.compress_streams,
             strip_metadata: request.strip_metadata.or(request.remove_metadata),
@@ -506,6 +530,7 @@ pub async fn compress_scanned_pdf(
             preset: request.preset,
             image_quality: request.image_quality,
             max_image_size_px: request.max_image_size_px,
+            max_image_size_percent: request.max_image_size_percent,
             // Grayscale is a real RGB→Luma re-encode inside the engine now —
             // no longer a reason to skip image optimization entirely.
             optimize_images: Some(true),

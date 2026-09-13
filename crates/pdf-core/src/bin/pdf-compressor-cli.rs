@@ -36,8 +36,8 @@ use std::{
 use serde::Serialize;
 
 use pdf_core::{
-    analyze_pdf_with_progress, compress_pdf_bytes_with_progress, compress_pdf_to_target_size,
-    compress_pdf_with_progress,
+    analyze_pdf_with_progress, compress_pdf_bytes_to_target_size, compress_pdf_bytes_with_progress,
+    compress_pdf_to_target_size, compress_pdf_with_progress,
     models::QuickProfilePayload,
     quick_profile::{default_quick_profile_path, quick_profile_overrides, read_quick_profile_at},
     AppError, AppErrorPayload, BilevelCodec, CompressionResponse, CompressionSettings,
@@ -57,7 +57,8 @@ PIPELINE MODE (compress - --stdout):
     Reads the PDF from stdin and writes the result PDF to stdout; the JSON
     summary goes to stderr. When compression cannot beat the input, the
     original bytes pass through unchanged (never an empty pipe). Not
-    combinable with --output-dir or --target-size.
+    combinable with --output-dir; --target-size runs its search fully
+    in memory and works in this mode.
 
 QUICK OPTIONS (background mode, used by file-manager context menus):
     --preset <NAME>       maximum | balanced | conservative (default: balanced)
@@ -749,9 +750,11 @@ fn run(args: &[String]) -> Result<RunOutput, AppError> {
         .clone();
 
     match command.as_str() {
-        "analyze" => analyze_pdf_with_progress(&input, password_arg(rest)?.as_deref(), |_| {})
-            .map(|response| serde_json::to_string_pretty(&response).expect("serializable"))
-            .map(RunOutput::Text),
+        "analyze" => {
+            analyze_pdf_with_progress(&input, password_arg(rest)?.as_deref(), None, |_| {})
+                .map(|response| serde_json::to_string_pretty(&response).expect("serializable"))
+                .map(RunOutput::Text)
+        }
         "compress" => {
             if rest.iter().any(|arg| arg == "--stdout") {
                 return run_stdout_compress(rest, &input);
@@ -797,7 +800,8 @@ fn run(args: &[String]) -> Result<RunOutput, AppError> {
 /// Pipeline mode (`compress - --stdout`): stdin bytes in, PDF bytes to
 /// stdout, JSON summary to stderr. When compression cannot beat the input
 /// the engine passes the original bytes through, so the pipe never runs
-/// dry and the exit status stays success.
+/// dry and the exit status stays success. `--target-size` runs the same
+/// fully in-memory search the file path gets — no probe files involved.
 fn run_stdout_compress(rest: &[String], input: &str) -> Result<RunOutput, AppError> {
     let config_error = |message: String| AppError::Config(message);
     if input != "-" {
@@ -810,12 +814,7 @@ fn run_stdout_compress(rest: &[String], input: &str) -> Result<RunOutput, AppErr
             "--stdout writes to stdout; --output-dir is not combinable with it".to_string(),
         ));
     }
-    if target_size_bytes(rest)?.is_some() {
-        return Err(config_error(
-            "--target-size materializes probe files; it is not combinable with --stdout"
-                .to_string(),
-        ));
-    }
+    let target_bytes = target_size_bytes(rest)?;
     let overrides = compression_overrides(rest)?;
     let password = password_arg(rest)?;
     let settings = CompressionSettings::from_sources(None, overrides);
@@ -835,13 +834,23 @@ fn run_stdout_compress(rest: &[String], input: &str) -> Result<RunOutput, AppErr
         });
     }
 
-    let outcome = compress_pdf_bytes_with_progress(
-        input_bytes,
-        password.as_deref(),
-        settings,
-        Arc::new(AtomicBool::new(false)),
-        |_| {},
-    )?;
+    let outcome = match target_bytes {
+        Some(target) => compress_pdf_bytes_to_target_size(
+            input_bytes,
+            password.as_deref(),
+            target,
+            settings,
+            Arc::new(AtomicBool::new(false)),
+            &mut |_| {},
+        )?,
+        None => compress_pdf_bytes_with_progress(
+            input_bytes,
+            password.as_deref(),
+            settings,
+            Arc::new(AtomicBool::new(false)),
+            |_| {},
+        )?,
+    };
 
     // Summary first (stderr), then the payload — a reader waiting on stdout
     // gets complete diagnostics even if the byte stream fails mid-write.

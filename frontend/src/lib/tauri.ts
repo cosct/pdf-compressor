@@ -19,7 +19,6 @@ import type {
 import { commands } from './bindings'
 
 import type { CompressionSettings, PresetUserConfig, ProgressUpdate } from '../types/pdf'
-import { calculateMaxImageSizePx } from '../utils/compressionSettings'
 
 export type { AnalysisResponse, CompressionResponse } from './bindings'
 
@@ -77,9 +76,29 @@ export async function analyzePdf(
   path: string,
   password: string | null | undefined,
   onProgress?: (update: ProgressUpdate) => void,
+  settings?: CompressionSettings | null,
 ): Promise<AnalysisResponseWire> {
   const channel = createProgressChannel(onProgress)
-  return unwrap(commands.analyzePdf(path, path, password ?? null, channel))
+  // The optional settings context makes the estimate follow the job's live
+  // toggles (CMYK conversion stance, size cap, preset) instead of the
+  // default posture. Only percent travels: the engine resolves it against
+  // the document's own largest image edge.
+  const settingsPayload = settings
+    ? {
+        preset: settings.preset,
+        imageQuality: settings.imageQuality,
+        maxImageSizePercent: settings.maxImageSizePercent,
+        optimizeImages: settings.optimizeImages,
+        compressStreams: settings.compressStreams,
+        stripMetadata: settings.stripMetadata,
+        grayscale: settings.grayscale,
+        bilevelCodec: settings.bilevelCodec,
+        subsetFonts: settings.subsetFonts,
+        cmykConversion: settings.cmykConversion,
+        outputDir: null,
+      }
+    : null
+  return unwrap(commands.analyzePdf(path, path, password ?? null, settingsPayload, channel))
 }
 
 export async function compressPdf(
@@ -89,11 +108,6 @@ export async function compressPdf(
   onProgress?: (update: ProgressUpdate) => void,
   password?: string | null,
 ): Promise<CompressionResponseWire> {
-  const maxImageSizePx = calculateMaxImageSizePx(
-    settings.maxImageSizePercent,
-    settings.referenceMaxImageEdgePx,
-  )
-
   const channel = createProgressChannel(onProgress)
   const targetSizeBytes = settings.targetFileSizeMb
     ? Math.max(1, Math.round(settings.targetFileSizeMb * 1024 * 1024))
@@ -109,7 +123,11 @@ export async function compressPdf(
         settings: {
           preset: settings.preset,
           imageQuality: settings.imageQuality,
-          maxImageSizePx,
+          // 0.9.0 unified semantics: the cap travels as a percent of the
+          // document's largest image edge and the engine resolves it after
+          // loading — the same adaptive numbers the GUI previews.
+          maxImageSizePx: null,
+          maxImageSizePercent: settings.maxImageSizePercent,
           optimizeImages: settings.optimizeImages,
           compressStreams: settings.compressStreams,
           stripMetadata: settings.stripMetadata,
@@ -122,6 +140,7 @@ export async function compressPdf(
         preset: null,
         imageQuality: null,
         maxImageSizePx: null,
+        maxImageSizePercent: null,
         optimizeImages: null,
         compressStreams: null,
         stripMetadata: null,
@@ -146,11 +165,6 @@ export async function compressScannedPdf(
   onProgress?: (update: ProgressUpdate) => void,
   password?: string | null,
 ): Promise<CompressionResponseWire> {
-  const maxImageSizePx = calculateMaxImageSizePx(
-    settings.maxImageSizePercent,
-    settings.referenceMaxImageEdgePx,
-  )
-
   const channel = createProgressChannel(onProgress)
   const targetSizeBytes = settings.targetFileSizeMb
     ? Math.max(1, Math.round(settings.targetFileSizeMb * 1024 * 1024))
@@ -166,7 +180,8 @@ export async function compressScannedPdf(
         settings: {
           preset: settings.preset,
           imageQuality: settings.imageQuality,
-          maxImageSizePx,
+          maxImageSizePx: null,
+          maxImageSizePercent: settings.maxImageSizePercent,
           optimizeImages: settings.optimizeImages,
           compressStreams: settings.compressStreams,
           stripMetadata: settings.stripMetadata,
@@ -179,6 +194,7 @@ export async function compressScannedPdf(
         preset: null,
         imageQuality: null,
         maxImageSizePx: null,
+        maxImageSizePercent: null,
         grayscale: settings.grayscale,
         bilevelCodec: settings.bilevelCodec,
         stripMetadata: null,
@@ -209,6 +225,28 @@ export async function existingPaths(paths: string[]): Promise<string[]> {
   }
 
   return unwrap(commands.existingPaths(paths))
+}
+
+// ---------------------------------------------------------------------------
+// Build capabilities (0.9.0 honesty pass)
+// ---------------------------------------------------------------------------
+
+/** Engine components compiled into this build; `null` in browser preview. */
+export type EngineBuildFeatures = {
+  cmykCms: boolean
+  jpx: boolean
+  ccitt: boolean
+  subsetFonts: boolean
+}
+
+let cachedBuildFeatures: EngineBuildFeatures | null = null
+
+export async function getBuildFeatures(): Promise<EngineBuildFeatures | null> {
+  if (!hasNativeCommands()) {
+    return null
+  }
+  cachedBuildFeatures ??= await unwrap(commands.buildFeatures())
+  return cachedBuildFeatures
 }
 
 // ---------------------------------------------------------------------------
