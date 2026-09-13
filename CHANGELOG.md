@@ -2,6 +2,15 @@
 
 本项目的所有显著变更都记录在此文件中。格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。日期为提交日期。
 
+## [Unreleased]
+
+### 维护
+
+- **lopdf 0.44 → 0.45**（#25，取代 dependabot #18）：上游 0.45.0 的解析健壮性加固（xref 流条目数按解码长度限界、startxref 解析失败时重建交叉引用表、xref 子段对象号限界等）与 writer 修复（gapped object numbering 的 xref 段修正）；fuzz 目录的直接依赖与独立 lockfile 一并统一到 0.45 消除双版本。本地全门禁回归（引擎 158/183 + CLI 19 + e2e 11 + 壳 10，含 poppler 渲染保真与多 ObjStm 往返）无回归；**线性化写出上游仍无**，暂缓结论不变
+- **CI actions 对齐与前端小版本清账**（a16e9a7）：checkout v7（9 处）、setup-node v7、download-artifact v8——消除 release 运行日志里的 Node 20 弃用告警；vue 3.5.42、@types/node 26.5、happy-dom 20.14、vite-plus 0.3.1。**vite-plus 升级须把 catalog 的 `vite` 别名（vite-plus-core）同步到 0.3.1**：dependabot PR #22 只升一半导致 vue-tsc 崩溃（`Debug Failure: parameter should have errors`，Frontend CI 复现），别名同步后三件套全绿
+- **criterion 0.5 → 0.8**（#26，取代 dependabot #20）：bench-only；`criterion::black_box` 自 0.6 弃用，两个 bench 迁移到 `std::hint::black_box`，零警告
+- **TypeScript 7 暂缓（评估结论，dependabot #10 保持开放）**：vue-tsc 3.3.11 无法驱动 TS 7.0.2——原生移植版不导出 vue-tsc 所 resolve 的 tsc 内部路径（`ERR_PACKAGE_PATH_NOT_EXPORTED`），`vue-tsc -b` 直接失败；待 vue-tsc 适配后随 #10 再评估
+
 ## [0.9.0] - 2026-09-10
 
 主题：**工程深水区 + 诚实性**——合并重复路径、钉死进程契约、让界面如实反映构建能力与用户设置（开发文档 §8 路线）。

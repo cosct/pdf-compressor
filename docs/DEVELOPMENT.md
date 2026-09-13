@@ -118,7 +118,8 @@ cargo run -p pdf-core --bin pdf-compressor-cli -- quick <dir>/ --no-notify      
 
 ### 引擎加固要点（维护者备忘）
 
-- **lopdf 0.44 是硬要求**：0.38 的 `save_modern` 会把第 2 个及以后的 ObjStm 分配在
+- **lopdf 0.45 是硬要求**（0.45.0 于 2026-09-13 升级并全门禁回归）：0.38 的
+  `save_modern` 会把第 2 个及以后的 ObjStm 分配在
   xref `/Index` 枚举上界之外（`create_xref_steam` 以构造时的 `size` 为界），poppler 渲染
   时报 `Invalid XRef entry N`。升级前所有多 ObjStm 输出都带此警告；勿降级。
 - **SkipPolicy**（`encode.rs`）：小流跳过阈值是文档级策略——图片对象数 ≥ 24 或显式
@@ -390,7 +391,22 @@ release overlay 而非主配置）。
   `compress.warning.targetSizeMissed` 提示；前端以警告 toast + 状态卡 notes 呈现。
 - **`cargo bench` 名字冲突**：基准每轮使用独立临时目录，避免 100 次重名上限。
 
-## 8. 版本路线（0.9.0 已落地，2026-09-10）
+## 8. 版本路线（0.10.0 筹备中，2026-09-13）
+
+0.10.0 方向（1.0 前的稳定化缓冲）：**依赖现代化已落地，剩余候选为
+JBIG2 转码质量专项与 1.0 兼容性盘点**。
+
+- **已落地（2026-09-13，0.9.0 发布后搭车）**：lopdf 0.45（解析加固 +
+  writer xref 修复，全门禁回归无碍；线性化写出上游仍无）；CI actions
+  v7 对齐 + vue/@types-node/happy-dom/vite-plus 小版本清账（vite-plus
+  须连带 catalog `vite` 别名同步到 0.3.1，单独一半会让 vue-tsc 崩溃）；
+  criterion 0.8（bench-only，black_box 迁 std::hint）。TypeScript 7 暂缓：
+  vue-tsc 3.3.11 无法驱动原生移植版（ERR_PACKAGE_PATH_NOT_EXPORTED），
+  等 vue-tsc 适配（dependabot #10 保持开放）。
+- **候选（按余量取舍）**：JBIG2→G4 转码质量专项（0.7.1 遗留，门禁
+  17dB / 实测 ≈18.6dB）；1.0 兼容性盘点（pdf-core 公共 API / IPC 线
+  格式 / CLI 旗标 / 错误码 / 配置文件版本在 0.x 全程的兼容证据收集，
+  作为 1.0 成熟度声明的依据）。
 
 历史收口：0.6.0（JPX 解码、CMYK opt-in、JBIG2 输入）；0.7.0（CMYK 真转换
 lcms2 + JPX 边缘补全）；0.7.1（二次审查 9 项 + globals 去重）；0.8.0（CMYK
@@ -427,19 +443,22 @@ README/用户指南通俗化）；**0.9.0（工程深水区 + 诚实性：e2e �
   AUR 社区偏好，aur-publish 工作流已同时渲染两份模板，边际成本极低；
   tauri-project-structure 技能模板已同步修正（其"源码包已弃用"表述过时）。
 
-### 维持暂缓（2026-09-10 复核）
+### 维持暂缓（2026-09-13 复核）
 
-- **线性化**：lopdf 0.44 仍只有读取侧的 `is_linearized` 探测，无写出支持、
-  无公开路线（2026-09 调研确认）；自研多周，维持等上游；
+- **线性化**：lopdf 0.45 仍只有读取侧的 `is_linearized` 探测，无写出支持、
+  无公开路线（2026-09 调研确认，0.45.0 release notes 复核）；自研多周，
+  维持等上游；
 - **JBIG2 随机接入组织**（真实语料罕见）、**JBIG2 输出编码**（许可）、
   **简单字体子集化**（低收益）、**2GiB 流式**（收益人群有限）；
 - **PDF/A**：暂无计划。
 
 ### 依赖健康（随版本例行）
 
-- lopdf 0.44.0：RUSTSEC-2026-0187（深嵌套栈溢出）补丁版为 0.42.0，**当前
-  版本不受影响**；`save_modern` 加密 PDF 损坏 bug（上游 #479）不适用——本
-  引擎在写出前已剥离 `/Encrypt`。cargo audit 在 CI 每次推送执行，保持观察。
+- lopdf 0.45.0（2026-09-13 升级）：上游本版带 xref 解析限界与解析失败重建
+  类加固，降低同类深嵌套/畸形结构的风险面（RUSTSEC-2026-0187 补丁版为
+  0.42.0，历版均不受影响）；`save_modern` 加密 PDF 损坏
+  bug（上游 #479）不适用——本引擎在写出前已剥离 `/Encrypt`。cargo audit
+  在 CI 每次推送执行，保持观察。
 
 ### 节奏建议
 
