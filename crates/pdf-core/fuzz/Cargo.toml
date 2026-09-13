@@ -13,7 +13,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-lopdf = "0.44"
+lopdf = "0.45"
 
 # The `jpx` and `cmyk-cms` features pull in the vendored OpenJPEG and
 # lcms2 C code — exactly the unsafe surfaces the fuzz targets must hammer.
