@@ -597,8 +597,9 @@ describe('password retry', () => {
     })
     expect(composable.selectedJobNeedsPassword.value).toBe(true)
     // The password never enters the persisted queue (other tests' debounced
-    // writes may share the storage stub, so assert on absence, not shape).
-    expect(window.localStorage.getItem('pdf-compressor-queue')).not.toContain('open-secret')
+    // writes may share the storage stub, so assert on absence, not shape —
+    // and a timing-dependent absent key trivially satisfies it).
+    expect(window.localStorage.getItem('pdf-compressor-queue') ?? '').not.toContain('open-secret')
 
     mockedAnalyze.mockResolvedValue(analysisResponse())
     composable.submitJobPassword(composable.jobs.value[0].id, 'open-secret')
