@@ -105,15 +105,19 @@ impl CompressionPreset {
     }
 }
 
-/// Output codec for images whose decoded plane is (near-)bilevel, i.e. scans
-/// of text documents. Continuous-tone images always stay on JPEG.
+/// Output codec for images whose decoded plane is (near-)bilevel and already
+/// colorless, i.e. scans of text documents. Continuous-tone images always
+/// stay on JPEG with their color preserved; a color plane never collapses to
+/// bilevel unless `grayscale` asks for it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BilevelCodec {
-    /// Standard JPEG re-encode — today's behavior.
-    #[default]
+    /// Standard JPEG re-encode — the opt-out for users who prefer it.
     Jpeg,
     /// CCITT Group 4 (ITU T.6): lossless bi-level coding, dramatically smaller
-    /// than JPEG for black-and-white scans.
+    /// than JPEG for black-and-white scans. Default since 0.10.0 — JPEG
+    /// ringing on sharp bilevel text dominated the transcode quality loss
+    /// measured in 0.7.1.
+    #[default]
     CcittG4,
 }
 
@@ -122,7 +126,9 @@ impl BilevelCodec {
         match value.map(|item| item.to_ascii_lowercase()) {
             // "ccitt-g4" / "g4" / "bilevel" style labels all select G4.
             Some(value) if value.contains("g4") || value.contains("ccitt") => Self::CcittG4,
-            _ => Self::Jpeg,
+            Some(value) if value.contains("jpeg") || value.contains("jpg") => Self::Jpeg,
+            // Unspecified or unrecognized falls back to the default (G4).
+            _ => Self::default(),
         }
     }
 
@@ -321,17 +327,21 @@ impl CompressionSettings {
 
     /// Whether CMYK images may be converted for re-encoding under these
     /// settings: the explicit setting (on by default since 0.8.0), or an
-    /// implied conversion request (grayscale / G4 bilevel output collapses
-    /// color by design).
+    /// implied conversion request (grayscale collapses color by design).
+    /// The bilevel codec does **not** imply conversion since 0.10.0 — with
+    /// G4 as the default it routes already-colorless planes only, and a
+    /// near-bilevel CMYK plane converts through the same color path as any
+    /// other CMYK image (calibrated in `cmyk-cms` builds, refused in
+    /// feature-off builds).
     ///
     /// Builds without the `cmyk-cms` feature refuse the color conversion
     /// even when the setting asks for it: their naive ink-subtraction
     /// formula deviates ≈7.6 dB from color-managed renderers (poppler
     /// baseline, 2026-09), so CMYK images stay untouched rather than being
-    /// re-encoded wrong. Only the luma-collapse intents convert there —
-    /// the CMYK→gray deviation is far below the intent's own loss.
+    /// re-encoded wrong. Only the grayscale intent converts there — the
+    /// CMYK→gray deviation is far below the intent's own loss.
     pub fn converts_cmyk(&self) -> bool {
-        let collapse_intent = self.grayscale || self.bilevel_codec.uses_ccitt();
+        let collapse_intent = self.grayscale;
         // Flat form (no cfg! branch): every operator stays observable in
         // either build, so mutation testing in the default-feature leg can
         // reach both the refusal and the intent paths.
@@ -632,13 +642,14 @@ mod tests {
             )
         };
 
-        // Full matrix of (grayscale, g4, cmyk setting) x build. The
-        // luma-collapse intents imply the conversion in every build; only
-        // the pure color intent follows the build's capability.
+        // Full matrix of (grayscale, g4, cmyk setting) x build. Only the
+        // grayscale intent implies the conversion in every build; the bilevel
+        // codec no longer does (since 0.10.0 it routes colorless planes, so
+        // the pure color intent follows the build's capability).
         for (grayscale, g4) in [(false, false), (true, false), (false, true), (true, true)] {
             for cmyk in [None, Some(true), Some(false)] {
                 let converts = settings(grayscale, g4, cmyk).converts_cmyk();
-                if grayscale || g4 {
+                if grayscale {
                     assert!(
                         converts,
                         "collapse intent must convert regardless of build/setting                          (grayscale={grayscale}, g4={g4}, cmyk={cmyk:?})"
@@ -679,9 +690,18 @@ mod tests {
         );
         assert!(via_payload.bilevel_codec.uses_ccitt());
 
+        let jpeg = CompressionSettings::from_sources(
+            None,
+            CompressionSettingsOverrides {
+                bilevel_codec: Some(BilevelCodec::Jpeg),
+                ..Default::default()
+            },
+        );
+        assert_eq!(jpeg.bilevel_codec.as_label(), "jpeg");
+
         let default =
             CompressionSettings::from_sources(None, CompressionSettingsOverrides::default());
-        assert_eq!(default.bilevel_codec.as_label(), "jpeg");
+        assert_eq!(default.bilevel_codec.as_label(), "ccitt-g4");
     }
 
     #[test]
@@ -690,6 +710,9 @@ mod tests {
         assert!(BilevelCodec::from_optional_str(Some("G4")).uses_ccitt());
         assert!(BilevelCodec::from_optional_str(Some("CCITT")).uses_ccitt());
         assert!(!BilevelCodec::from_optional_str(Some("jpeg")).uses_ccitt());
-        assert!(!BilevelCodec::from_optional_str(None).uses_ccitt());
+        assert!(!BilevelCodec::from_optional_str(Some("JPG")).uses_ccitt());
+        // Unspecified and unrecognized labels fall back to the default (G4).
+        assert!(BilevelCodec::from_optional_str(None).uses_ccitt());
+        assert!(BilevelCodec::from_optional_str(Some("banana")).uses_ccitt());
     }
 }

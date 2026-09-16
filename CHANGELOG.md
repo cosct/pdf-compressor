@@ -4,12 +4,26 @@
 
 ## [Unreleased]
 
+主题：**转码质量收口 + 1.0 清障**（开发文档 §8 0.10.0 计划）。
+
+### 变更
+
+- **近双级图片默认 G4（0.7.1 转码质量遗留收口）**：`BilevelCodec` 默认从 `jpeg` 翻转为 `ccitt-g4`——近黑白图片（文字扫描件）默认走 **CCITT G4 无损重编码**而非 JPEG 有损重编码。0.7.1 实测的 JBIG2 转码 ≈18.6dB 损失根因即默认 JPEG 在锐利文字边缘的振铃；翻转后：G4 赢过原图时无损转码（灰度 JPEG 扫描件、CCITT/JBIG2 输入），赢不过时（符号压缩的 JBIG2 文本页）按"必须压赢"规则**原样保留**——默认路径不再劣化任何双级内容。`--bilevel jpeg` 与 GUI 编码选择保留为显式退出。**语义解耦（随翻转）**：双级路由只作用于**无色平面**——彩色照片（含带彩色印章的近黑白文档）一律保持 JPEG 与原色，仅显式灰度请求才折叠颜色（此前 `--bilevel g4` 隐式折叠全部彩色的行为随之消失，等效路径为 `--grayscale`）；CMYK 转换的隐式开启条件同步收窄为仅灰度请求（feature-off 构建对 CMYK 的"宁可不压不偏色"拒绝因此覆盖所有非灰度姿态）
+- **双级分类与缩放解耦 + 搜索轮 memo**：近双级判定（midtone ≤ 5%）移到**缩放之前**——分类不应依赖本次运行缩放多狠（重采样的致密文字产生抗锯齿中灰，会在小上限下把双级扫描翻转去 JPEG 出口）；目标大小搜索把判定结果 memo 进 `ImageSearchCache`（缓存平面在首轮塌缩后已是重采样态，逐轮重判会中途漂移）。搜索轮里 G4 无质量旋钮、预算压力靠**边长塌缩**化解且出口粘滞（不再回退 JPEG）；G4 赢不了原件时（符号压缩 JBIG2）原件按 not-smaller 规则保留，强制预算下落到 G4@塌缩边（实测 729px、PSNR ≈17.6dB，损失纯为降采样、无振铃）
+- **声明灰度的解码器上采样折回**：流字典声明 `DeviceGray`（或 ICC N=1）时，解码器把灰度上采样成 RGB 的伪影折回亮度平面（对真灰度内容无损）——灰度 DCT 扫描件因此能被 G4 路由（此前 image crate 解码任何 JPEG 都回 RGB8，灰度 JPEG 扫描永远到不了双级出口），重写流也正确声明 `DeviceGray` 而非此前的 `DeviceRGB`（3 通道膨胀顺带消除）
+- **小流跳过策略的 G4 豁免**：CCITT/JBIG2 输入（解码必为双级）在 G4 编解码下豁免"小流跳过"——其重编码无损且通常显著更小，"不太可能明显缩小"的理由不适用；分析器 `image_is_actionable` 镜像同步
+- **配置迁移 v2→v3**（照 0.8.0 CMYK 翻转模式）：≤0.9 的 GUI 会把当时的默认 `bilevelCodec: "jpeg"` 物化进 preset-user-config.json / quick-profile.json——v2 文件的 `Some("jpeg")` 读取时重置为缺省（新默认生效），`Some("ccitt-g4")` 为主动选择保留；v3 起写入的是真实选择、永不迁移。前端版本常量、quick 面板写入、GUI 预设默认表（`preset-defaults.json` 三档 → `ccitt-g4`）同步升 v3
+
+### 新增
+
+- **双级语义钉子测试**：`jbig2_scan_stays_untouched_by_default`（默认路径原样保留符号压缩 JBIG2，字节恒等 + poppler 渲染 PSNR 无穷）、`color_planes_stay_jpeg_under_the_g4_default`（彩色平面在 G4 默认下保持 JPEG 与 DeviceRGB——解耦钉）、`explicit_jpeg_bilevel_codec_opts_out_of_g4`（显式退出钉）、`tight_target_budget_keeps_the_lossless_g4_exit`（紧预算粘滞钉）；既有 jbig2 强制转码门禁翻断言为 G4@塌缩边（≈17.6dB，损失纯降采样）；预设默认表镜像与灰度夹具构造器（`encode_gray_jpeg`/`build_gray_pdf_bytes`）补齐
+
 ### 维护
 
 - **lopdf 0.44 → 0.45**（#25，取代 dependabot #18）：上游 0.45.0 的解析健壮性加固（xref 流条目数按解码长度限界、startxref 解析失败时重建交叉引用表、xref 子段对象号限界等）与 writer 修复（gapped object numbering 的 xref 段修正）；fuzz 目录的直接依赖与独立 lockfile 一并统一到 0.45 消除双版本。本地全门禁回归（引擎 158/183 + CLI 19 + e2e 11 + 壳 10，含 poppler 渲染保真与多 ObjStm 往返）无回归；**线性化写出上游仍无**，暂缓结论不变
 - **CI actions 对齐与前端小版本清账**（a16e9a7）：checkout v7（9 处）、setup-node v7、download-artifact v8——消除 release 运行日志里的 Node 20 弃用告警；vue 3.5.42、@types/node 26.5、happy-dom 20.14、vite-plus 0.3.1。**vite-plus 升级须把 catalog 的 `vite` 别名（vite-plus-core）同步到 0.3.1**：dependabot PR #22 只升一半导致 vue-tsc 崩溃（`Debug Failure: parameter should have errors`，Frontend CI 复现），别名同步后三件套全绿
 - **criterion 0.5 → 0.8**（#26，取代 dependabot #20）：bench-only；`criterion::black_box` 自 0.6 弃用，两个 bench 迁移到 `std::hint::black_box`，零警告
-- **TypeScript 7 暂缓（评估结论，dependabot #10 保持开放）**：vue-tsc 3.3.11 无法驱动 TS 7.0.2——原生移植版不导出 vue-tsc 所 resolve 的 tsc 内部路径（`ERR_PACKAGE_PATH_NOT_EXPORTED`），`vue-tsc -b` 直接失败；待 vue-tsc 适配后随 #10 再评估
+- **TypeScript 7 暂缓（评估结论，dependabot #10 保持开放）**：vue-tsc 3.3.11 无法驱动 TS 7.0.2——原生移植版不导出 vue-tsc 所 resolve 的 tsc 内部路径（`ERR_PACKAGE_PATH_NOT_EXPORTED`），`vue-tsc -b` 直接失败；待 vue-tsc 适配后随 #10 再评估。vp check 的 tsgolint 腿只覆盖 .ts 的 type-aware lint、不含 .vue 完整诊断，不能替代 vue-tsc
 
 ## [0.9.0] - 2026-09-10
 

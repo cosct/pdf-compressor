@@ -7,7 +7,28 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 fn default_config_version() -> u32 {
-    2
+    3
+}
+
+/// v2→v3 config migration (0.10.0's bilevel codec default flip to G4). A
+/// v2 config's `bilevel_codec: Some("jpeg")` was the ≤0.9 **default state**
+/// persisted verbatim — the GUI materialized every preset field into
+/// `preset-user-config.json` / `quick-profile.json`, so `Some("jpeg")`
+/// cannot be distinguished from "never touched". The migration drops v2
+/// `Some("jpeg")` back to unset, letting the new default (G4) apply;
+/// `Some("ccitt-g4")` was always a deliberate opt-in and survives. v3
+/// configs keep their values verbatim — a `Some("jpeg")` written by
+/// 0.10.0+ is a genuine opt-out and must never be migrated away.
+/// Returns the stamped config version.
+pub fn migrate_bilevel_default_flip(version: u32, bilevel_codec: &mut Option<String>) -> u32 {
+    if version < 3 {
+        *bilevel_codec = bilevel_codec.take().filter(|value| {
+            !value.eq_ignore_ascii_case("jpeg") && !value.eq_ignore_ascii_case("jpg")
+        });
+        3
+    } else {
+        version
+    }
 }
 
 /// v1→v2 config migration (0.8.0's CMYK default flip). A v1 config's

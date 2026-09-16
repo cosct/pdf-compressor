@@ -82,7 +82,7 @@ function makeSettings(overrides: Partial<CompressionSettings> = {}): Compression
     compressStreams: true,
     stripMetadata: true,
     grayscale: false,
-    bilevelCodec: 'jpeg',
+    bilevelCodec: 'ccitt-g4',
     subsetFonts: false,
     cmykConversion: true,
     outputDir: null,
@@ -208,17 +208,17 @@ describe('normalizeSettings', () => {
       compressStreams: true,
       stripMetadata: true,
       grayscale: undefined as unknown as boolean,
-      bilevelCodec: undefined as unknown as 'jpeg',
+      bilevelCodec: undefined as unknown as 'ccitt-g4',
       subsetFonts: undefined as unknown as boolean,
       cmykConversion: false,
       outputDir: null,
       targetFileSizeMb: null,
     })
     expect(normalized.grayscale).toBe(false)
-    expect(normalized.bilevelCodec).toBe('jpeg')
+    expect(normalized.bilevelCodec).toBe('ccitt-g4')
   })
 
-  it('keeps ccitt-g4 as the only non-default bilevel codec', () => {
+  it('keeps jpeg as the only non-default bilevel codec', () => {
     const normalized = normalizeSettings({
       preset: 'balanced',
       imageQuality: 72,
@@ -228,13 +228,13 @@ describe('normalizeSettings', () => {
       compressStreams: true,
       stripMetadata: true,
       grayscale: true,
-      bilevelCodec: 'ccitt-g4',
+      bilevelCodec: 'jpeg',
       subsetFonts: true,
       cmykConversion: false,
       outputDir: null,
       targetFileSizeMb: null,
     })
-    expect(normalized.bilevelCodec).toBe('ccitt-g4')
+    expect(normalized.bilevelCodec).toBe('jpeg')
     expect(normalized.subsetFonts).toBe(true)
   })
 })
@@ -500,7 +500,7 @@ describe('queue restore', () => {
       compressStreams: true,
       stripMetadata: true,
       grayscale: true,
-      bilevelCodec: 'ccitt-g4',
+      bilevelCodec: 'jpeg',
       subsetFonts: true,
       cmykConversion: false,
       outputDir: '/tmp/custom-out',

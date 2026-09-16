@@ -141,6 +141,73 @@ fn build_pdf_bytes(jpeg: Vec<u8>, width: u32, height: u32) -> Vec<u8> {
     build_pdf_bytes_ext(jpeg, width, height, None, 0)
 }
 
+/// [`build_pdf_bytes`] with the single image declared DeviceGray — the G4
+/// routing fixtures decode to a colorless plane, which is the shape the
+/// bilevel codec routes since the 0.10.0 default flip (color planes keep
+/// JPEG with their color).
+fn build_gray_pdf_bytes(jpeg: Vec<u8>, width: u32, height: u32) -> Vec<u8> {
+    let mut doc = Document::with_version("1.5");
+    let info_id = doc.add_object(dictionary! {
+        "Producer" => Object::string_literal("pdf-compressor test fixture"),
+    });
+    let pages_id = doc.new_object_id();
+    let font_id = doc.add_object(dictionary! {
+        "Type" => "Font",
+        "Subtype" => "Type1",
+        "BaseFont" => "Helvetica",
+    });
+    let image_id = doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Image",
+            "Width" => width as i64,
+            "Height" => height as i64,
+            "ColorSpace" => "DeviceGray",
+            "BitsPerComponent" => 8,
+            "Filter" => "DCTDecode",
+        },
+        jpeg,
+    ));
+    let resources_id = doc.add_object(dictionary! {
+        "Font" => dictionary! {
+            "F1" => font_id,
+        },
+        "XObject" => dictionary! {
+            "Im0" => Object::Reference(image_id),
+        },
+    });
+    let content = format!(
+        "q 400 0 0 300 72 400 cm /Im0 Do Q\nBT /F1 24 Tf 72 720 Td ({FIXTURE_TEXT}) Tj ET\n"
+    );
+    let content_id = doc.add_object(Stream::new(dictionary! {}, content.into_bytes()));
+    let page_id = doc.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => pages_id,
+        "Contents" => content_id,
+        "Resources" => resources_id,
+        "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+    });
+    doc.objects.insert(
+        pages_id,
+        Object::Dictionary(dictionary! {
+            "Type" => "Pages",
+            "Kids" => vec![Object::Reference(page_id)],
+            "Count" => 1,
+        }),
+    );
+    let catalog_id = doc.add_object(dictionary! {
+        "Type" => "Catalog",
+        "Pages" => pages_id,
+    });
+    doc.trailer.set("Root", catalog_id);
+    doc.trailer.set("Info", info_id);
+
+    let mut bytes = Vec::new();
+    doc.save_modern(&mut bytes)
+        .expect("failed to save fixture PDF");
+    bytes
+}
+
 /// Build a one-page PDF whose single embedded image is a CCITT fax stream
 /// with the given `K` parameter (G4 transcode fixtures).
 fn build_ccitt_pdf_bytes(g4: Vec<u8>, width: u32, height: u32, k: i64) -> Vec<u8> {
@@ -3304,17 +3371,23 @@ fn image_streams(document: &Document) -> Vec<&Stream> {
 #[test]
 fn bilevel_mode_rewrites_near_bilevel_jpegs_as_ccitt_g4() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let jpeg = encode_jpeg(bilevel_scan_rgb_image(2000, 1500, FIXTURE_SEED), 88);
+    // A grayscale near-bilevel scan under the DEFAULT settings — since the
+    // 0.10.0 flip the default codec is G4 and the colorless plane routes to
+    // CCITT without any explicit request.
+    let jpeg = crate::testutil::encode_gray_jpeg(
+        crate::testutil::bilevel_scan_image(2000, 1500, FIXTURE_SEED),
+        88,
+    );
     let path = write_fixture(
         dir.path(),
         "bilevel-jpeg.pdf",
-        &build_pdf_bytes(jpeg, 2000, 1500),
+        &build_gray_pdf_bytes(jpeg, 2000, 1500),
     );
 
     let response = compress_pdf_with_progress(
         path.to_str().unwrap(),
         None,
-        g4_settings(),
+        maximum_settings(),
         noop_cancel_flag(),
         |_| {},
     )
@@ -3327,8 +3400,9 @@ fn bilevel_mode_rewrites_near_bilevel_jpegs_as_ccitt_g4() {
     let stream = streams[0];
     assert!(
         matches!(stream.dict.get(b"Filter"), Ok(Object::Name(name)) if name.as_slice() == b"CCITTFaxDecode"),
-        "near-bilevel image must be re-encoded as CCITT G4, got {:?}",
-        stream.dict.get(b"Filter")
+        "near-bilevel image must be re-encoded as CCITT G4, got {:?} (notices: {:?})",
+        stream.dict.get(b"Filter"),
+        response.notices
     );
     let parms = match stream.dict.get(b"DecodeParms") {
         Ok(Object::Dictionary(parms)) => parms,
@@ -3514,11 +3588,14 @@ fn ccitt_g3_input_with_undecodable_payload_stays_skipped() {
 #[test]
 fn target_size_mode_with_bilevel_g4() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let jpeg = encode_jpeg(bilevel_scan_rgb_image(2000, 1500, FIXTURE_SEED), 88);
+    let jpeg = crate::testutil::encode_gray_jpeg(
+        crate::testutil::bilevel_scan_image(2000, 1500, FIXTURE_SEED),
+        88,
+    );
     let path = write_fixture(
         dir.path(),
         "bilevel-target.pdf",
-        &build_pdf_bytes(jpeg, 2000, 1500),
+        &build_gray_pdf_bytes(jpeg, 2000, 1500),
     );
     let original = fs::metadata(&path).expect("fixture metadata").len();
     let target = original * 40 / 100;
@@ -3546,6 +3623,82 @@ fn target_size_mode_with_bilevel_g4() {
             Ok(Object::Name(name)) if name.as_slice() == b"CCITTFaxDecode"
         )),
         "the winning round must have materialized a G4 stream"
+    );
+}
+
+/// Color planes never collapse to bilevel through the codec default: the
+/// 0.10.0 decoupling made `bilevel_codec` route colorless planes only, so an
+/// RGB near-bilevel image (colored stamps on a document scan) keeps JPEG
+/// output and its color under the default settings.
+#[test]
+fn color_planes_stay_jpeg_under_the_g4_default() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let jpeg = encode_jpeg(bilevel_scan_rgb_image(2000, 1500, FIXTURE_SEED), 88);
+    let path = write_fixture(
+        dir.path(),
+        "bilevel-color.pdf",
+        &build_pdf_bytes(jpeg, 2000, 1500),
+    );
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(),
+        None,
+        maximum_settings(),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+    let stream = sole_image_stream(&reloaded);
+    assert!(
+        matches!(stream.dict.get(b"Filter"), Ok(Object::Name(name)) if name.as_slice() == b"DCTDecode"),
+        "color planes must stay on JPEG regardless of the bilevel codec, got {:?}",
+        stream.dict.get(b"Filter")
+    );
+    assert!(
+        matches!(stream.dict.get(b"ColorSpace"), Ok(Object::Name(cs)) if cs.as_slice() == b"DeviceRGB"),
+        "the color must survive the re-encode, got {:?}",
+        stream.dict.get(b"ColorSpace")
+    );
+}
+
+/// `--bilevel jpeg` remains a genuine opt-out of the G4 default.
+#[test]
+fn explicit_jpeg_bilevel_codec_opts_out_of_g4() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let jpeg = crate::testutil::encode_gray_jpeg(
+        crate::testutil::bilevel_scan_image(2000, 1500, FIXTURE_SEED),
+        88,
+    );
+    let path = write_fixture(
+        dir.path(),
+        "bilevel-optout.pdf",
+        &build_gray_pdf_bytes(jpeg, 2000, 1500),
+    );
+    let settings = CompressionSettings::from_sources(
+        None,
+        CompressionSettingsOverrides {
+            preset: Some("maximum".to_string()),
+            bilevel_codec: Some(BilevelCodec::Jpeg),
+            ..Default::default()
+        },
+    );
+
+    let response = compress_pdf_with_progress(
+        path.to_str().unwrap(),
+        None,
+        settings,
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+    assert!(
+        matches!(sole_image_stream(&reloaded).dict.get(b"Filter"), Ok(Object::Name(name)) if name.as_slice() == b"DCTDecode"),
+        "the explicit jpeg codec must override the G4 default, got {:?}",
+        sole_image_stream(&reloaded).dict.get(b"Filter")
     );
 }
 
@@ -6098,8 +6251,8 @@ fn review_g4_output_keeps_white_page_background() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (width, height) = (1600u32, 1200u32);
     let mut doc = Document::with_version("1.5");
-    let jpeg = crate::testutil::encode_jpeg(
-        crate::testutil::bilevel_scan_rgb_image(width, height, 11),
+    let jpeg = crate::testutil::encode_gray_jpeg(
+        crate::testutil::bilevel_scan_image(width, height, 11),
         100,
     );
     let image_id = doc.add_object(Stream::new(
@@ -6108,7 +6261,7 @@ fn review_g4_output_keeps_white_page_background() {
             "Subtype" => "Image",
             "Width" => i64::from(width),
             "Height" => i64::from(height),
-            "ColorSpace" => "DeviceRGB",
+            "ColorSpace" => "DeviceGray",
             "BitsPerComponent" => 8,
             "Filter" => "DCTDecode",
         },
@@ -6286,22 +6439,87 @@ fn build_jbig2_pdf_bytes() -> Vec<u8> {
     bytes
 }
 
-/// The committed JBIG2 scan transcodes and renders recognizably under an
-/// independent renderer. There is no license-clean JBIG2 encoder to derive
-/// a pixel reference from, so poppler's rendering of the original is the
-/// fidelity anchor (the same pattern as the G4 polarity gate). The JPEG
-/// outlet is used because a symbol-compressed JBIG2 text page is often
-/// smaller than its G4 re-encoding — the "must beat the original" rule
-/// would otherwise (correctly) refuse to write the G4 output.
+/// The committed JBIG2 scan under settings that keep its resolution: a
+/// symbol-compressed JBIG2 text page is smaller than its G4 re-encoding, so
+/// the "must beat the original" rule keeps the original bytes — since the
+/// 0.10.0 flip the default never worsens bilevel content (lossless G4 when
+/// it wins, the original untouched when it does not). The render gate
+/// anchors the claim with poppler rasters: the page must come out
+/// pixel-identical.
+#[test]
+fn jbig2_scan_stays_untouched_by_default() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let input = write_fixture(dir.path(), "jbig2.pdf", &build_jbig2_pdf_bytes());
+    let original_stream = {
+        let document = Document::load(&input).expect("fixture must load");
+        sole_image_stream(&document).content.clone()
+    };
+
+    // The fat Info blob guarantees the overall output wins, so the file is
+    // written and must carry the JBIG2 stream verbatim (G4 at the full edge
+    // cannot beat the symbol-compressed original, and without a resize the
+    // not-smaller guard correctly declines the transcode).
+    let response = compress_pdf_with_progress(
+        input.to_str().unwrap(),
+        None,
+        no_downscale(maximum_settings(), 2339),
+        noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("compression must succeed");
+
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+    let image = sole_image_stream(&reloaded);
+    assert!(
+        matches!(image.dict.get(b"Filter"), Ok(Object::Name(name)) if name.as_slice() == b"JBIG2Decode"),
+        "a symbol-compressed JBIG2 page that G4 cannot beat stays original, got {:?}",
+        image.dict.get(b"Filter")
+    );
+    assert_eq!(
+        image.content, original_stream,
+        "the untouched JBIG2 payload must survive byte-identically"
+    );
+
+    let render = |pdf: &Path, name: &str| -> Option<DynamicImage> {
+        let prefix = dir.path().join(name);
+        let png = crate::testutil::render_poppler_png(
+            pdf,
+            &prefix,
+            &["-r", "72", "-png"],
+            &dir.path().join(format!("{name}-1.png")),
+        )?;
+        image::load_from_memory(&png).ok()
+    };
+    let (Some(before), Some(after)) = (
+        render(&input, "jbig2-keep-before"),
+        render(Path::new(&response.output_path), "jbig2-keep-after"),
+    ) else {
+        eprintln!("raster check skipped");
+        return;
+    };
+    let psnr = luma_psnr_db(&before, &after).expect("page geometry matches");
+    assert!(
+        psnr >= 40.0,
+        "the untouched page must render identically (PSNR {psnr:.2} dB)"
+    );
+}
+
+/// A budget the search cannot meet with the original in place forces a
+/// transcode of the JBIG2 page onto the lossless G4 exit at a collapsed
+/// edge — G4 cannot beat the symbol-compressed original at the full edge,
+/// so the search shrinks the edge until the G4 product fits (the bilevel
+/// classification is memoized pre-resize, so the exit stays sticky across
+/// rounds instead of flipping to JPEG on resampled midtones). There is no
+/// license-clean JBIG2 encoder to derive a pixel reference from, so
+/// poppler's rendering of the original stays the fidelity anchor (the same
+/// pattern as the G4 polarity gate).
 #[test]
 fn jbig2_scan_transcodes_and_renders_identically() {
     let dir = tempfile::tempdir().expect("tempdir");
     let input = write_fixture(dir.path(), "jbig2.pdf", &build_jbig2_pdf_bytes());
 
     // Target-size mode always materializes its best result (the plain pass
-    // would correctly refuse to write: a symbol-compressed JBIG2 text page
-    // is often smaller than any safe re-encoding, which is exactly why the
-    // encoder-side JBIG2 door stays shut).
+    // keeps the original — see `jbig2_scan_stays_untouched_by_default`).
     let response = compress_pdf_to_target_size(
         input.to_str().unwrap(),
         None,
@@ -6320,9 +6538,17 @@ fn jbig2_scan_transcodes_and_renders_identically() {
     let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
     let image = sole_image_stream(&reloaded);
     assert!(
-        matches!(image.dict.get(b"Filter"), Ok(Object::Name(name)) if name.as_slice() == b"DCTDecode"),
-        "the JBIG2 scan must transcode to JPEG under the maximum preset, got {:?}",
+        matches!(image.dict.get(b"Filter"), Ok(Object::Name(name)) if name.as_slice() == b"CCITTFaxDecode"),
+        "the forced transcode keeps the lossless G4 exit at a collapsed edge, got {:?}",
         image.dict.get(b"Filter")
+    );
+    let width = match image.dict.get(b"Width") {
+        Ok(Object::Integer(value)) => *value as u32,
+        other => panic!("G4 stream must carry Width, got {other:?}"),
+    };
+    assert!(
+        width < 1728,
+        "the edge must have collapsed to fit the budget (width {width})"
     );
     assert!(
         image.dict.get(b"JBIG2Globals").is_err(),
@@ -6353,15 +6579,55 @@ fn jbig2_scan_transcodes_and_renders_identically() {
         return;
     };
     let psnr = luma_psnr_db(&before, &after).expect("page geometry matches");
-    // The previous 22 dB floor was aspirational: the filename typo fixed
-    // above meant this raster comparison never executed, and the first real
-    // measurement of the committed fixture under the 32 KiB target lands at
-    // ≈18.6 dB (JPEG ringing on sharp bilevel text dominates luma PSNR).
-    // The floor pins today's measured quality; raising it belongs with
-    // transcode-quality work, not with the gate fix.
+    // The floor pins the measured quality of the budget-forced path: the
+    // 729 px G4 page (pure downscaling, no codec loss) lands ≈17.6 dB
+    // against the full-resolution original raster. The default path does
+    // not degrade bilevel content at all — see
+    // `jbig2_scan_stays_untouched_by_default`.
     assert!(
         psnr >= 17.0,
         "JBIG2 transcode must keep the page recognizable (PSNR {psnr:.2} dB)"
+    );
+}
+
+/// A tight budget keeps the lossless G4 exit whenever a G4 product meets it
+/// (this sparse scan fits at the full edge; denser content collapses the
+/// edge first) — budget pressure must not silently fall back to lossy JPEG
+/// while G4 still fits.
+#[test]
+fn tight_target_budget_keeps_the_lossless_g4_exit() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let jpeg = crate::testutil::encode_gray_jpeg(
+        crate::testutil::bilevel_scan_image(2000, 1500, FIXTURE_SEED),
+        88,
+    );
+    let path = write_fixture(
+        dir.path(),
+        "bilevel-tight.pdf",
+        &build_gray_pdf_bytes(jpeg, 2000, 1500),
+    );
+
+    let response = compress_pdf_to_target_size(
+        path.to_str().unwrap(),
+        None,
+        6 * 1024,
+        maximum_settings(),
+        noop_cancel_flag(),
+        &mut |_| {},
+    )
+    .expect("target-size search must succeed");
+    assert!(
+        (response.compressed_size_bytes as u64) <= 6 * 1024,
+        "the search must meet the tight budget ({} > {})",
+        response.compressed_size_bytes,
+        6 * 1024
+    );
+    let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
+    let stream = sole_image_stream(&reloaded);
+    assert!(
+        matches!(stream.dict.get(b"Filter"), Ok(Object::Name(name)) if name.as_slice() == b"CCITTFaxDecode"),
+        "a tight budget collapses the edge instead of falling back to JPEG, got {:?}",
+        stream.dict.get(b"Filter")
     );
 }
 
@@ -6876,8 +7142,8 @@ fn rereview_jbig2_standard_decodeparms_globals_is_actionable() {
     let reloaded = Document::load(&response.output_path).expect("output must be a valid PDF");
     let image = sole_image_stream(&reloaded);
     assert!(
-        matches!(image.dict.get(b"Filter"), Ok(Object::Name(name)) if name.as_slice() == b"DCTDecode"),
-        "the globals-backed scan must transcode to JPEG, got {:?}",
+        matches!(image.dict.get(b"Filter"), Ok(Object::Name(name)) if name.as_slice() == b"CCITTFaxDecode"),
+        "the globals-backed scan must transcode to lossless G4 (0.10.0 default), got {:?}",
         image.dict.get(b"Filter")
     );
 }

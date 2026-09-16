@@ -173,13 +173,15 @@ fn read_preset_config_at(config_path: &Path) -> Result<PresetUserConfigPayload, 
             ))
         })?;
     // v1→v2: the 0.7.x CMYK default-off state must not pin the upgraded
-    // install to the old default. The per-profile call shares the engine's
-    // migration rule; only the boolean matters per entry, the stamped
-    // version is tracked by the container.
+    // install to the old default. v2→v3: the ≤0.9 bilevel "jpeg" default
+    // likewise resets so 0.10.0's G4 default applies. The per-profile calls
+    // share the engine's migration rules; only the field values matter per
+    // entry, the stamped version is tracked by the container.
     for profile in config.presets.values_mut() {
         let _ = pdf_core::migrate_cmyk_default_flip(config.version, &mut profile.cmyk_conversion);
+        let _ = pdf_core::migrate_bilevel_default_flip(config.version, &mut profile.bilevel_codec);
     }
-    config.version = config.version.max(2);
+    config.version = config.version.max(3);
     Ok(config)
 }
 
@@ -712,8 +714,8 @@ mod tests {
 
         let migrated = read_preset_config_at(&config_path).expect("read v1");
         assert_eq!(
-            migrated.version, 2,
-            "v1 configs are stamped to v2 in memory"
+            migrated.version, 3,
+            "v1 configs are stamped through to v3 in memory"
         );
         assert_eq!(
             migrated.presets["balanced"].cmyk_conversion, None,
@@ -745,8 +747,67 @@ mod tests {
         .expect("write v2 config");
 
         let loaded = read_preset_config_at(&config_path).expect("read v2");
-        assert_eq!(loaded.version, 2);
+        assert_eq!(loaded.version, 3);
         assert_eq!(loaded.presets["balanced"].cmyk_conversion, Some(false));
+    }
+
+    #[test]
+    fn preset_config_v2_migrates_the_bilevel_default_flip() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_path = dir.path().join("preset-user-config.json");
+
+        // A ≤0.9 config materialized the then-default "jpeg" into every
+        // preset — indistinguishable from untouched, so it must reset for
+        // the 0.10.0 G4 default; "ccitt-g4" was a deliberate opt-in.
+        fs::write(
+            &config_path,
+            r#"{
+                "version": 2,
+                "presets": {
+                    "balanced":  { "imageQuality": 72, "maxImageSizePercent": 68, "bilevelCodec": "jpeg" },
+                    "maximum":   { "imageQuality": 46, "maxImageSizePercent": 52, "bilevelCodec": "ccitt-g4" },
+                    "custom":    { "imageQuality": 60, "maxImageSizePercent": 70 }
+                }
+            }"#,
+        )
+        .expect("write v2 config");
+
+        let migrated = read_preset_config_at(&config_path).expect("read v2");
+        assert_eq!(migrated.version, 3, "v2 configs are stamped to v3");
+        assert_eq!(
+            migrated.presets["balanced"].bilevel_codec, None,
+            "old default jpeg resets to unset (G4 default applies)"
+        );
+        assert_eq!(
+            migrated.presets["maximum"].bilevel_codec,
+            Some("ccitt-g4".to_string()),
+            "deliberate opt-ins survive"
+        );
+        assert_eq!(
+            migrated.presets["custom"].bilevel_codec, None,
+            "untouched entries stay unset"
+        );
+    }
+
+    #[test]
+    fn preset_config_v3_keeps_genuine_opt_outs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_path = dir.path().join("preset-user-config.json");
+
+        // A jpeg written by 0.10.0+ is a genuine opt-out: no migration may
+        // touch it (otherwise every re-save could silently re-enable G4).
+        fs::write(
+            &config_path,
+            r#"{ "version": 3, "presets": { "balanced": { "imageQuality": 72, "maxImageSizePercent": 68, "bilevelCodec": "jpeg" } } }"#,
+        )
+        .expect("write v3 config");
+
+        let loaded = read_preset_config_at(&config_path).expect("read v3");
+        assert_eq!(loaded.version, 3);
+        assert_eq!(
+            loaded.presets["balanced"].bilevel_codec,
+            Some("jpeg".to_string())
+        );
     }
 
     #[test]
@@ -756,7 +817,7 @@ mod tests {
 
         // Missing file reads as the (migrated, current-version) default.
         let missing = load_quick_profile_at(&path).expect("load missing");
-        assert_eq!(missing.version, 2);
+        assert_eq!(missing.version, 3);
         assert_eq!(missing.cmyk_conversion, None);
 
         // A save echoes back the persisted (load-normalized) profile, not
@@ -773,7 +834,7 @@ mod tests {
         .expect("save");
         assert_eq!(saved.preset.as_deref(), Some("maximum"));
         assert_eq!(saved.grayscale, Some(true));
-        assert_eq!(saved.version, 2);
+        assert_eq!(saved.version, 3);
 
         let reloaded = load_quick_profile_at(&path).expect("reload");
         assert_eq!(reloaded.preset.as_deref(), Some("maximum"));

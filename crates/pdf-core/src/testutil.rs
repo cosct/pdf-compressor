@@ -468,6 +468,18 @@ pub fn encode_jpeg(image: RgbImage, quality: u8) -> Vec<u8> {
     cursor.into_inner()
 }
 
+/// Grayscale counterpart of [`encode_jpeg`]: a single-component JPEG, the
+/// natural input shape for the G4 routing fixtures (the decoded plane is
+/// colorless, so the bilevel codec routes it without a grayscale request).
+pub fn encode_gray_jpeg(image: GrayImage, quality: u8) -> Vec<u8> {
+    let dynamic = DynamicImage::ImageLuma8(image);
+    let mut cursor = Cursor::new(Vec::new());
+    JpegEncoder::new_with_quality(&mut cursor, quality)
+        .encode_image(&dynamic)
+        .expect("failed to encode fixture JPEG");
+    cursor.into_inner()
+}
+
 /// A bilevel "scanned text page": white background with thick black text
 /// lines. Zero midtone pixels, few edges — the shape CCITT Group 4 compresses
 /// extremely well. Deterministic for a given `seed`.

@@ -255,7 +255,7 @@ export async function getBuildFeatures(): Promise<EngineBuildFeatures | null> {
 
 function toPresetUserConfig(payload: PresetUserConfigPayload): PresetUserConfig {
   return {
-    version: payload.version ?? 2,
+    version: payload.version ?? 3,
     presets: { ...payload.presets },
   }
 }
@@ -263,7 +263,7 @@ function toPresetUserConfig(payload: PresetUserConfigPayload): PresetUserConfig 
 export async function loadPresetUserConfig(): Promise<PresetUserConfig> {
   if (!hasNativeCommands()) {
     return {
-      version: 2,
+      version: 3,
       presets: {},
     }
   }
@@ -304,7 +304,7 @@ let browserQuickProfile: QuickProfilePayload | null = null
 
 export async function getQuickProfile(): Promise<QuickProfilePayload> {
   if (!hasNativeCommands()) {
-    return browserQuickProfile ?? { version: 2 }
+    return browserQuickProfile ?? { version: 3 }
   }
 
   return unwrap(commands.loadQuickProfile())

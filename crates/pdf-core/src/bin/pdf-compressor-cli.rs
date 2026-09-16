@@ -66,7 +66,8 @@ QUICK OPTIONS (background mode, used by file-manager context menus):
     --max-edge <PX>       Maximum image edge in pixels (100-8000)
     --grayscale           Re-encode color images as grayscale
     --bilevel <CODEC>     Codec for near-black-and-white images: g4 | jpeg
-                          (g4 = lossless CCITT Group 4, best for text scans)
+                          (default g4 = lossless CCITT Group 4, best for text
+                          scans; jpeg re-encodes scans lossily like photos)
     --subset-fonts       Shrink embedded CID TrueType fonts to used glyphs
     --convert-cmyk       Convert CMYK images to RGB for re-encoding (on by
                           default; matches how color-managed viewers render

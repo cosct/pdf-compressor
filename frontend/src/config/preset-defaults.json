@@ -6,7 +6,7 @@
     "compressStreams": true,
     "stripMetadata": false,
     "grayscale": false,
-    "bilevelCodec": "jpeg",
+    "bilevelCodec": "ccitt-g4",
     "subsetFonts": false,
     "cmykConversion": true
   },
@@ -17,7 +17,7 @@
     "compressStreams": true,
     "stripMetadata": true,
     "grayscale": false,
-    "bilevelCodec": "jpeg",
+    "bilevelCodec": "ccitt-g4",
     "subsetFonts": false,
     "cmykConversion": true
   },
@@ -28,7 +28,7 @@
     "compressStreams": true,
     "stripMetadata": true,
     "grayscale": false,
-    "bilevelCodec": "jpeg",
+    "bilevelCodec": "ccitt-g4",
     "subsetFonts": true,
     "cmykConversion": true
   }

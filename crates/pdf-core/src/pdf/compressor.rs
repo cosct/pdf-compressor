@@ -1209,10 +1209,7 @@ where
         .max()
         .unwrap_or(0);
     let worker_count = image_worker_count(task_count, max_bitmap_estimate);
-    let skip_policy = SkipPolicy::for_document(
-        task_count,
-        settings.grayscale || settings.bilevel_codec.uses_ccitt(),
-    );
+    let skip_policy = SkipPolicy::for_document(task_count, settings.grayscale);
 
     // --- Serial path (1 worker) ---
     if worker_count <= 1 {

@@ -207,6 +207,11 @@ pub(super) struct ImageSearchCache {
     /// knob, so quality-only probe rounds reproduce identical bytes.
     #[cfg(feature = "ccitt")]
     bilevel_product: Option<((u32, u32), Vec<u8>)>,
+    /// Bilevel routing classification of the decoded (pre-resize) plane,
+    /// memoized on first decode. Later rounds start from the cached,
+    /// already-resized plane — re-classifying it would let antialiasing
+    /// midtones flip dense bilevel scans to the JPEG exit mid-search.
+    plane_routes_bilevel: Option<bool>,
 }
 
 impl ImageSearchCache {
@@ -272,12 +277,23 @@ pub(crate) fn image_codec_class(stream: &Stream) -> (bool, bool) {
     (info.has_jpeg, !info.has_unsupported_filter)
 }
 
+/// Is this stream a CCITT or JBIG2 input? Both decode to guaranteed-bilevel
+/// planes, so under the G4 codec their re-encode is lossless — the shared
+/// skip heuristics exempt them (see `skip_recompression_reason` and the
+/// analyzer's actionable mirror).
+pub(crate) fn stream_is_bilevel_input(stream: &Stream) -> bool {
+    let info = stream_filter_info(stream);
+    info.has_ccitt || info.has_jbig2
+}
+
 /// Would the compressor plausibly re-encode an image with these observed
 /// properties at `target_edge` under `policy`? Mirrors the fast-path skip
 /// heuristics of `optimize_image_stream` — used by the analyzer so the
 /// estimated savings only count images that can actually shrink.
 /// `cmyk_declared` marks a CMYK color space, which stays untouched under
-/// the default settings (the conversion is opt-in).
+/// the default settings (the conversion is opt-in). `g4_bilevel_input`
+/// marks a CCITT/JBIG2 stream under the G4 codec, which the small-stream
+/// skip exempts (lossless, usually meaningful).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn image_is_actionable(
     is_jpeg: bool,
@@ -288,6 +304,7 @@ pub(crate) fn image_is_actionable(
     target_edge: u32,
     policy: SkipPolicy,
     cmyk_declared: bool,
+    g4_bilevel_input: bool,
 ) -> bool {
     if !codec_supported || cmyk_declared {
         return false;
@@ -303,7 +320,7 @@ pub(crate) fn image_is_actionable(
     if let Some(edge) = longest_edge {
         if edge <= target_edge {
             // Mirrors the two "already compact for the target" fast skips.
-            if bytes <= policy.small_stream_bytes as u64 {
+            if bytes <= policy.small_stream_bytes as u64 && !g4_bilevel_input {
                 return false;
             }
             if let Some(pixels) = pixels {
@@ -564,8 +581,17 @@ pub(super) fn optimize_image_stream(
                     // Grayscale conversion happens before resizing: it is
                     // constant across probe rounds (so the cached plane stays
                     // gray) and resizing a single-channel plane is a third of
-                    // the work of RGB. G4 output implies luma as well.
-                    let wants_luma = settings.grayscale || settings.bilevel_codec.uses_ccitt();
+                    // the work of RGB. Two sources request the collapse: the
+                    // explicit `grayscale` setting, and a stream whose own
+                    // /ColorSpace declares gray — decoders upsample such
+                    // content to RGB (the image crate's JPEG path), and the
+                    // PDF itself says the samples are gray, so folding the
+                    // decoder artifact back to luminance is lossless and lets
+                    // the bilevel codec route gray DCT scans. Anything else
+                    // keeps its color: since 0.10.0 the bilevel codec routes
+                    // colorless planes only and must not turn photos gray.
+                    let declared_gray = declares_gray(stream, color_space);
+                    let wants_luma = settings.grayscale || declared_gray;
                     if wants_luma && image.color().has_color() {
                         DynamicImage::ImageLuma8(image.to_luma8())
                     } else {
@@ -581,6 +607,20 @@ pub(super) fn optimize_image_stream(
                 }
             }
         }
+    };
+
+    // Classify the bilevel routing BEFORE resizing: the classification must
+    // not depend on how aggressively this run shrinks the image — resampled
+    // bilevel text develops antialiasing midtones that would flip dense
+    // scans to the lossy JPEG exit at small caps while keeping G4 at large
+    // ones. The search cache memoizes the verdict because its stored plane
+    // is already resized after the first collapsed round; the classification
+    // is a property of the decoded stream, not of any particular round.
+    let plane_routes_bilevel = match search_cache.as_deref_mut() {
+        Some(cache) => *cache
+            .plane_routes_bilevel
+            .get_or_insert_with(|| !plane.color().has_color() && plane_is_near_bilevel(&plane)),
+        None => !plane.color().has_color() && plane_is_near_bilevel(&plane),
     };
 
     // --- Resize if needed (two-pass for large images) ---
@@ -624,7 +664,7 @@ pub(super) fn optimize_image_stream(
     };
 
     #[cfg(feature = "ccitt")]
-    let bilevel_g4 = settings.bilevel_codec.uses_ccitt() && plane_is_near_bilevel(&plane);
+    let bilevel_g4 = settings.bilevel_codec.uses_ccitt() && plane_routes_bilevel;
     #[cfg(not(feature = "ccitt"))]
     let bilevel_g4 = false;
 
@@ -907,7 +947,13 @@ fn skip_recompression_reason(
         return None;
     }
 
-    if stream.content.len() <= skip_policy.small_stream_bytes {
+    // CCITT/JBIG2 streams decode to guaranteed-bilevel planes: under the G4
+    // codec their re-encode is lossless and usually meaningful, so the
+    // "unlikely to shrink meaningfully" rationale does not apply to them.
+    let guaranteed_bilevel_input = filter_info.has_ccitt || filter_info.has_jbig2;
+    if stream.content.len() <= skip_policy.small_stream_bytes
+        && !(guaranteed_bilevel_input && settings.bilevel_codec.uses_ccitt())
+    {
         return Some("already below target and unlikely to shrink meaningfully".into());
     }
 
@@ -934,6 +980,20 @@ pub(crate) fn declares_cmyk(stream: &Stream, color_space: Option<&ImageColorSpac
     matches!(
         stream.dict.get(b"ColorSpace"),
         Ok(Object::Name(name)) if name.as_slice() == b"DeviceCMYK"
+    )
+}
+
+/// Does this stream declare a gray color space — resolved (ICC N=1) or by a
+/// plain `/DeviceGray` name? Used to fold decoder-upsampled RGB planes back
+/// to luminance (lossless for genuinely gray content) so gray DCT scans can
+/// route through the bilevel codec.
+pub(crate) fn declares_gray(stream: &Stream, color_space: Option<&ImageColorSpaceInfo>) -> bool {
+    if let Some(info) = color_space {
+        return info.decode.channel_count() == 1;
+    }
+    matches!(
+        stream.dict.get(b"ColorSpace"),
+        Ok(Object::Name(name)) if name.as_slice() == b"DeviceGray"
     )
 }
 

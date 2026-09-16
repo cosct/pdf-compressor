@@ -71,7 +71,9 @@ function presetParams(preset: PresetMode) {
       compressStreams: profile.compressStreams ?? true,
       stripMetadata: profile.stripMetadata ?? true,
       grayscale: profile.grayscale ?? false,
-      bilevelCodec: profile.bilevelCodec === 'ccitt-g4' ? ('ccitt-g4' as const) : ('jpeg' as const),
+      // 0.10.0: G4 is the default codec; `jpeg` survives as a genuine
+      // opt-out, anything unrecognized falls back to the default.
+      bilevelCodec: profile.bilevelCodec === 'jpeg' ? ('jpeg' as const) : ('ccitt-g4' as const),
       subsetFonts: profile.subsetFonts ?? false,
       cmykConversion: profile.cmykConversion ?? true,
     }
@@ -84,7 +86,7 @@ function presetParams(preset: PresetMode) {
     compressStreams: true,
     stripMetadata: true,
     grayscale: false,
-    bilevelCodec: 'jpeg' as const,
+    bilevelCodec: 'ccitt-g4' as const,
     subsetFonts: preset === 'maximum' || preset === 'custom',
     cmykConversion: true,
   }
@@ -122,7 +124,11 @@ type ColorMode = 'color' | 'gray' | 'bw'
 const colorMode = ref<ColorMode>('color')
 
 function colorModeOf(grayscale: boolean, bilevelCodec: string): ColorMode {
-  return bilevelCodec === 'ccitt-g4' ? 'bw' : grayscale ? 'gray' : 'color'
+  // bw requires the grayscale request AND the G4 codec: since 0.10.0 the
+  // default codec is G4, so a color profile (grayscale=false) must read
+  // back as 'color' even though its codec is the G4 default.
+  if (!grayscale) return 'color'
+  return bilevelCodec === 'jpeg' ? 'gray' : 'bw'
 }
 
 /** Reset the color-mode choice to whatever the preset profile carries. */
@@ -203,7 +209,7 @@ function applyProfile(profile: QuickProfilePayload) {
   // A saved profile carries the color mode it was saved with; an empty
   // profile falls back to the preset profile's own conversion settings.
   if (profile.grayscale != null || profile.bilevelCodec != null) {
-    colorMode.value = colorModeOf(profile.grayscale ?? false, profile.bilevelCodec ?? 'jpeg')
+    colorMode.value = colorModeOf(profile.grayscale ?? false, profile.bilevelCodec ?? 'ccitt-g4')
   } else {
     syncColorModeFromPreset(resolved)
   }
@@ -238,11 +244,13 @@ function buildPayload(): QuickProfilePayload {
   return {
     // v2: cmykConversion opt-outs are genuine from this version on (v1
     // values get the default-flip migration on load).
-    version: 2,
+    version: 3,
     preset,
     ...presetParams(preset),
     grayscale: colorMode.value !== 'color',
-    bilevelCodec: colorMode.value === 'bw' ? 'ccitt-g4' : 'jpeg',
+    // 'gray' is the explicit JPEG-grayscale mode; every other mode keeps
+    // the G4 default (near-bilevel scans route to lossless G4).
+    bilevelCodec: colorMode.value === 'gray' ? 'jpeg' : 'ccitt-g4',
     targetSizeBytes: mode.value === 'target' ? Math.round(targetMb.value * 1024 * 1024) : null,
   }
 }
@@ -268,8 +276,8 @@ async function reset() {
   saving.value = true
   try {
     // An all-empty profile makes the CLI fall back to the engine defaults.
-    await saveQuickProfile({ version: 2 })
-    applyProfile({ version: 2 })
+    await saveQuickProfile({ version: 3 })
+    applyProfile({ version: 3 })
     emit('saved')
   } catch (error) {
     emit('error', error)

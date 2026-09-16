@@ -69,6 +69,10 @@ struct ImageStreamRecord {
     /// The stream declares CMYK (`/DeviceCMYK` name — analyzer-side proof;
     /// ICC N=4 and CMYK palettes need the compressor's full resolution).
     cmyk_declared: bool,
+    /// CCITT or JBIG2 input — decodes to a guaranteed-bilevel plane, which
+    /// the G4 codec's re-encode handles losslessly (small-stream skip
+    /// exempt, mirroring the compressor).
+    bilevel_input: bool,
 }
 
 /// Analyze a PDF without producing any output: classify the document
@@ -234,7 +238,16 @@ where
         recommend_max_image_size_px(recommended_preset, &longest_edges);
     // Fold the raw records into stats under the effective edge so the
     // estimate mirrors the compressor's skip heuristics.
-    let image_stats = summarize_image_records(image_records, effective_edge, converts_cmyk);
+    let image_stats = summarize_image_records(
+        image_records,
+        effective_edge,
+        converts_cmyk,
+        match settings {
+            Some(settings) => settings.bilevel_codec.uses_ccitt(),
+            // Default posture: the 0.10.0 default codec is G4.
+            None => true,
+        },
+    );
 
     let estimated_savings_percent = estimate_savings_percent(
         estimate_preset,
@@ -486,6 +499,7 @@ fn collect_image_stream_records(document: &Document) -> Vec<ImageStreamRecord> {
             is_jpeg,
             codec_supported,
             cmyk_declared,
+            bilevel_input: super::encode::stream_is_bilevel_input(stream),
         });
     }
 
@@ -495,11 +509,14 @@ fn collect_image_stream_records(document: &Document) -> Vec<ImageStreamRecord> {
 /// Fold raw records into stats under the effective size cap and the
 /// document-shaped skip policy. `converts_cmyk` decides whether declared-CMYK
 /// images count as actionable (the caller's settings, or the default
-/// posture of the build when analyzing context-free).
+/// posture of the build when analyzing context-free); `bilevel_g4` is the
+/// caller's bilevel codec stance (G4 exempts CCITT/JBIG2 inputs from the
+/// small-stream skip).
 fn summarize_image_records(
     records: Vec<ImageStreamRecord>,
     recommended_edge: u32,
     converts_cmyk: bool,
+    bilevel_g4: bool,
 ) -> ImageDimensionStats {
     let mut stats = ImageDimensionStats {
         image_object_count: records.len(),
@@ -527,6 +544,7 @@ fn summarize_image_records(
             // whatever converts stays countable, what gets refused is
             // preserved untouched and must not promise savings.
             record.cmyk_declared && !converts_cmyk,
+            record.bilevel_input && bilevel_g4,
         ) {
             stats.actionable_image_bytes += record.bytes;
         }
@@ -878,6 +896,7 @@ mod tests {
             is_jpeg: false,
             codec_supported: supported,
             cmyk_declared: cmyk,
+            bilevel_input: false,
         };
         // One plainly actionable image, one unsupported codec, one
         // declared-CMYK image whose actionability follows the conversion
@@ -888,7 +907,7 @@ mod tests {
             record(7_000, 2000, true, true),
         ];
 
-        let converting = summarize_image_records(records.clone(), 1800, true);
+        let converting = summarize_image_records(records.clone(), 1800, true, false);
         assert_eq!(converting.image_object_count, 3);
         assert_eq!(converting.total_image_bytes, 22_000);
         assert_eq!(converting.unsupported_codec_count, 1);
@@ -898,7 +917,7 @@ mod tests {
             "a converting stance counts declared CMYK"
         );
 
-        let refusing = summarize_image_records(records, 1800, false);
+        let refusing = summarize_image_records(records, 1800, false, false);
         assert_eq!(
             refusing.actionable_image_bytes, 10_000,
             "a refusing stance excludes declared CMYK from the estimate"

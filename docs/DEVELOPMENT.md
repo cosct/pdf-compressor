@@ -134,8 +134,16 @@ cargo run -p pdf-core --bin pdf-compressor-cli -- quick <dir>/ --no-notify      
   4 个零字节再解（零序列不是合法码前缀，截断流仍干净失败）。G3 二维（K>0）、flate 混合链、
   EOL+对齐组合保持 skip——判定收口在 `stream_filter_info` 的 `ccitt_decodable`，分析器自动跟随。
   输出侧按“近双级”判定（midtone 占比 ≤ 5%，`NEAR_BILEVEL_MIDTONE_FRACTION`）决定 JPEG 还是
-  G4，连续调图永远走 JPEG。目标大小搜索中 G4 无质量旋钮，产物按尺寸 memo 于
-  `ImageSearchCache::bilevel_product`。**JBIG2 门禁结论（2026-08，暂不引入）**：
+  G4，连续调图永远走 JPEG。**0.10.0 语义**：`BilevelCodec` 默认 **CcittG4**（0.7.1 遗留的
+  JBIG2 转码 18.6dB 损失根因即默认 JPEG 的文字边缘振铃）；双级路由只作用于**无色平面**
+  （`!plane.color().has_color()`）——彩色平面（照片、带彩章的文档）一律 JPEG 保色，仅显式
+  `grayscale` 折叠颜色（`wants_luma = grayscale || declares_gray`，后者把声明灰度流的解码器
+  RGB 上采样折回亮度，灰度 DCT 扫描因此可达 G4 出口）；**分类在缩放之前**（重采样产生
+  抗锯齿中灰，逐轮重判会在小上限下漂移），搜索轮把判定 memo 进
+  `ImageSearchCache.plane_routes_bilevel`（缓存平面首轮塌缩后已是重采样态）；CCITT/JBIG2
+  输入（解码必双级）在 G4 下豁免小流跳过（`skip_recompression_reason` 与分析器
+  `image_is_actionable` 的 `g4_bilevel_input` 镜像）。目标大小搜索中 G4 无质量旋钮，产物按
+  尺寸 memo 于 `ImageSearchCache::bilevel_product`，预算压力靠边长塌缩化解且出口粘滞。**JBIG2 门禁结论（2026-08，暂不引入）**：
   Rust 生态两个候选均非直接可用——`jbig2enc-rust` 声称 MIT OR Apache-2.0，但默认开启的
   `symboldict` 特性含改编自 djvulibre 的代码（GPL 传染风险）、仓库无独立 LICENSE 文件、
   且是对 AGPL-3.0 的 C 版 jbig2enc 的移植；`jbig2enc`（tagawa0525/jbig2enc-rs，Apache-2.0）
@@ -149,9 +157,11 @@ cargo run -p pdf-core --bin pdf-compressor-cli -- quick <dir>/ --no-notify      
   的确定性纯函数，探测估计与物化编码保持字节一致（`target_size_search_produces_reproducible_output`
   钉死这一点）。
 - **灰度/G4 设置链路**：`grayscale: bool` + `bilevel_codec: BilevelCodec`（"jpeg"/"ccitt-g4"
-  字符串上 IPC 线格式）；GUI 的“色彩模式”三态选择在 `CompressionSettingsPanel` 里映射成这对
-  字段（黑白 = grayscale+G4）。CLI 为 `--grayscale` / `--bilevel g4`（后者已入
-  `split_quick_inputs` 的 `VALUE_FLAGS`）。
+  字符串上 IPC 线格式；**0.10.0 起默认 ccitt-g4**，配置 v3 迁移把 ≤0.9 物化的
+  then-default `"jpeg"` 重置为缺省）；GUI 的“色彩模式”三态选择在 `CompressionSettingsPanel`
+  里映射成这对字段（黑白 = grayscale+G4；quick 面板的 `colorModeOf` 自 0.10.0 要求
+  grayscale **且** g4 才算黑白——默认 g4 不得把彩色档读回成黑白）。CLI 为 `--grayscale` /
+  `--bilevel g4`（后者已入 `split_quick_inputs` 的 `VALUE_FLAGS`）。
 - **quick 模式配置档案**（`quick_profile.rs`）：`<os-config-dir>/pdf-compressor/
   quick-profile.json`，GUI 设置视图的“右键快速压缩”区块写入（`load_quick_profile`/
   `save_quick_profile` 命令），CLI `quick` 子命令读取。字段优先级：显式 CLI 参数 >
@@ -403,32 +413,26 @@ vue-tsc 3.3.11 无法驱动原生移植版（ERR_PACKAGE_PATH_NOT_EXPORTED），
 等 vue-tsc 适配（dependabot #10 保持开放）；vp check 的 tsgolint 腿
 只覆盖 .ts 的 type-aware lint、不含 .vue 完整诊断，不能替代 vue-tsc。
 
-### P0：双级转码质量（近双级默认 G4，0.7.1 遗留专项）
+### P0：双级转码质量（近双级默认 G4，0.7.1 遗留专项）✅ 已落地（2026-09-16）
 
-- **机制已查明（2026-09-13）**：`jbig2_scan_transcodes_and_renders_identically`
+- **机制（2026-09-13 查明）**：`jbig2_scan_transcodes_and_renders_identically`
   实测 ≈18.6dB 的损失不是解码问题——hayro-jbig2 解码是精确的，而是
   `BilevelCodec` 默认 `Jpeg`（settings.rs：`_ => Self::Jpeg`），
   近双级平面（midtone ≤ 5%）默认走 JPEG 重编码，锐利文本边缘的
   振铃主导 luma PSNR；G4 出口只服务于显式黑白模式与 `--bilevel g4`。
-- **默认翻转 `bilevel_codec`: Jpeg → CcittG4**：引擎预设表 +
-  `preset-defaults.json` 三档镜像（现固化 `"bilevelCodec": "jpeg"`）+
-  用户指南表格同步。G4 对文本类内容更小且无损；JPEG 保留为显式
-  选择（`--bilevel jpeg` / GUI 编码选择）。
-- **配置迁移 v2→v3**（照 0.8.0 CMYK 翻转模式）：≤0.9 的 GUI 会把
-  当时的默认 `"jpeg"` 物化进 preset-user-config.json / quick-profile——
-  v2 文件的 `Some(Jpeg)` 重置为缺省（新默认生效），v3 起写入的是
-  真实选择、永不迁移。前端版本常量与 quick profile 写入同步升 v3。
-- **目标大小搜索交互**：G4 无质量旋钮，近双级平面在搜索轮锁 G4 出口
-  （`g4_bytes_for_round` 的尺寸 memo 已有），预算压力靠边长塌缩而非
-  质量下调——验证搜索对"锁 G4 + 边长"组合的覆盖，必要时扩展。
-- **风险与既有护栏**：≤5% midtone（文本 AA 边缘）在 G4 出口被阈值化，
-  保真影响由渲染门禁覆盖；G4 极性/码表已有 tiffcp 参照 + 独立渲染
-  门禁（0.6.0 修复矩阵）；feature-off（无 ccitt）构建不可达此翻转
-  （ccitt 默认开启）。
-- **验收**：jbig2 渲染门禁 17dB → 按新出口实测钉高（G4 下解码精确、
-  目标 ≥40dB）；CCITT round-trip 与渲染门禁继续全绿；预设质量地板
-  按新默认重测；e2e/单元/bindings 全绿；迁移测试双侧（v2 的
-  Some(Jpeg) 重置 / v3 显式选择保留）。
+- **落地（2026-09-16）**：默认翻转 `Jpeg → CcittG4` + 三项语义修正——
+  (a) 双级路由只作用无色平面（彩色保 JPEG 保色），`converts_cmyk` 的
+  隐式条件收窄为仅灰度请求；(b) 声明灰度流（DeviceGray/ICC N=1）解码
+  后折回亮度（解码器上采样伪影，无损），灰度 DCT 扫描可达 G4 出口；
+  (c) 双级分类移到缩放前 + 搜索轮 memo（分类不依赖缩放激进度/轮次）。
+  配置迁移 v2→v3 照 0.8.0 模式；GUI 预设表/quick 面板三态模型/CLI 帮助
+  同步。搜索交互实测：G4 赢则无损转码、赢不了（符号压缩 JBIG2）则
+  原样保留、强制预算下 G4@塌缩边粘滞（不再回退 JPEG）。
+- **验收**：引擎 163（默认）/188（jpx,cmyk-cms）+ CLI 19 + e2e 11 +
+  壳 12 + 前端 65 全绿；新增钉子——jbig2 默认原样保留（字节恒等 +
+  渲染 PSNR 无穷）、彩色平面解耦钉（DeviceRGB 保持）、显式 jpeg 退出
+  钉、紧预算 G4 粘滞钉；强制转码门禁翻断言为 G4@塌缩边（≈17.6dB，
+  损失纯降采样无振铃）；迁移测试双侧（v2 jpeg 重置 / v3 显式保留）。
 
 ### P1：1.0 兼容性盘点（补钉 + 声明条件）
 

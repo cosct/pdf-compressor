@@ -297,10 +297,7 @@ where
     // is more aggressive than the target needs (e.g. a "maximum" preset with
     // a generous budget). The edge only shrinks after the whole quality range
     // failed, and never while a fitting round is known.
-    let skip_policy = SkipPolicy::for_document(
-        entries.len(),
-        settings.grayscale || settings.bilevel_codec.uses_ccitt(),
-    );
+    let skip_policy = SkipPolicy::for_document(entries.len(), settings.grayscale);
     let search_context = SearchContext {
         settings: &settings,
         skip_policy,

@@ -104,7 +104,9 @@ export function normalizeSettings(settings: CompressionSettings): CompressionSet
     // Restored legacy queues may predate the grayscale field, so coerce
     // `undefined` back to the default instead of trusting the stored shape.
     grayscale: settings.grayscale ?? false,
-    bilevelCodec: settings.bilevelCodec === 'ccitt-g4' ? 'ccitt-g4' : 'jpeg',
+    // 0.10.0: G4 is the default bilevel codec (lossless for scans); an
+    // unrecognized value falls back to it, `jpeg` stays a genuine opt-out.
+    bilevelCodec: settings.bilevelCodec === 'jpeg' ? 'jpeg' : 'ccitt-g4',
     subsetFonts: settings.subsetFonts ?? false,
     cmykConversion: settings.cmykConversion ?? true,
     outputDir: settings.outputDir?.trim() ? settings.outputDir.trim() : null,
