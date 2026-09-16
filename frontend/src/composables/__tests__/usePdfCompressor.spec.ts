@@ -540,6 +540,43 @@ describe('queue restore', () => {
     expect(composable.jobs.value[0].settings.preset).toBe('maximum')
     expect(composable.jobs.value[0].useRecommendedSettings).toBe(true)
   })
+
+  it('restores a pre-0.8 legacy queue entry without corrupting newer fields', async () => {
+    // The exact persisted shape of an old install: none of the fields
+    // introduced after the entry was written exist. Restoring must fill
+    // every newer field with its current default instead of leaking
+    // undefined/NaN into a compression request.
+    const legacyEntry = {
+      sourcePath: '/tmp/legacy.pdf',
+      settings: {
+        preset: 'balanced',
+        imageQuality: 72,
+        maxImageSizePercent: 80,
+        optimizeImages: true,
+        compressStreams: true,
+        stripMetadata: true,
+      },
+    }
+    window.localStorage.setItem('pdf-compressor-queue', JSON.stringify([legacyEntry]))
+    vi.mocked(existingPaths).mockResolvedValue(['/tmp/legacy.pdf'])
+    mockedAnalyze.mockResolvedValue(analysisResponse({ recommendedPreset: 'balanced' }))
+
+    const composable = usePdfCompressor()
+    await vi.waitFor(() => {
+      expect(composable.jobs.value[0]?.status).toBe('ready')
+    })
+
+    const settings = composable.jobs.value[0].settings
+    expect(settings.preset).toBe('balanced')
+    expect(settings.imageQuality).toBe(72)
+    expect(settings.grayscale).toBe(false)
+    expect(settings.bilevelCodec).toBe('ccitt-g4')
+    expect(settings.subsetFonts).toBe(false)
+    expect(settings.cmykConversion).toBe(true)
+    expect(settings.referenceMaxImageEdgePx).toBeNull()
+    expect(settings.targetFileSizeMb).toBeNull()
+    expect(settings.outputDir).toBeNull()
+  })
 })
 
 describe('password retry', () => {

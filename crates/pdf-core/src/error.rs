@@ -201,4 +201,80 @@ mod tests {
         );
         assert!(payload.fallback.contains("2.0 GB"));
     }
+
+    /// The error taxonomy is a wire contract (1.0 compat surface): clients
+    /// match on the exact `error.*` codes and interpolate the exact values
+    /// keys (GUI locales, CLI JSON consumers). Additions at the end are
+    /// fine; a rename or a changed values key is breaking and must bump the
+    /// contract consciously. The frontend mirrors this set in
+    /// `frontend/src/locales/{en,zh-CN}.ts` (pinned by locales.spec.ts).
+    #[test]
+    fn error_code_taxonomy_is_a_pinned_closed_set() {
+        let expectations: [(AppError, &str, &[&str]); 12] = [
+            (
+                AppError::MissingInput(PathBuf::from("/missing.pdf")),
+                "error.missingInput",
+                &["path"],
+            ),
+            (
+                AppError::InvalidPdfPath(PathBuf::from("/not-a.pdf")),
+                "error.invalidPdfPath",
+                &["path"],
+            ),
+            (
+                AppError::InputTooLarge {
+                    size_bytes: 1,
+                    limit_bytes: 2,
+                },
+                "error.inputTooLarge",
+                &["limit", "size"],
+            ),
+            (AppError::Encrypted, "error.encryptedPdf", &[]),
+            (AppError::PasswordRequired, "error.passwordRequired", &[]),
+            (AppError::WrongPassword, "error.wrongPassword", &[]),
+            (
+                AppError::Image(ImageError::Decoding(image::error::DecodingError::new(
+                    image::error::ImageFormatHint::Unknown,
+                    io::Error::other("probe"),
+                ))),
+                "error.image",
+                &["detail"],
+            ),
+            (
+                AppError::Io(io::Error::other("probe")),
+                "error.io",
+                &["detail"],
+            ),
+            (
+                AppError::Cancelled("task-1".to_string()),
+                "error.cancelled",
+                &["taskId"],
+            ),
+            (
+                AppError::Config("probe".to_string()),
+                "error.config",
+                &["detail"],
+            ),
+            (
+                AppError::Opener("probe".to_string()),
+                "error.opener",
+                &["detail"],
+            ),
+            (
+                AppError::PdfBuild("probe".to_string()),
+                "error.pdfBuild",
+                &["detail"],
+            ),
+        ];
+        for (error, code, value_keys) in expectations {
+            let payload = AppErrorPayload::from(error);
+            assert_eq!(payload.code, code);
+            let keys: Vec<&str> = payload.values.keys().map(String::as_str).collect();
+            assert_eq!(
+                keys, value_keys,
+                "values keys of {code} are part of the wire contract"
+            );
+            assert!(!payload.fallback.is_empty(), "{code} must carry a fallback");
+        }
+    }
 }

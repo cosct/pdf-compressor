@@ -434,23 +434,34 @@ vue-tsc 3.3.11 无法驱动原生移植版（ERR_PACKAGE_PATH_NOT_EXPORTED），
   钉、紧预算 G4 粘滞钉；强制转码门禁翻断言为 G4@塌缩边（≈17.6dB，
   损失纯降采样无振铃）；迁移测试双侧（v2 jpeg 重置 / v3 显式保留）。
 
-### P1：1.0 兼容性盘点（补钉 + 声明条件）
+### P1：1.0 兼容性盘点（补钉 + 声明条件）✅ 补钉已落地（2026-09-16）
 
-- **面清单（已枚举，2026-09-13）**：pdf-core 公共 API（6 入口函数 +
-  `CompressionSettings(Overrides)`/`BilevelCodec`/`BytesCompressionOutcome`/
-  `BuildFeatures` + `MAX_INPUT_BYTES` + `migrate_cmyk_default_flip`）；
-  15 个 IPC 命令与 payload 字段（bindings 再生钉签名）；错误码 taxonomy
-  （12 个 `error.*`：cancelled/io/image/pdfBuild/encryptedPdf/
-  passwordRequired/wrongPassword/inputTooLarge/invalidPdfPath/missingInput/
-  opener/config）；CLI 子命令/旗标/退出码/流纪律（cli_e2e 钉死）；
-  配置文件（preset-user-config v2→v3 随 P0、quick-profile v2、前端
-  localStorage 队列）；updater `latest.json` 通道。
-- **工作**：逐面映射"钉住它的测试"，缺口补测试（重点怀疑：错误码
-  taxonomy 无集中钉死测试、GUI 队列 restore 的字段容错）；把 0.x 内
-  的行为变化如实列表（0.8 CMYK 翻转、0.9 CLI 预设统一、0.10 双级
-  默认）——1.0 承诺的是 forward compat，不追溯声称 0.x 无变化。
+- **面 → 钉住测试映射（盘点结论）**：
+  - pdf-core 公共 API（6 入口函数 + 设置/结果类型 + `MAX_INPUT_BYTES` +
+    迁移助手）：四个消费者（Tauri 壳、CLI、bench、fuzz）编译级钉住，
+    破坏即编译失败；e2e 起真进程钉 CLI 二进制。
+  - 15 个 IPC 命令与 payload 字段：specta bindings 再生比对（`cargo
+    test --workspace` 内建测试）钉签名。
+  - 错误码 taxonomy（12 个 `error.*` 码 + values 键集）：**新增双侧钉**
+    ——`error.rs` 的 `error_code_taxonomy_is_a_pinned_closed_set`
+    （每变体的码与 values 键）+ `locales.spec.ts` 的
+    `localizes exactly the backend error-code taxonomy`（前端 locale
+    键闭集镜像）。此前双侧均无集中钉死。
+  - CLI 进程契约（子命令/旗标/退出码/流纪律）：`cli_e2e` 11 项（0.9.0）。
+  - 配置文件（preset-user-config v1→v3、quick-profile v1→v3）：
+    迁移测试双侧（重置 then-default / 保留显式选择），v3 随 P0 落地。
+  - GUI 队列 restore（localStorage）：逐字段容错既有 + **新增**
+    pre-0.8 legacy 形态综合测试（缺全部新字段 → 全部回填当前默认，
+    无 undefined/NaN 泄漏进压缩请求）。
+  - updater `latest.json`：发行链路（tauri-action 签名产物），无引擎
+    侧可钉面——1.0 声明时按发行说明核验。
+- **0.x 行为变化台账（1.0 声明的诚实性附件）**：0.8.0 CMYK 默认翻转
+  （v1→v2 迁移）；0.9.0 CLI 预设统一（质量/百分比语义）；0.10.0 双级
+  默认 G4（v2→v3 迁移，含 `--bilevel g4` 隐式灰度坍缩语义移除——等效
+  路径 `--grayscale`）。1.0 承诺 forward compat，不追溯声称 0.x 无变化。
 - **1.0 声明条件（节奏）**：0.10.0 发布后 ≥1 个观察周期无兼容性
-  回报 + 盘点缺口清零；1.0 本体无功能承诺，为成熟度声明。
+  回报 + 盘点缺口清零（本轮补钉后无已知缺口）；1.0 本体无功能承诺，
+  为成熟度声明。
 
 历史收口：0.6.0（JPX 解码、CMYK opt-in、JBIG2 输入）；0.7.0（CMYK 真转换
 lcms2 + JPX 边缘补全）；0.7.1（二次审查 9 项 + globals 去重）；0.8.0（CMYK

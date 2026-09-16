@@ -16,6 +16,7 @@
 
 ### 新增
 
+- **1.0 兼容性补钉（P1）**：错误码 taxonomy 双侧钉死——引擎 `error_code_taxonomy_is_a_pinned_closed_set`（12 个 `error.*` 码逐一断言 + values 键集为线格式契约）与前端 `locales.spec.ts` 的闭集镜像（locale 键与引擎码一一对应，防止任一侧漂移）；GUI 队列 restore 补 pre-0.8 legacy 形态综合测试（缺全部新字段的持久化条目恢复后所有新字段回填当前默认，无 undefined/NaN 泄漏）。面→测试映射与 0.x 行为变化台账见开发文档 §8 P1
 - **双级语义钉子测试**：`jbig2_scan_stays_untouched_by_default`（默认路径原样保留符号压缩 JBIG2，字节恒等 + poppler 渲染 PSNR 无穷）、`color_planes_stay_jpeg_under_the_g4_default`（彩色平面在 G4 默认下保持 JPEG 与 DeviceRGB——解耦钉）、`explicit_jpeg_bilevel_codec_opts_out_of_g4`（显式退出钉）、`tight_target_budget_keeps_the_lossless_g4_exit`（紧预算粘滞钉）；既有 jbig2 强制转码门禁翻断言为 G4@塌缩边（≈17.6dB，损失纯降采样）；预设默认表镜像与灰度夹具构造器（`encode_gray_jpeg`/`build_gray_pdf_bytes`）补齐
 
 ### 维护
