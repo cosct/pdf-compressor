@@ -401,7 +401,7 @@ release overlay 而非主配置）。
   `compress.warning.targetSizeMissed` 提示；前端以警告 toast + 状态卡 notes 呈现。
 - **`cargo bench` 名字冲突**：基准每轮使用独立临时目录，避免 100 次重名上限。
 
-## 8. 版本路线（0.10.0 计划，2026-09-13 评估）
+## 8. 版本路线（0.10.0 已落地，2026-09-16）
 
 0.10.0 主题：**转码质量收口 + 1.0 清障**——近双级内容默认无损出口，
 兼容性面盘点补钉。依赖现代化已随 0.9.0 发布后落地（2026-09-13）：
@@ -469,7 +469,7 @@ lcms2 + JPX 边缘补全）；0.7.1（二次审查 9 项 + globals 去重）；0
 递归 + fmt 基线与 CI 加固；发布后补：quick 去重、旗标硬化、app 特性腿、
 README/用户指南通俗化）；**0.9.0（工程深水区 + 诚实性：e2e 钉契约 →
 双管道合并 → 预设单一事实源 + 构建能力感知 + 分析器设置感知 + 管道
-`--target-size`；CI checkout@v5、AUR 双包定夺保留、mutants-diff.sh）**。
+`--target-size`；CI checkout@v5、AUR 双包定夺保留、mutants-diff.sh）；**0.10.0（转码质量收口 + 1.0 清障：近双级默认 G4 + 语义解耦 + v2→v3 迁移 + 错误码 taxonomy 双侧钉死；lopdf 0.45、actions v7、criterion 0.8、rustls RUSTSEC 修复）**。
 详见 CHANGELOG 0.9.0 条目；关键工程事实：
 
 - **预设表**唯一事实源在 `pdf-core/src/pdf/settings.rs` 的
