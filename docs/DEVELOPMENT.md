@@ -391,22 +391,62 @@ release overlay 而非主配置）。
   `compress.warning.targetSizeMissed` 提示；前端以警告 toast + 状态卡 notes 呈现。
 - **`cargo bench` 名字冲突**：基准每轮使用独立临时目录，避免 100 次重名上限。
 
-## 8. 版本路线（0.10.0 筹备中，2026-09-13）
+## 8. 版本路线（0.10.0 计划，2026-09-13 评估）
 
-0.10.0 方向（1.0 前的稳定化缓冲）：**依赖现代化已落地，剩余候选为
-JBIG2 转码质量专项与 1.0 兼容性盘点**。
+0.10.0 主题：**转码质量收口 + 1.0 清障**——近双级内容默认无损出口，
+兼容性面盘点补钉。依赖现代化已随 0.9.0 发布后落地（2026-09-13）：
+lopdf 0.45（解析加固 + writer xref 修复，全门禁回归无碍；线性化写出
+上游仍无）；CI actions v7 对齐 + vue/@types-node/happy-dom/vite-plus
+小版本清账（vite-plus 须连带 catalog `vite` 别名同步到 0.3.1，单独一半
+会让 vue-tsc 崩溃）；criterion 0.8（bench-only）。TypeScript 7 暂缓：
+vue-tsc 3.3.11 无法驱动原生移植版（ERR_PACKAGE_PATH_NOT_EXPORTED），
+等 vue-tsc 适配（dependabot #10 保持开放）；vp check 的 tsgolint 腿
+只覆盖 .ts 的 type-aware lint、不含 .vue 完整诊断，不能替代 vue-tsc。
 
-- **已落地（2026-09-13，0.9.0 发布后搭车）**：lopdf 0.45（解析加固 +
-  writer xref 修复，全门禁回归无碍；线性化写出上游仍无）；CI actions
-  v7 对齐 + vue/@types-node/happy-dom/vite-plus 小版本清账（vite-plus
-  须连带 catalog `vite` 别名同步到 0.3.1，单独一半会让 vue-tsc 崩溃）；
-  criterion 0.8（bench-only，black_box 迁 std::hint）。TypeScript 7 暂缓：
-  vue-tsc 3.3.11 无法驱动原生移植版（ERR_PACKAGE_PATH_NOT_EXPORTED），
-  等 vue-tsc 适配（dependabot #10 保持开放）。
-- **候选（按余量取舍）**：JBIG2→G4 转码质量专项（0.7.1 遗留，门禁
-  17dB / 实测 ≈18.6dB）；1.0 兼容性盘点（pdf-core 公共 API / IPC 线
-  格式 / CLI 旗标 / 错误码 / 配置文件版本在 0.x 全程的兼容证据收集，
-  作为 1.0 成熟度声明的依据）。
+### P0：双级转码质量（近双级默认 G4，0.7.1 遗留专项）
+
+- **机制已查明（2026-09-13）**：`jbig2_scan_transcodes_and_renders_identically`
+  实测 ≈18.6dB 的损失不是解码问题——hayro-jbig2 解码是精确的，而是
+  `BilevelCodec` 默认 `Jpeg`（settings.rs：`_ => Self::Jpeg`），
+  近双级平面（midtone ≤ 5%）默认走 JPEG 重编码，锐利文本边缘的
+  振铃主导 luma PSNR；G4 出口只服务于显式黑白模式与 `--bilevel g4`。
+- **默认翻转 `bilevel_codec`: Jpeg → CcittG4**：引擎预设表 +
+  `preset-defaults.json` 三档镜像（现固化 `"bilevelCodec": "jpeg"`）+
+  用户指南表格同步。G4 对文本类内容更小且无损；JPEG 保留为显式
+  选择（`--bilevel jpeg` / GUI 编码选择）。
+- **配置迁移 v2→v3**（照 0.8.0 CMYK 翻转模式）：≤0.9 的 GUI 会把
+  当时的默认 `"jpeg"` 物化进 preset-user-config.json / quick-profile——
+  v2 文件的 `Some(Jpeg)` 重置为缺省（新默认生效），v3 起写入的是
+  真实选择、永不迁移。前端版本常量与 quick profile 写入同步升 v3。
+- **目标大小搜索交互**：G4 无质量旋钮，近双级平面在搜索轮锁 G4 出口
+  （`g4_bytes_for_round` 的尺寸 memo 已有），预算压力靠边长塌缩而非
+  质量下调——验证搜索对"锁 G4 + 边长"组合的覆盖，必要时扩展。
+- **风险与既有护栏**：≤5% midtone（文本 AA 边缘）在 G4 出口被阈值化，
+  保真影响由渲染门禁覆盖；G4 极性/码表已有 tiffcp 参照 + 独立渲染
+  门禁（0.6.0 修复矩阵）；feature-off（无 ccitt）构建不可达此翻转
+  （ccitt 默认开启）。
+- **验收**：jbig2 渲染门禁 17dB → 按新出口实测钉高（G4 下解码精确、
+  目标 ≥40dB）；CCITT round-trip 与渲染门禁继续全绿；预设质量地板
+  按新默认重测；e2e/单元/bindings 全绿；迁移测试双侧（v2 的
+  Some(Jpeg) 重置 / v3 显式选择保留）。
+
+### P1：1.0 兼容性盘点（补钉 + 声明条件）
+
+- **面清单（已枚举，2026-09-13）**：pdf-core 公共 API（6 入口函数 +
+  `CompressionSettings(Overrides)`/`BilevelCodec`/`BytesCompressionOutcome`/
+  `BuildFeatures` + `MAX_INPUT_BYTES` + `migrate_cmyk_default_flip`）；
+  15 个 IPC 命令与 payload 字段（bindings 再生钉签名）；错误码 taxonomy
+  （12 个 `error.*`：cancelled/io/image/pdfBuild/encryptedPdf/
+  passwordRequired/wrongPassword/inputTooLarge/invalidPdfPath/missingInput/
+  opener/config）；CLI 子命令/旗标/退出码/流纪律（cli_e2e 钉死）；
+  配置文件（preset-user-config v2→v3 随 P0、quick-profile v2、前端
+  localStorage 队列）；updater `latest.json` 通道。
+- **工作**：逐面映射"钉住它的测试"，缺口补测试（重点怀疑：错误码
+  taxonomy 无集中钉死测试、GUI 队列 restore 的字段容错）；把 0.x 内
+  的行为变化如实列表（0.8 CMYK 翻转、0.9 CLI 预设统一、0.10 双级
+  默认）——1.0 承诺的是 forward compat，不追溯声称 0.x 无变化。
+- **1.0 声明条件（节奏）**：0.10.0 发布后 ≥1 个观察周期无兼容性
+  回报 + 盘点缺口清零；1.0 本体无功能承诺，为成熟度声明。
 
 历史收口：0.6.0（JPX 解码、CMYK opt-in、JBIG2 输入）；0.7.0（CMYK 真转换
 lcms2 + JPX 边缘补全）；0.7.1（二次审查 9 项 + globals 去重）；0.8.0（CMYK
@@ -462,6 +502,7 @@ README/用户指南通俗化）；**0.9.0（工程深水区 + 诚实性：e2e �
 
 ### 节奏建议
 
-1.0 门槛＝0.9 收口（双管道统一 + 进程契约 + 构建感知全部落地）后评估；
-对外 API 与行为若在整个 0.x 系列保持兼容，1.0 仅为成熟度声明。
+1.0 门槛＝0.10.0 落地（P0 质量收口 + P1 盘点缺口清零）且发布后 ≥1 个
+观察周期无兼容性回报；对外 API 与行为的 forward compat 自 1.0 起承诺
+（0.x 内的默认值修正如实记录，见 P1）。
 
