@@ -2,7 +2,7 @@
 
 本项目的所有显著变更都记录在此文件中。格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。日期为提交日期。
 
-## [Unreleased]
+## [0.10.0] - 2026-09-16
 
 主题：**转码质量收口 + 1.0 清障**（开发文档 §8 0.10.0 计划）。
 
@@ -25,6 +25,14 @@
 - **CI actions 对齐与前端小版本清账**（a16e9a7）：checkout v7（9 处）、setup-node v7、download-artifact v8——消除 release 运行日志里的 Node 20 弃用告警；vue 3.5.42、@types/node 26.5、happy-dom 20.14、vite-plus 0.3.1。**vite-plus 升级须把 catalog 的 `vite` 别名（vite-plus-core）同步到 0.3.1**：dependabot PR #22 只升一半导致 vue-tsc 崩溃（`Debug Failure: parameter should have errors`，Frontend CI 复现），别名同步后三件套全绿
 - **criterion 0.5 → 0.8**（#26，取代 dependabot #20）：bench-only；`criterion::black_box` 自 0.6 弃用，两个 bench 迁移到 `std::hint::black_box`，零警告
 - **TypeScript 7 暂缓（评估结论，dependabot #10 保持开放）**：vue-tsc 3.3.11 无法驱动 TS 7.0.2——原生移植版不导出 vue-tsc 所 resolve 的 tsc 内部路径（`ERR_PACKAGE_PATH_NOT_EXPORTED`），`vue-tsc -b` 直接失败；待 vue-tsc 适配后随 #10 再评估。vp check 的 tsgolint 腿只覆盖 .ts 的 type-aware lint、不含 .vue 完整诊断，不能替代 vue-tsc
+
+### 验收
+
+- 引擎 164 项（默认）/ 189 项（`jpx,cmyk-cms`）+ CLI 19 项单元 + e2e 11 项（2GiB 探针 `--ignored`）+ 桌面壳 12 项 + 前端 67 项测试通过；workspace 与可选特性 Clippy `-D warnings` 通过；前端 lint/type-check 与构建通过
+- 双级语义实测锚点：默认路径下符号压缩 JBIG2 原样保留（流字节恒等 + poppler 渲染 PSNR 无穷）；强制 32KiB 预算下 G4@729px（PSNR ≈17.6dB，损失纯为降采样、无 JPEG 振铃，对照 0.9.0 同预算 JPEG@546 的 ≈18.6dB 振铃主导）；彩色平面解耦与显式 jpeg 退出各有钉子
+- 迁移测试双侧：preset-user-config 与 quick-profile 的 v2 `Some("jpeg")` 重置 / `Some("ccitt-g4")` 保留 / v3 真实退出永不被迁移；v1 文件链式迁移到 v3
+- 1.0 兼容性盘点缺口清零：错误码 taxonomy 双侧钉死（引擎闭集 + 前端 locale 镜像）、pre-0.8 队列 restore 综合容错、面→测试映射与 0.x 行为变化台账入开发文档 §8
+- 安全随行：rustls 0.23.43 → 0.23.45（RUSTSEC-2026-0285，2026-09-14 披露）；lopdf 0.45 与 criterion 0.8 升级回归记录见维护节
 
 ## [0.9.0] - 2026-09-10
 
