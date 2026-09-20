@@ -349,6 +349,27 @@ fn pipeline_target_size_searches_in_memory() {
     );
 }
 
+/// A non-UTF-8 argv entry (legacy-encoded drag-and-drop paths) must hit the
+/// friendly JSON error contract, not the `env::args()` panic that used to
+/// exit the process with code 101 and no diagnostics.
+#[cfg(unix)]
+#[test]
+fn non_utf8_argument_fails_with_friendly_json_instead_of_panicking() {
+    use std::os::unix::ffi::OsStringExt as _;
+    let bad = std::ffi::OsString::from_vec(vec![0xff, 0xfe, 0xba, 0xad]);
+    let output = run(cli().arg(bad));
+    assert!(
+        !output.status.success(),
+        "the run must fail, not succeed silently"
+    );
+    let error = json(&output.stderr);
+    assert_eq!(
+        error.get("code").and_then(|value| value.as_str()),
+        Some("error.config"),
+        "non-UTF-8 argv must map to the friendly config error, got {error:?}"
+    );
+}
+
 /// The stdin pre-check reads at most `MAX_INPUT_BYTES + 1` and rejects an
 /// oversized stream with `error.inputTooLarge` instead of buffering it all.
 /// Ignored by default: the probe needs ~2 GiB of RAM and a few seconds of

@@ -865,10 +865,44 @@ fn password_arg(rest: &[String]) -> Result<Option<String>, AppError> {
     flag_value(rest, "--password").map_err(AppError::Config)
 }
 
+/// println! panics when stdout hits EPIPE (`… | head` closes the pipe
+/// mid-write). The PDF-payload path already reports that as a JSON Io error
+/// (pinned by cli_e2e); for usage and summary text a vanished reader is not
+/// a failure — write best-effort and never panic.
+fn print_line(text: &str) {
+    use std::io::Write as _;
+    let mut stdout = std::io::stdout().lock();
+    let _ = stdout.write_all(text.as_bytes());
+    let _ = stdout.write_all(b"\n");
+    let _ = stdout.flush();
+}
+
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    // args() panics on non-UTF-8 argv entries (drag-and-drop paths from some
+    // file managers carry legacy encodings); collect losslessly and reject
+    // only the offending entry with the friendly JSON contract.
+    let args: Vec<String> = match std::env::args_os()
+        .skip(1)
+        .map(|arg| {
+            arg.into_string()
+                .map_err(|bad| bad.to_string_lossy().into_owned())
+        })
+        .collect::<Result<Vec<_>, _>>()
+    {
+        Ok(args) => args,
+        Err(bad) => {
+            let payload = AppErrorPayload::from(AppError::Config(format!(
+                "a command-line argument is not valid UTF-8: {bad:?}"
+            )));
+            eprintln!(
+                "{}",
+                serde_json::to_string_pretty(&payload).expect("serializable")
+            );
+            return ExitCode::FAILURE;
+        }
+    };
     if args.iter().any(|arg| arg == "-h" || arg == "--help") || args.is_empty() {
-        println!("{USAGE}");
+        print_line(USAGE);
         return ExitCode::SUCCESS;
     }
 
@@ -877,7 +911,7 @@ fn main() -> ExitCode {
         return match run_quick(&args[1..], notify) {
             Ok(summary) => {
                 let printed = serde_json::to_string_pretty(&summary).expect("serializable");
-                println!("{printed}");
+                print_line(&printed);
                 if summary.files_failed > 0
                     && summary.files_compressed + summary.files_not_smaller == 0
                 {
@@ -899,7 +933,7 @@ fn main() -> ExitCode {
 
     match run(&args) {
         Ok(RunOutput::Text(output)) => {
-            println!("{output}");
+            print_line(&output);
             ExitCode::SUCCESS
         }
         Ok(RunOutput::PdfBytes(bytes)) => {
