@@ -41,7 +41,6 @@ describe('locale catalogs', () => {
       'error.cancelled',
       'error.config',
       'error.encryptedPdf',
-      'error.image',
       'error.inputTooLarge',
       'error.invalidPdfPath',
       'error.io',

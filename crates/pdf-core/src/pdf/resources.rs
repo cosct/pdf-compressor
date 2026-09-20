@@ -153,13 +153,14 @@ pub(crate) fn remove_unused_resources(document: &mut Document) -> usize {
         let mut page_usage = UsedNames::default();
         let mut visited_forms: HashSet<ObjectId> = HashSet::new();
         let mut form_usage: HashMap<ResourcesOwner, UsedNames> = HashMap::new();
-        let content = match document.get_and_decode_page_content(page_id) {
-            Ok(content) => content,
-            Err(_) => {
-                blocked_owners.insert(owner);
-                block_page_form_resources(document, resources_dict, &mut blocked_owners);
-                continue;
-            }
+        let Some(content) = super::decoded_page_content_with_limit(
+            document,
+            page_id,
+            super::MAX_CONTENT_STREAM_BYTES,
+        ) else {
+            blocked_owners.insert(owner);
+            block_page_form_resources(document, resources_dict, &mut blocked_owners);
+            continue;
         };
 
         if !collect_used_names(
@@ -528,7 +529,9 @@ fn decode_form_content(document: &Document, form_id: ObjectId) -> Option<Content
     let Object::Stream(form) = document.objects.get(&form_id)? else {
         return None;
     };
-    let bytes = form.get_plain_content().ok()?;
+    let bytes = form
+        .get_plain_content_with_limit(super::MAX_CONTENT_STREAM_BYTES)
+        .ok()?;
     Content::decode(&bytes).ok()
 }
 

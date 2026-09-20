@@ -37,7 +37,14 @@ use lopdf::{dictionary, Dictionary, Document, Object, ObjectId, Stream};
 
 use super::cff;
 use super::ensure_not_cancelled;
+use super::{decoded_page_content_with_limit, MAX_CONTENT_STREAM_BYTES};
 use crate::error::AppError;
+
+/// Bomb caps for font-adjacent streams: real font programs are at most tens
+/// of MB even for full CJK families, and a `/CIDToGIDMap` needs ≤ 128 KiB
+/// (65536 two-byte entries) by construction.
+const MAX_FONT_PROGRAM_BYTES: usize = 256 << 20;
+const MAX_CID_TO_GID_MAP_BYTES: usize = 16 << 20;
 
 /// Outcome of one subsetting pass.
 #[derive(Debug, Default)]
@@ -97,9 +104,10 @@ pub(crate) fn subset_embedded_fonts(
             Some(resources) => resources,
             None => continue,
         };
-        let content = match document.get_and_decode_page_content(page_id) {
-            Ok(content) => content,
-            Err(_) => continue,
+        let Some(content) =
+            decoded_page_content_with_limit(document, page_id, MAX_CONTENT_STREAM_BYTES)
+        else {
+            continue;
         };
         if !collect_context_cids(
             document,
@@ -179,8 +187,19 @@ pub(crate) fn subset_embedded_fonts(
         let Some(Object::Stream(font_file)) = document.objects.get(&font_file_id) else {
             continue;
         };
-        let original = font_file.get_plain_content().unwrap_or_default();
+        let original = font_file
+            .get_plain_content_with_limit(MAX_FONT_PROGRAM_BYTES)
+            .unwrap_or_default();
         if original.is_empty() {
+            continue;
+        }
+
+        // subsetter's GlyphRemapper counts assigned ids through u16: a font
+        // claimed to draw every possible glyph id (65536 distinct values from
+        // a hostile CIDToGIDMap or Identity mapping) overflows the counter
+        // and panics inside the crate. Real fonts never approach the bound —
+        // skip subsetting for this program instead.
+        if old_gids.len() > u16::MAX as usize {
             continue;
         }
 
@@ -334,7 +353,7 @@ fn index_candidates(document: &Document) -> HashMap<ObjectId, Type0Candidate> {
                         let Some(Object::Stream(map)) = document.objects.get(map_id) else {
                             continue;
                         };
-                        match map.get_plain_content() {
+                        match map.get_plain_content_with_limit(MAX_CID_TO_GID_MAP_BYTES) {
                             Ok(bytes) => CidMapping::Stream(bytes),
                             Err(_) => continue,
                         }
@@ -409,7 +428,9 @@ fn cff_mapping(font_file: &Stream) -> Option<CidMapping> {
         }
         _ => return None,
     };
-    let program = font_file.get_plain_content().ok()?;
+    let program = font_file
+        .get_plain_content_with_limit(MAX_FONT_PROGRAM_BYTES)
+        .ok()?;
     let bare = if subtype.as_slice() == b"OpenType" {
         cff::extract_cff_table(&program)?
     } else {
@@ -785,7 +806,9 @@ fn decode_form_content(document: &Document, form_id: ObjectId) -> Option<Content
     let Object::Stream(form) = document.objects.get(&form_id)? else {
         return None;
     };
-    let bytes = form.get_plain_content().ok()?;
+    let bytes = form
+        .get_plain_content_with_limit(MAX_CONTENT_STREAM_BYTES)
+        .ok()?;
     Content::decode(&bytes).ok()
 }
 

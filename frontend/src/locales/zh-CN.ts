@@ -297,9 +297,6 @@ const zhCN = {
     'error.wrongPassword': {
       body: '输入的密码未能解锁该 PDF。',
     },
-    'error.image': {
-      body: '图片处理失败：{detail}',
-    },
     'error.io': {
       body: '文件系统操作失败：{detail}',
     },

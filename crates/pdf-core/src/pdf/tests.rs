@@ -1660,6 +1660,32 @@ fn annotation_appearance_stream_aborts_font_subsetting() {
 
 #[cfg(feature = "subset-fonts")]
 #[test]
+fn full_cid_range_draw_skips_subsetting_instead_of_panicking() {
+    // Draw every possible 2-byte CID through the Identity mapping: the
+    // remapper's u16 counter overflows at the 65536th distinct glyph id,
+    // which used to panic inside subsetter (`remapper was overflowed`) and
+    // kill the whole compression run. The count guard must abort subsetting
+    // for this program and leave the font untouched.
+    let bytes = mutate_type0_fixture(|doc| {
+        let (_, _, content_id) = type0_fixture_ids(doc);
+        let mut hex = String::with_capacity(65_536 * 4);
+        for cid in 0..=u16::MAX {
+            use std::fmt::Write as _;
+            let _ = write!(hex, "{cid:04X}");
+        }
+        let content = format!("BT /F1 24 Tf 72 720 Td <{hex}> Tj ET\n");
+        let Some(Object::Stream(stream)) = doc.objects.get_mut(&content_id) else {
+            panic!("content stream");
+        };
+        stream.set_content(content.into_bytes());
+    });
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    assert_subsetting_aborted(dir.path(), "type0-full-cid-range.pdf", &bytes);
+}
+
+#[cfg(feature = "subset-fonts")]
+#[test]
 fn type3_font_aborts_font_subsetting() {
     let bytes = mutate_type0_fixture(|doc| {
         let type3_id = doc.add_object(dictionary! {
@@ -3835,6 +3861,107 @@ fn target_size_mode_spends_a_generous_budget_on_quality() {
 }
 
 #[test]
+fn target_size_tight_budget_does_not_strand_at_the_quality_floor() {
+    // Regression pin (0.11.0): the quality range used to start at u8::MAX,
+    // which both reported a bogus "quality 255" and burned the first two
+    // probes on an identical effective-100 encode; the wasted attempts then
+    // forced an early edge shrink whose tight range restart pinned the rest
+    // of the search at the floor — a 200 KB budget came back ~40% spent at
+    // quality 15. The honest range top must instead spend a tight budget on
+    // quality: met, in-domain, off the floor, and near the budget.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let jpeg = encode_jpeg(fixture_rgb_image(1600, 1200), 95);
+    let path = write_fixture(
+        dir.path(),
+        "tight-budget.pdf",
+        &build_pdf_bytes(jpeg, 1600, 1200),
+    );
+    let original = fs::metadata(&path).expect("fixture metadata").len();
+    let target = original / 3;
+
+    let response = compress_pdf_to_target_size(
+        path.to_str().unwrap(),
+        None,
+        target,
+        maximum_settings(),
+        noop_cancel_flag(),
+        &mut |_| {},
+    )
+    .expect("target-size search must succeed");
+
+    assert!(
+        (response.compressed_size_bytes as u64) <= target,
+        "output must fit the budget"
+    );
+    let met = response
+        .notices
+        .iter()
+        .find(|notice| notice.code == "compress.note.targetSizeMet")
+        .expect("the tight budget must be met");
+    let winning_quality: i32 = met
+        .values
+        .get("quality")
+        .and_then(|value| value.parse().ok())
+        .expect("target-met notice carries the winning quality");
+    assert!(
+        winning_quality <= 100,
+        "the reported quality must stay in the encoder domain, got {winning_quality}"
+    );
+    assert!(
+        winning_quality > 15,
+        "a budget with headroom must not strand the search at the floor quality, got {winning_quality}"
+    );
+    assert!(
+        response.compressed_size_bytes as f64 >= target as f64 * 0.5,
+        "a met budget must be substantially spent, got {} of {target} bytes",
+        response.compressed_size_bytes
+    );
+}
+
+#[test]
+fn target_size_pipe_accounting_describes_the_emitted_bytes() {
+    // Regression pin (0.11.0): the bytes pipeline used to leave the
+    // accounting fields at their init values (outputWasSmaller: false,
+    // savedBytes: 0) even when the target-size search shrank the output to a
+    // fraction of the input — the same JSON reported a success notice.
+    use super::target_size::compress_pdf_bytes_to_target_size;
+
+    let jpeg = encode_jpeg(fixture_rgb_image(1600, 1200), 95);
+    let input = build_pdf_bytes(jpeg, 1600, 1200);
+    let target = input.len() as u64 / 3;
+
+    let outcome = compress_pdf_bytes_to_target_size(
+        input.clone(),
+        None,
+        target,
+        maximum_settings(),
+        noop_cancel_flag(),
+        &mut |_| {},
+    )
+    .expect("bytes target-size search must succeed");
+
+    assert_eq!(
+        outcome.response.compressed_size_bytes as usize,
+        outcome.bytes.len(),
+        "the reported size must be the emitted bytes"
+    );
+    assert!(
+        outcome.response.output_was_smaller,
+        "a shrunken pipe output must be reported as smaller"
+    );
+    let expected_saved = input.len() - outcome.bytes.len();
+    assert_eq!(
+        outcome.response.saved_bytes as usize, expected_saved,
+        "saved bytes must be original minus emitted"
+    );
+    let expected_percent = (expected_saved as f32 / input.len() as f32) * 100.0;
+    assert!(
+        (outcome.response.savings_percent - expected_percent).abs() < 0.01,
+        "savings percent must match the emitted bytes"
+    );
+}
+
+#[test]
 fn target_size_mode_reports_best_effort() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = fresh_fixture(dir.path());
@@ -4076,6 +4203,8 @@ fn compress_never_writes_a_larger_output() {
         Instant::now(),
         &maximum_settings(),
         &mut stats,
+        &noop_cancel_flag(),
+        "test",
     )
     .expect("response must be built");
 
@@ -4117,6 +4246,8 @@ fn guard_zero_byte_original_still_writes_the_serialization() {
         Instant::now(),
         &maximum_settings(),
         &mut stats,
+        &noop_cancel_flag(),
+        "test",
     )
     .expect("response must be built");
 

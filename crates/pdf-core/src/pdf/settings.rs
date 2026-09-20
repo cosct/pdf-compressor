@@ -423,6 +423,13 @@ mod tests {
         // 0.9.0 unification: quality/percent/booleans must mirror
         // frontend/src/config/preset-defaults.json exactly — same preset,
         // same effective parameters in the GUI, quick mode, and the CLI.
+        // The JSON is include_str!'d (not re-typed literals): editing one
+        // side without the other fails this test instead of silently
+        // drifting.
+        let json: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../frontend/src/config/preset-defaults.json"
+        ))
+        .expect("preset-defaults.json parses");
         let table = [
             (CompressionPreset::Conservative, 72, 84, false, false),
             (CompressionPreset::Balanced, 60, 68, true, false),
@@ -437,6 +444,34 @@ mod tests {
             );
             assert_eq!(preset.default_strip_metadata(), strip, "{preset:?}");
             assert_eq!(preset.default_subset_fonts(), subset, "{preset:?}");
+
+            let entry = json
+                .get(preset.as_label())
+                .unwrap_or_else(|| panic!("preset-defaults.json lacks '{}'", preset.as_label()));
+            assert_eq!(
+                entry["imageQuality"].as_u64(),
+                Some(u64::from(quality)),
+                "{} imageQuality must mirror the preset table",
+                preset.as_label()
+            );
+            assert_eq!(
+                entry["maxImageSizePercent"].as_u64(),
+                Some(u64::from(percent)),
+                "{} maxImageSizePercent must mirror the preset table",
+                preset.as_label()
+            );
+            assert_eq!(
+                entry["stripMetadata"].as_bool(),
+                Some(strip),
+                "{} stripMetadata must mirror the preset table",
+                preset.as_label()
+            );
+            assert_eq!(
+                entry["subsetFonts"].as_bool(),
+                Some(subset),
+                "{} subsetFonts must mirror the preset table",
+                preset.as_label()
+            );
         }
         // The provisional absolute view resolves against the default
         // reference edge, rounded to hundreds.

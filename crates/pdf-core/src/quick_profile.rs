@@ -11,7 +11,7 @@
 //! 集成读取。
 
 use std::{
-    fs::{self, File},
+    fs,
     io::{ErrorKind, Write},
     path::{Path, PathBuf},
 };
@@ -65,8 +65,9 @@ pub fn read_quick_profile_at(config_path: &Path) -> Result<QuickProfilePayload, 
     Ok(profile)
 }
 
-/// Serialize, write to a temp file, sync, then atomically rename over the
-/// target (same discipline as the preset config writer).
+/// Serialize, write through an exclusive-create temp file (pid-suffixed,
+/// O_EXCL — the same discipline as the compressor's output writer), fsync,
+/// then atomically rename over the target.
 pub fn write_quick_profile_at(
     config_path: &Path,
     profile: &QuickProfilePayload,
@@ -77,25 +78,57 @@ pub fn write_quick_profile_at(
             config_path.display()
         ))
     })?;
-    let temp_path = config_path.with_extension("tmp");
     let payload = serde_json::to_vec_pretty(profile)
         .map_err(|error| AppError::Config(format!("Failed to serialize quick profile: {error}")))?;
 
     fs::create_dir_all(parent_dir)?;
 
-    {
-        let mut temp_file = File::create(&temp_path)?;
-        temp_file.write_all(&payload)?;
-        temp_file.sync_all()?;
+    // create_new (O_EXCL): a predictable `.tmp` name created with truncation
+    // would clobber a same-named file (or a symlink planted in a writable
+    // directory). The pid suffix makes collisions essentially impossible;
+    // the retry loop closes the rest.
+    let mut attempt = 0u32;
+    loop {
+        let suffix = if attempt == 0 {
+            format!("{}.tmp", std::process::id())
+        } else {
+            format!("{}.{}.tmp", std::process::id(), attempt)
+        };
+        let temp_path = config_path.with_extension(suffix);
+        let mut temp = match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+        {
+            Ok(temp) => temp,
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                attempt += 1;
+                if attempt >= 4 {
+                    return Err(AppError::Io(error));
+                }
+                continue;
+            }
+            Err(error) => return Err(AppError::Io(error)),
+        };
+        let result = (|| -> Result<(), std::io::Error> {
+            temp.write_all(&payload)?;
+            temp.sync_all()?;
+            drop(temp);
+            // Atomic on Unix; on Windows, try rename-over first (NTFS
+            // supports it), falling back to remove-then-rename for older
+            // filesystems.
+            if fs::rename(&temp_path, config_path).is_err() {
+                let _ = fs::remove_file(config_path);
+                fs::rename(&temp_path, config_path)?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            let _ = fs::remove_file(&temp_path);
+            return Err(AppError::Io(error));
+        }
+        return Ok(());
     }
-
-    // Atomic on Unix; on Windows, try rename-over first (NTFS supports it),
-    // falling back to remove-then-rename for older filesystems.
-    if fs::rename(&temp_path, config_path).is_err() {
-        let _ = fs::remove_file(config_path);
-        fs::rename(&temp_path, config_path)?;
-    }
-    Ok(())
 }
 
 /// View the profile as settings overrides (the fallback layer below explicit
@@ -255,9 +288,20 @@ mod tests {
         assert_eq!(loaded.preset.as_deref(), Some("maximum"));
         assert_eq!(loaded.image_quality, Some(55));
         assert_eq!(loaded.target_size_bytes, Some(5 * 1024 * 1024));
+        // The pid-suffixed atomic-write temp files never linger.
+        let leftovers: Vec<_> = fs::read_dir(dir.path())
+            .expect("read dir")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("tmp"))
+            })
+            .collect();
         assert!(
-            !path.with_extension("tmp").exists(),
-            "temp file never lingers"
+            leftovers.is_empty(),
+            "temp files never linger: {leftovers:?}"
         );
     }
 

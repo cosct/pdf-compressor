@@ -30,7 +30,7 @@ pub(crate) struct ImageSearchEntry {
     /// the preparation pass.
     pub color_space: Option<super::colorspace::ImageColorSpaceInfo>,
     /// `/JBIG2Globals` segment bytes carried over from the preparation pass.
-    pub jbig2_globals: Option<Vec<u8>>,
+    pub jbig2_globals: Option<Arc<Vec<u8>>>,
     pub cache: ImageSearchCache,
     last: Option<LastEncoding>,
 }
@@ -63,7 +63,7 @@ pub(crate) fn take_image_search_entries(
     image_object_ids: &[ObjectId],
     shared_smask_ids: &HashSet<ObjectId>,
     color_spaces: &HashMap<ObjectId, super::colorspace::ImageColorSpaceInfo>,
-    jbig2_globals: &HashMap<ObjectId, Vec<u8>>,
+    jbig2_globals: &HashMap<ObjectId, Arc<Vec<u8>>>,
 ) -> Vec<ImageSearchEntry> {
     take_image_tasks(
         document,
@@ -108,7 +108,7 @@ pub(crate) fn probe_image_at(
         context.skip_policy,
         Some(&mut entry.cache),
         entry.color_space.as_ref(),
-        entry.jbig2_globals.as_deref(),
+        entry.jbig2_globals.as_deref().map(Vec::as_slice),
     )?;
     let contribution = image_contribution(entry, &optimization);
     entry.last = Some(LastEncoding {

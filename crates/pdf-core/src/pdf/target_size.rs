@@ -49,6 +49,13 @@ use crate::{
 /// destroy the document; the edge shrink takes over instead.
 const MIN_SEARCH_QUALITY: u8 = 15;
 
+/// Upper bound of the quality search. The JPEG encoder's domain tops out at
+/// 100 and the per-round quality allocator clamps there anyway, so the range
+/// must start at 100: starting at u8::MAX made the first two probes both
+/// encode at an effective 100 (wasting one of twelve attempts) while the
+/// notices reported a bogus "quality 255" outside the documented domain.
+const MAX_SEARCH_QUALITY: u8 = 100;
+
 /// Upper bound on probe attempts before settling for the best effort. Each
 /// probe re-encodes from cached decodes, so a generous cap buys tighter
 /// convergence without a proportional runtime cost.
@@ -311,14 +318,13 @@ where
         started_at,
     };
     let mut lo = i32::from(MIN_SEARCH_QUALITY);
-    let mut hi = i32::from(u8::MAX);
+    let mut hi = i32::from(MAX_SEARCH_QUALITY);
     let mut edge = start_search_edge(&entries);
     let mut best: Option<(RoundParams, TargetRunOutput)> = None;
     let mut last_materialized: Option<RoundParams> = None;
-    // Quality whose failure collapsed the current range — the next smaller
-    // edge restarts the range at that quality instead of the top, because
-    // higher qualities already proved over budget at a *larger* edge.
-    let mut collapse_quality = i32::from(u8::MAX);
+    // Previous probe (params, estimate, fits) for quality-blind round
+    // detection — see the note where it is consulted.
+    let mut previous_probe: Option<(RoundParams, u64, bool)> = None;
     // Smallest estimated probe — the best-effort fallback when nothing fits,
     // so the final output is a measured near-minimum rather than a guess.
     let mut smallest_probe: Option<(RoundParams, u64)> = None;
@@ -338,10 +344,14 @@ where
                 break;
             }
             // The entire quality range is over budget at this edge — shrink
-            // and restart the range at the quality that collapsed it.
+            // and restart the range from the top: bytes scale with the edge,
+            // so a quality that missed at the larger edge may fit at the
+            // smaller one, and pinning hi at the collapsing quality stranded
+            // the search at the floor with most of the budget unspent.
+            // (Quality-blind collapse below keeps the restart affordable.)
             edge = shrink_search_edge(edge);
             lo = i32::from(MIN_SEARCH_QUALITY);
-            hi = collapse_quality;
+            hi = i32::from(MAX_SEARCH_QUALITY);
         }
 
         let params = RoundParams {
@@ -378,7 +388,6 @@ where
                 estimate
             }
         };
-        collapse_quality = i32::from(params.quality);
 
         let mut fits = false;
         if estimated <= target_bytes {
@@ -406,9 +415,29 @@ where
             // output in place for now; the finish step restores the best
             // round if one exists.
         }
-        let (next_lo, next_hi) = update_quality_range(lo, hi, i32::from(params.quality), fits);
+        // Quality-blind round detection: a round whose encoded contribution
+        // ignores quality (G4 products are the big one) yields
+        // byte-identical estimates across qualities. Two consecutive misses
+        // with identical estimates at the same edge mean the rest of the
+        // range re-proves the same miss — collapse now so the edge shrink
+        // (or the exit) arrives after two probes instead of seven. This is
+        // what keeps the top restart above compatible with the multi-shrink
+        // scan path inside the twelve-attempt budget.
+        let blind_miss =
+            previous_probe.is_some_and(|(previous, previous_estimate, previous_fits)| {
+                previous.edge == params.edge
+                    && previous_estimate == estimated
+                    && !previous_fits
+                    && !fits
+            });
+        let (next_lo, next_hi) = if blind_miss {
+            (lo, lo - 1)
+        } else {
+            update_quality_range(lo, hi, i32::from(params.quality), fits)
+        };
         lo = next_lo;
         hi = next_hi;
+        previous_probe = Some((params, estimated, fits));
     }
 
     // --- Finish: keep the best verified fit, else best effort at the floor ---
@@ -475,6 +504,22 @@ where
                 run.bytes = Some(original);
             }
         }
+
+        // The pipe counters must describe the bytes actually emitted,
+        // whichever branch won. The non-search pipe path computes the same
+        // triple; without this the target-size bytes path reported
+        // `outputWasSmaller: false, savedBytes: 0` alongside a success
+        // notice even when the output was a fraction of the input.
+        let final_size = run.bytes.as_ref().map_or(0, Vec::len) as u64;
+        run.response.compressed_size_bytes = final_size as f64;
+        let saved_bytes = original_size_bytes.saturating_sub(final_size);
+        run.response.saved_bytes = saved_bytes as f64;
+        run.response.savings_percent = if original_size_bytes == 0 {
+            0.0
+        } else {
+            (saved_bytes as f32 / original_size_bytes as f32) * 100.0
+        };
+        run.response.output_was_smaller = final_size < original_size_bytes;
     }
 
     Ok(run)
@@ -489,10 +534,10 @@ struct MaterializeContext<'a> {
 }
 
 /// Quality to probe next: the upper bound on the first attempt, then the
-/// midpoint of the remaining range. Always within `[MIN_SEARCH_QUALITY, 100]`.
+/// midpoint of the remaining range. Always within `[MIN_SEARCH_QUALITY, MAX_SEARCH_QUALITY]`.
 fn next_quality(attempts: usize, lo: i32, hi: i32) -> u8 {
     let quality = if attempts == 0 { hi } else { (lo + hi) / 2 };
-    quality.clamp(i32::from(MIN_SEARCH_QUALITY), i32::from(u8::MAX)) as u8
+    quality.clamp(i32::from(MIN_SEARCH_QUALITY), i32::from(MAX_SEARCH_QUALITY)) as u8
 }
 
 /// Range update after probing `quality`: a fit raises the floor (the leftover
@@ -574,6 +619,8 @@ fn materialize_round(
                 &final_settings,
                 stats,
                 final_write,
+                context.search.cancel_flag,
+                context.search.task_id,
             )?;
             Ok(TargetRunOutput {
                 response,
@@ -637,7 +684,16 @@ fn run_probe_round(
         context.cancel_flag,
         context.task_id,
         |mut entry: ImageSearchEntry| {
-            let contribution = probe_image_at(&mut entry, params, context);
+            // A panicked probe aborts the search (its entry still travels
+            // back so the stream is not lost), but must not kill the process.
+            let contribution = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                probe_image_at(&mut entry, params, context)
+            }))
+            .unwrap_or_else(|_| {
+                Err(AppError::PdfBuild(
+                    "a target-size probe task panicked (hostile input or a bug)".into(),
+                ))
+            });
             (entry, contribution)
         },
         |(entry, contribution)| {

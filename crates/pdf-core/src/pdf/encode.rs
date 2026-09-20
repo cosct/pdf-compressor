@@ -609,6 +609,16 @@ pub(super) fn optimize_image_stream(
         }
     };
 
+    // Defense in depth across every decoder at once: no legitimate path
+    // produces an empty plane, and the G4 encoder's `chunks(width)` panics
+    // on a zero-width one. A decoder handing back an empty grid leaves the
+    // image untouched instead.
+    if plane.width() == 0 || plane.height() == 0 {
+        return Ok(ImageOptimization::Skipped {
+            reason: "decoded image plane is empty".into(),
+        });
+    }
+
     // Classify the bilevel routing BEFORE resizing: the classification must
     // not depend on how aggressively this run shrinks the image — resampled
     // bilevel text develops antialiasing midtones that would flip dense
@@ -834,11 +844,9 @@ fn build_smask_stream(alpha: &image::GrayImage) -> Stream {
 /// here so the rebuilt mask (which never carries `/Decode`) preserves the
 /// original opacity.
 fn decode_smask_gray(smask: &Stream) -> Option<image::GrayImage> {
-    let width = optional_integer(smask, b"Width")? as u32;
-    let height = optional_integer(smask, b"Height")? as u32;
-    if width == 0 || height == 0 {
-        return None;
-    }
+    let width = optional_integer(smask, b"Width")?;
+    let height = optional_integer(smask, b"Height")?;
+    let (width, height) = super::image_dims_within_budget(width, height)?;
 
     if optional_integer(smask, b"BitsPerComponent").unwrap_or(8) != 8 {
         return None;
@@ -908,9 +916,13 @@ fn decode_smask_gray(smask: &Stream) -> Option<image::GrayImage> {
         }
     }
 
-    // A mask without /Filter is spec-legal (raw bytes); get_plain_content
-    // handles both raw and flate-encoded shapes.
-    let mut data = smask.get_plain_content().ok()?;
+    // A mask without /Filter is spec-legal (raw bytes); the limited variant
+    // handles both raw and flate-encoded shapes, capped at the declared
+    // geometry (an 8-bit gray mask needs width × height bytes, plus the
+    // padding slack every raw stream tolerance carries).
+    let mut data = smask
+        .get_plain_content_with_limit(padded_stream_limit(width as usize * height as usize))
+        .ok()?;
     if inverted {
         data.iter_mut().for_each(|sample| *sample = 255 - *sample);
     }
@@ -1156,11 +1168,39 @@ pub(super) fn decode_raw_image_stream(
     stream: &Stream,
     color_space: Option<&ImageColorSpaceInfo>,
 ) -> Result<DynamicImage, AppError> {
-    let width = required_integer(stream, b"Width")? as u32;
-    let height = required_integer(stream, b"Height")? as u32;
+    // Shared decode budget: both edges and the pixel product (a zero or
+    // negative width would otherwise wrap/truncate at the u32 cast, and a
+    // 65535×65535 declaration would request a 4.29 GB plane).
+    let Some((width, height)) = super::image_dims_within_budget(
+        required_integer(stream, b"Width")?,
+        required_integer(stream, b"Height")?,
+    ) else {
+        return Err(AppError::PdfBuild(
+            "raw image declares dimensions outside the decode budget".into(),
+        ));
+    };
 
+    // Decompression-bomb cap: the declared sample geometry bounds the legal
+    // output (the shape checks below use the image crate's at-least length
+    // semantics, which tolerate trailing padding), so the limit carries
+    // slack for padded streams while still refusing a stream that would
+    // inflate orders of magnitude past its declared geometry.
+    let bytes_per_pixel: u64 = match color_space.map(|info| &info.decode) {
+        Some(DecodeColorSpace::Gray) => 1,
+        Some(DecodeColorSpace::Rgb) => 3,
+        Some(DecodeColorSpace::Cmyk { .. }) => 4,
+        // Index streams pack sub-byte indices; one byte per pixel is the
+        // loosest legal packing and `unpack_indices` validates exactly.
+        Some(DecodeColorSpace::Indexed { .. }) => 1,
+        None => match optional_name(stream, b"ColorSpace").as_deref() {
+            Some("DeviceGray") => 1,
+            Some("DeviceCMYK") => 4,
+            _ => 3,
+        },
+    };
+    let expected_bytes = (u64::from(width) * u64::from(height) * bytes_per_pixel) as usize;
     let decoded = stream
-        .decompressed_content()
+        .decompressed_content_with_limit(padded_stream_limit(expected_bytes))
         .map_err(|e| AppError::PdfBuild(format!("Failed to decompress raw image stream: {e}")))?;
 
     if let Some(info) = color_space {
@@ -1284,6 +1324,25 @@ fn decode_jpeg_stream(
     color_space: Option<&ImageColorSpaceInfo>,
     cmyk_decodes: Option<&[super::colorspace::ChannelDecode]>,
 ) -> Result<DynamicImage, String> {
+    // Trust-chain gate, mirroring the JPX/JBIG2 consistency checks: the
+    // worker-pool memory budget schedules on the dictionary's /Width//Height
+    // while the JPEG decoders allocate from the codestream's own SOF header.
+    // A mismatch lets a tiny-looking task balloon at decode time — and the
+    // rebuilt stream would silently change the rendered geometry. Reject the
+    // combination before any decoder runs.
+    let dict_dims = declared_image_dims(stream);
+    let sof_dims = jpeg_dimensions_from_header(&stream.content);
+    if let (Some((dict_w, dict_h)), Some((sof_w, sof_h))) = (dict_dims, sof_dims) {
+        if (dict_w, dict_h) != (sof_w, sof_h) {
+            return Err("JPEG codestream dimensions do not match the stream dictionary".into());
+        }
+    }
+    if let Some((width, height)) = sof_dims.or(dict_dims) {
+        if u64::from(width) * u64::from(height) > super::MAX_DECODE_PIXELS {
+            return Err("JPEG dimensions exceed the decode budget".into());
+        }
+    }
+
     #[cfg(feature = "cmyk-cms")]
     {
         if declares_cmyk(stream, color_space) {
@@ -1449,13 +1508,10 @@ fn ccitt_input_shape(stream: &Stream) -> Option<CcittInputShape> {
     let width = optional_integer(stream, b"Width")?;
     let height = optional_integer(stream, b"Height")?;
     // Never let hostile dimensions reach the decoded-plane allocation: a
-    // negative i64 would wrap to a huge value at the `as u32` cast. The
-    // ceiling matches the JPEG format limit the encoder already enforces —
-    // a bigger plane could never be re-encoded anyway.
-    if !(1..=65_535).contains(&width) || !(1..=65_535).contains(&height) {
-        return None;
-    }
-    let (width, height) = (width as u32, height as u32);
+    // negative i64 would wrap to a huge value at the `as u32` cast, and the
+    // per-edge JPEG-format ceiling alone does not bound the pixel product
+    // (65535² would allocate 4.29 GB before the decoder reads a single byte).
+    let (width, height) = super::image_dims_within_budget(width, height)?;
 
     // An absent /DecodeParms defaults to K = 0 — Group 3 one-dimensional
     // without EOL markers, which the local reader handles. Indirect parameter
@@ -1897,19 +1953,28 @@ struct StreamFilterInfo {
 
 fn stream_filter_info(stream: &Stream) -> StreamFilterInfo {
     let mut names: Vec<Vec<u8>> = Vec::new();
+    // A /Filter that is neither a Name nor an array of Names is malformed.
+    // lopdf's decoders fall back to treating it as "no filter", which would
+    // feed still-compressed bytes to the pixel decoders as raw samples and
+    // produce a "successfully" rebuilt garbage image — reject instead.
+    let mut malformed_filter = false;
     match stream.dict.get(b"Filter") {
         Ok(Object::Name(name)) => names.push(name.clone()),
         Ok(Object::Array(items)) => {
             for item in items {
                 if let Object::Name(name) = item {
                     names.push(name.clone());
+                } else {
+                    malformed_filter = true;
                 }
             }
         }
-        _ => {}
+        Ok(_) => malformed_filter = true,
+        Err(_) => {}
     }
 
     let mut info = StreamFilterInfo::default();
+    info.has_unsupported_filter |= malformed_filter;
     for name in &names {
         match name.as_slice() {
             b"DCTDecode" => info.has_jpeg = true,
@@ -1967,6 +2032,24 @@ pub(crate) fn longest_edge(stream: &Stream) -> Option<u32> {
         return None;
     }
     Some(w.max(h) as u32)
+}
+
+/// The dictionary's `/Width`//`/Height` as a positive `(u32, u32)` pair.
+fn declared_image_dims(stream: &Stream) -> Option<(u32, u32)> {
+    let width = optional_integer(stream, b"Width")?;
+    let height = optional_integer(stream, b"Height")?;
+    Some((u32::try_from(width).ok()?, u32::try_from(height).ok()?))
+}
+
+/// Decompression ceiling for a raw stream whose declared geometry needs
+/// `expected` bytes. `image::ImageBuffer::from_raw` accepts buffers with
+/// trailing padding (at-least semantics), and real producers emit padded
+/// rows, so the cap tolerates 25% + 64 KiB of slack — while a bomb inflating
+/// orders of magnitude past its declared shape still fails at the limit.
+fn padded_stream_limit(expected: usize) -> usize {
+    expected
+        .saturating_add(expected / 4)
+        .saturating_add(64 * 1024)
 }
 
 /// Total pixel count from the stream dictionary; shared with the worker-pool
@@ -2029,6 +2112,169 @@ mod tests {
     fn jpeg_header_reader_returns_none_for_zero_dimensions() {
         let jpeg = minimal_jpeg_with_dimensions(0, 0);
         assert_eq!(jpeg_dimensions_from_header(&jpeg), None);
+    }
+
+    // --- Hostile-input gates (audit 0.11.0 P0) ------------------------------
+
+    fn gray_image_stream(width: i64, height: i64, content: Vec<u8>) -> Stream {
+        Stream::new(
+            dictionary! {
+                "Type" => "XObject",
+                "Subtype" => "Image",
+                "Width" => width,
+                "Height" => height,
+                "ColorSpace" => "DeviceGray",
+                "BitsPerComponent" => 8,
+            },
+            content,
+        )
+    }
+
+    #[test]
+    fn raw_decode_rejects_zero_and_negative_dimensions() {
+        // A zero width used to produce a 0-sized plane whose `chunks(0)` walk
+        // in the G4 encoder panicked (verified with a 652-byte PDF); a
+        // negative one wrapped at the `as u32` cast.
+        for width in [0, -1] {
+            let stream = gray_image_stream(width, 10, Vec::new());
+            assert!(
+                decode_raw_image_stream(&stream, None).is_err(),
+                "width {width} must be rejected before any decode"
+            );
+        }
+        let stream = gray_image_stream(100, -5, Vec::new());
+        assert!(decode_raw_image_stream(&stream, None).is_err());
+    }
+
+    #[test]
+    fn raw_decode_rejects_dimensions_over_the_pixel_budget() {
+        // 65535×65535 passes each edge cap but requests a 4.29 GB plane; the
+        // budget gate fires before any decompression or allocation.
+        let stream = gray_image_stream(65_535, 65_535, Vec::new());
+        assert!(decode_raw_image_stream(&stream, None).is_err());
+        // 80 MP is inside the budget and only fails the (absent) sample
+        // length check afterwards — a different, per-stream failure.
+        let stream = gray_image_stream(10_000, 8_000, Vec::new());
+        let error = decode_raw_image_stream(&stream, None).expect_err("no samples");
+        assert!(!error.to_string().contains("budget"));
+    }
+
+    #[test]
+    fn raw_decode_caps_flate_expansion_at_the_declared_geometry() {
+        // A 1×1 gray declaration needs one byte (limit ≈ 66 KB with the
+        // padding slack); a stream that would inflate past the slack is a
+        // bomb and must fail at the decompression limit instead of
+        // allocating the expansion.
+        use std::io::Write as _;
+        let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+        encoder.write_all(&[0u8; 512 * 1024]).unwrap();
+        let compressed = encoder.finish().unwrap();
+        let mut stream = gray_image_stream(1, 1, compressed);
+        stream
+            .dict
+            .set("Filter", Object::Name(b"FlateDecode".to_vec()));
+        let error = decode_raw_image_stream(&stream, None).expect_err("bomb must fail");
+        assert!(error.to_string().contains("decompress"));
+    }
+
+    #[test]
+    fn raw_decode_tolerates_trailing_padding_like_the_image_crate() {
+        // `ImageBuffer::from_raw` accepts buffers longer than the declared
+        // geometry (at-least semantics), and real producers emit padded
+        // rows — the decompression slack must preserve that tolerance.
+        use std::io::Write as _;
+        let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+        encoder.write_all(&[7u8; 1_050]).unwrap();
+        let mut stream = gray_image_stream(100, 10, encoder.finish().unwrap());
+        stream
+            .dict
+            .set("Filter", Object::Name(b"FlateDecode".to_vec()));
+        let decoded = decode_raw_image_stream(&stream, None).expect("padded stream decodes");
+        assert_eq!(decoded.dimensions(), (100, 10));
+    }
+
+    #[test]
+    fn smask_decode_rejects_dimensions_over_the_pixel_budget() {
+        let mut stream = gray_image_stream(65_535, 65_535, vec![0u8; 8]);
+        stream.dict.set("Type", Object::Name(b"XObject".to_vec()));
+        assert!(decode_smask_gray(&stream).is_none());
+    }
+
+    #[test]
+    fn jpeg_decode_rejects_dictionary_sof_dimension_mismatch() {
+        // The pool schedules memory on the dictionary numbers while decoders
+        // allocate from the SOF header — a mismatch is hostile and must fail
+        // before either decoder runs.
+        let jpeg = minimal_jpeg_with_dimensions(640, 480);
+        let stream = Stream::new(
+            dictionary! {
+                "Width" => 100,
+                "Height" => 100,
+                "ColorSpace" => "DeviceRGB",
+                "BitsPerComponent" => 8,
+                "Filter" => "DCTDecode",
+            },
+            jpeg,
+        );
+        let error = decode_jpeg_stream(&stream, None, None).expect_err("mismatch");
+        assert!(error.contains("do not match"));
+    }
+
+    #[test]
+    fn jpeg_decode_rejects_dimensions_over_the_pixel_budget() {
+        let jpeg = minimal_jpeg_with_dimensions(65_535, 65_535);
+        let stream = Stream::new(
+            dictionary! {
+                "Width" => 65_535,
+                "Height" => 65_535,
+                "ColorSpace" => "DeviceRGB",
+                "BitsPerComponent" => 8,
+                "Filter" => "DCTDecode",
+            },
+            jpeg,
+        );
+        let error = decode_jpeg_stream(&stream, None, None).expect_err("over budget");
+        assert!(error.contains("budget"));
+    }
+
+    #[test]
+    fn malformed_filter_object_is_treated_as_unsupported() {
+        // `/Filter 42` is neither a Name nor an array of Names; lopdf's
+        // decoders would fall back to "no filter" and feed compressed bytes
+        // to the pixel decoders as raw samples. The gate must reject it.
+        for filter in [
+            Object::Integer(42),
+            Object::Array(vec![
+                Object::Name(b"FlateDecode".to_vec()),
+                Object::Integer(7),
+            ]),
+        ] {
+            let mut stream = gray_image_stream(100, 10, vec![0u8; 1000]);
+            stream.dict.set("Filter", filter);
+            let (_, codec_supported) = image_codec_class(&stream);
+            assert!(!codec_supported, "malformed filter must be unsupported");
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "ccitt")]
+    fn ccitt_shape_gate_enforces_the_pixel_budget() {
+        let g4_stream = |width: i64, height: i64| {
+            Stream::new(
+                dictionary! {
+                    "Width" => width,
+                    "Height" => height,
+                    "BitsPerComponent" => 1,
+                    "Filter" => "CCITTFaxDecode",
+                    "DecodeParms" => dictionary! { "K" => -1 },
+                },
+                Vec::new(),
+            )
+        };
+        // 65535² = 4.29 Gpx: each edge passes, the product must not.
+        assert!(ccitt_input_shape(&g4_stream(65_535, 65_535)).is_none());
+        // 80 MP is inside the budget and still a decodable shape.
+        assert!(ccitt_input_shape(&g4_stream(10_000, 8_000)).is_some());
     }
 
     #[test]

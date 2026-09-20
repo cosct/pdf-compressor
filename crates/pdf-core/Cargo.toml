@@ -76,20 +76,28 @@ lcms2 = { version = "6.2", optional = true, features = ["static"] }
 zune-jpeg = { version = "0.5", optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tempfile = "3"
 thiserror = "2"
 # Quick-profile path resolution (`quick-profile.json` under the OS config
 # dir), shared by the CLI reader and the desktop settings writer.
 dirs-next = "2.0"
-specta = { version = "=2.0.0-rc.25", optional = true }
+# `derive` is required for the `specta::Type` derives on the wire models —
+# without it the feature does not compile standalone (it was masked in the
+# workspace by tauri-specta enabling the derive feature itself).
+specta = { version = "=2.0.0-rc.25", optional = true, features = ["derive"] }
 jpeg-encoder = { version = "0.7", features = ["simd"] }
 # Not referenced in code: declared so feature unification switches lopdf's
-# flate2 (stream compression, object streams) to the zlib-ng C backend.
+# flate2 (stream compression, object streams) to the zlib-ng C backend. This
+# takes the default build out of pure-Rust territory: libz-ng-sys builds its
+# C code through cmake (zng/cmake.rs, no cc fallback) — see DEVELOPMENT.md
+# "JPX 接入" and PKGBUILD.source makedepends.
 flate2 = { version = "1", default-features = false, features = ["zlib-ng"] }
 rustc-hash = "2"
 fast_image_resize = { version = "6", features = ["image"] }
 
 [dev-dependencies]
+# Tests/benches only (incl. the cfg(test) modules in the lib and the CLI
+# bin) — no production path touches it.
+tempfile = "3"
 criterion = "0.8"
 # Self dev-dependency: turns on the `testutil` feature for tests, benches,
 # and examples only (resolver = "2" keeps it out of normal builds).

@@ -52,6 +52,12 @@ where
         let (task_tx, task_rx) = mpsc::sync_channel::<T>(buffer.max(1));
         let task_rx = Arc::new(Mutex::new(task_rx));
         let (result_tx, result_rx) = mpsc::channel::<R>();
+        // Panicked task counter: without a catch here, a panicking `work`
+        // would kill its thread, silently swallow the collection error, and
+        // re-panic the whole scope at join (discarding the AppError the
+        // closure already built). Counted so the collection failure can say
+        // which of the two it was.
+        let panicked_tasks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
         // Spawn worker threads. `work` is shared by reference: every capture
         // it holds (settings, cancel flag, task id) is Sync by construction.
@@ -59,6 +65,7 @@ where
             let rx = Arc::clone(&task_rx);
             let tx = result_tx.clone();
             let work = &work;
+            let panicked_tasks = Arc::clone(&panicked_tasks);
             scope.spawn(move || loop {
                 if cancel_flag.load(Ordering::Relaxed) {
                     return;
@@ -68,8 +75,18 @@ where
                     Err(_) => return,
                 };
                 let Ok(task) = task else { return };
-                if tx.send(work(task)).is_err() {
-                    return;
+                // The default panic hook still prints the location; catching
+                // here keeps the worker alive for the remaining tasks.
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(task)));
+                match outcome {
+                    Ok(result) => {
+                        if tx.send(result).is_err() {
+                            return;
+                        }
+                    }
+                    Err(_) => {
+                        panicked_tasks.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
             });
         }
@@ -109,7 +126,15 @@ where
         for _ in 0..expected {
             ensure_not_cancelled(cancel_flag, task_id)?;
             let result = result_rx.recv().map_err(|_| {
-                AppError::PdfBuild("A worker exited before returning its result.".to_string())
+                if panicked_tasks.load(Ordering::Relaxed) > 0 {
+                    AppError::PdfBuild(
+                        "A worker task panicked (hostile input or a bug); the run was aborted \
+                         without a process crash."
+                            .to_string(),
+                    )
+                } else {
+                    AppError::PdfBuild("A worker exited before returning its result.".to_string())
+                }
             })?;
             on_result(result)?;
         }
@@ -118,4 +143,50 @@ where
     })?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn panicked_task_surfaces_as_an_error_without_killing_the_process() {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let error = run_worker_pool(
+            vec![1u8, 2, 3, 4],
+            2,
+            4,
+            &cancel,
+            "test",
+            |task| {
+                if task == 2 {
+                    panic!("boom");
+                }
+                task
+            },
+            |_| Ok(()),
+        )
+        .expect_err("a panicked task must abort the pool with an error");
+        assert!(matches!(error, AppError::PdfBuild(message) if message.contains("panicked")));
+    }
+
+    #[test]
+    fn pool_completes_normally_without_panics() {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut seen = 0usize;
+        run_worker_pool(
+            vec![1u8, 2, 3],
+            2,
+            4,
+            &cancel,
+            "test",
+            |task| task * 10,
+            |result| {
+                seen += result as usize;
+                Ok(())
+            },
+        )
+        .expect("healthy pool runs");
+        assert_eq!(seen, 60);
+    }
 }

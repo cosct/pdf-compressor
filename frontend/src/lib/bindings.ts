@@ -43,8 +43,8 @@ export const commands = {
 	/**  Re-encode color images as grayscale (best for black-and-white scans). */
 	grayscale?: boolean | null,
 	/**
-	 *  Output codec for near-bilevel scanned images: `"jpeg"` (default) or
-	 *  `"ccitt-g4"` (lossless ITU T.6, best for text scans).
+	 *  Output codec for near-bilevel scanned images: `"ccitt-g4"` (default,
+	 *  lossless ITU T.6, best for text scans) or `"jpeg"`.
 	 */
 	bilevelCodec?: string | null,
 	/**  Shrink embedded Type0/CIDFontType2 TrueType fonts to the used glyphs. */
@@ -170,8 +170,8 @@ export type CompressScannedPdfRequest_Deserialize = {
 	maxImageSizePercent?: number | null,
 	grayscale: boolean | null,
 	/**
-	 *  Output codec for near-bilevel scanned images: `"jpeg"` (default) or
-	 *  `"ccitt-g4"`.
+	 *  Output codec for near-bilevel scanned images: `"ccitt-g4"` (default)
+	 *  or `"jpeg"`.
 	 */
 	bilevelCodec?: string | null,
 	stripMetadata: boolean | null,
@@ -230,8 +230,8 @@ export type CompressScannedPdfRequest_Serialize = {
 	maxImageSizePercent: number | null,
 	grayscale: boolean | null,
 	/**
-	 *  Output codec for near-bilevel scanned images: `"jpeg"` (default) or
-	 *  `"ccitt-g4"`.
+	 *  Output codec for near-bilevel scanned images: `"ccitt-g4"` (default)
+	 *  or `"jpeg"`.
 	 */
 	bilevelCodec: string | null,
 	stripMetadata: boolean | null,
@@ -281,8 +281,8 @@ export type CompressionSettingsPayload = {
 	/**  Re-encode color images as grayscale (best for black-and-white scans). */
 	grayscale?: boolean | null,
 	/**
-	 *  Output codec for near-bilevel scanned images: `"jpeg"` (default) or
-	 *  `"ccitt-g4"` (lossless ITU T.6, best for text scans).
+	 *  Output codec for near-bilevel scanned images: `"ccitt-g4"` (default,
+	 *  lossless ITU T.6, best for text scans) or `"jpeg"`.
 	 */
 	bilevelCodec?: string | null,
 	/**  Shrink embedded Type0/CIDFontType2 TrueType fonts to the used glyphs. */
@@ -303,7 +303,7 @@ export type PresetProfilePayload = {
 	compressStreams?: boolean | null,
 	stripMetadata?: boolean | null,
 	grayscale?: boolean | null,
-	/**  `"jpeg"` (default) or `"ccitt-g4"` for near-bilevel scans. */
+	/**  `"ccitt-g4"` (default) or `"jpeg"` for near-bilevel scans. */
 	bilevelCodec?: string | null,
 	subsetFonts?: boolean | null,
 	/**  CMYK→RGB conversion for re-encoding (default on since 0.8.0). */
@@ -345,7 +345,7 @@ export type QuickProfilePayload = {
 	compressStreams?: boolean | null,
 	stripMetadata?: boolean | null,
 	grayscale?: boolean | null,
-	/**  `"jpeg"` (default) or `"ccitt-g4"` for near-bilevel scans. */
+	/**  `"ccitt-g4"` (default) or `"jpeg"` for near-bilevel scans. */
 	bilevelCodec?: string | null,
 	subsetFonts?: boolean | null,
 	/**  CMYK→RGB conversion for re-encoding (default on since 0.8.0). */

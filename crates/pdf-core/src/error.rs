@@ -8,7 +8,6 @@
 
 use std::{collections::BTreeMap, io, path::PathBuf};
 
-use image::ImageError;
 use serde::Serialize;
 use thiserror::Error;
 
@@ -35,9 +34,6 @@ pub enum AppError {
 
     #[error("The supplied password did not unlock the PDF")]
     WrongPassword,
-
-    #[error("Image processing failed: {0}")]
-    Image(#[from] ImageError),
 
     #[error("Filesystem operation failed: {0}")]
     Io(#[from] io::Error),
@@ -112,11 +108,6 @@ impl From<AppError> for AppErrorPayload {
                 code: "error.wrongPassword".to_string(),
                 values: BTreeMap::new(),
                 fallback: "The supplied password did not unlock the PDF.".to_string(),
-            },
-            AppError::Image(error) => Self {
-                code: "error.image".to_string(),
-                values: BTreeMap::from([("detail".to_string(), error.to_string())]),
-                fallback: format!("Image processing failed: {error}"),
             },
             AppError::Io(error) => Self {
                 code: "error.io".to_string(),
@@ -210,7 +201,7 @@ mod tests {
     /// `frontend/src/locales/{en,zh-CN}.ts` (pinned by locales.spec.ts).
     #[test]
     fn error_code_taxonomy_is_a_pinned_closed_set() {
-        let expectations: [(AppError, &str, &[&str]); 12] = [
+        let expectations: [(AppError, &str, &[&str]); 11] = [
             (
                 AppError::MissingInput(PathBuf::from("/missing.pdf")),
                 "error.missingInput",
@@ -232,14 +223,6 @@ mod tests {
             (AppError::Encrypted, "error.encryptedPdf", &[]),
             (AppError::PasswordRequired, "error.passwordRequired", &[]),
             (AppError::WrongPassword, "error.wrongPassword", &[]),
-            (
-                AppError::Image(ImageError::Decoding(image::error::DecodingError::new(
-                    image::error::ImageFormatHint::Unknown,
-                    io::Error::other("probe"),
-                ))),
-                "error.image",
-                &["detail"],
-            ),
             (
                 AppError::Io(io::Error::other("probe")),
                 "error.io",

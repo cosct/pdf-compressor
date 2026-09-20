@@ -257,7 +257,10 @@ fn resolve_indexed(document: &Document, value: &Object) -> Option<ImageColorSpac
             _ => return None,
         };
 
-    // Lookup: an inline string or a (possibly compressed) stream.
+    // Lookup: an inline string or a (possibly compressed) stream. The table
+    // needs at most 256 × base_channels bytes — anything inflating past this
+    // loose cap is not a palette.
+    const MAX_LOOKUP_BYTES: usize = 4 << 20;
     let lookup: Vec<u8> = match &items[3] {
         Object::String(bytes, _) => bytes.clone(),
         Object::Reference(lookup_id) => {
@@ -265,7 +268,7 @@ fn resolve_indexed(document: &Document, value: &Object) -> Option<ImageColorSpac
             let Object::Stream(lookup) = lookup_object else {
                 return None;
             };
-            lookup.get_plain_content().ok()?
+            lookup.get_plain_content_with_limit(MAX_LOOKUP_BYTES).ok()?
         }
         _ => return None,
     };
@@ -303,11 +306,10 @@ fn resolve_indexed(document: &Document, value: &Object) -> Option<ImageColorSpac
 #[cfg(feature = "cmyk-cms")]
 fn icc_profile_bytes(profile: &Stream) -> Option<Arc<Vec<u8>>> {
     const MAX_ICC_BYTES: usize = 4 << 20;
-    // A valid profile starts with a 128-byte header.
-    let bytes = profile.get_plain_content().ok()?;
-    (128..=MAX_ICC_BYTES)
-        .contains(&bytes.len())
-        .then(|| Arc::new(bytes))
+    // A valid profile starts with a 128-byte header; the limit on the
+    // decompression itself replaces the old post-hoc size check.
+    let bytes = profile.get_plain_content_with_limit(MAX_ICC_BYTES).ok()?;
+    (bytes.len() >= 128).then(|| Arc::new(bytes))
 }
 
 #[cfg(not(feature = "cmyk-cms"))]

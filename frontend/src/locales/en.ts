@@ -301,9 +301,6 @@ const en = {
     'error.wrongPassword': {
       body: 'The supplied password did not unlock this PDF.',
     },
-    'error.image': {
-      body: 'Image processing failed: {detail}',
-    },
     'error.io': {
       body: 'Filesystem operation failed: {detail}',
     },

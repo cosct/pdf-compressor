@@ -117,7 +117,9 @@ pub(super) struct ImageTask {
     /// stream dictionary alone describes the pixels.
     pub(super) color_space: Option<super::colorspace::ImageColorSpaceInfo>,
     /// `/JBIG2Globals` segment bytes for JBIG2 images; `None` otherwise.
-    pub(super) jbig2_globals: Option<Vec<u8>>,
+    /// Shared per source object — hundreds of images referencing one globals
+    /// stream must not each carry their own copy.
+    pub(super) jbig2_globals: Option<Arc<Vec<u8>>>,
     /// Cached stream byte length — avoids re-reading during scheduling.
     stream_size: usize,
 }
@@ -384,6 +386,8 @@ where
                 started_at,
                 &settings,
                 &mut stats,
+                cancel_flag,
+                task_id,
             )?,
             bytes: None,
         },
@@ -439,6 +443,7 @@ where
 /// Serialize the optimized document, compute result metrics, and assemble the
 /// response with the standard notices. Shared by the single-pass compressor
 /// and the target-size search materialization.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn save_and_build_response(
     document: &mut Document,
     output_path: &Path,
@@ -446,6 +451,8 @@ pub(crate) fn save_and_build_response(
     started_at: Instant,
     settings: &CompressionSettings,
     stats: &mut CompressionStats,
+    cancel_flag: &Arc<AtomicBool>,
+    task_id: &str,
 ) -> Result<CompressionResponse, AppError> {
     save_and_build_response_with_renumber(
         document,
@@ -455,6 +462,8 @@ pub(crate) fn save_and_build_response(
         settings,
         stats,
         true,
+        cancel_flag,
+        task_id,
     )
 }
 
@@ -471,7 +480,13 @@ pub(crate) fn save_and_build_response_with_renumber(
     settings: &CompressionSettings,
     stats: &mut CompressionStats,
     renumber_objects: bool,
+    cancel_flag: &Arc<AtomicBool>,
+    task_id: &str,
 ) -> Result<CompressionResponse, AppError> {
+    // Serialization can take a while on large documents — a cancellation
+    // that lands during it must not still write the output and report
+    // success. This is the last checkpoint before the atomic rename.
+    ensure_not_cancelled(cancel_flag, task_id)?;
     let (serialized, counters) = serialize_and_count(
         document,
         original_size_bytes,
@@ -505,7 +520,7 @@ pub(crate) fn save_and_build_response_with_renumber(
         return Ok(response);
     }
 
-    fs::write(output_path, &serialized)?;
+    write_output_atomically(output_path, &serialized)?;
 
     let saved_bytes = original_size_bytes.saturating_sub(compressed_size_bytes);
     let savings_percent = if original_size_bytes == 0 {
@@ -521,6 +536,61 @@ pub(crate) fn save_and_build_response_with_renumber(
         output_was_smaller: true,
         ..counters
     })
+}
+
+/// Write `bytes` to `output_path` through a same-directory temp file,
+/// fsync, and an atomic rename — the discipline the quick-profile writer
+/// already established. A mid-write ENOSPC/EIO/kill can never leave a
+/// truncated file under the final name: the claim placeholder is replaced
+/// only by a fully synced result, and a failed attempt cleans its temp.
+fn write_output_atomically(output_path: &Path, bytes: &[u8]) -> Result<(), AppError> {
+    use std::io::Write as _;
+
+    // create_new (O_EXCL): a predictable `.tmp` name created with truncation
+    // would let a same-named file (or a symlink an attacker planted in a
+    // writable output directory) be clobbered. The pid suffix makes
+    // collisions essentially impossible; the retry loop closes the rest.
+    let mut attempt = 0u32;
+    loop {
+        let suffix = if attempt == 0 {
+            format!("{}.tmp", std::process::id())
+        } else {
+            format!("{}.{}.tmp", std::process::id(), attempt)
+        };
+        let temp_path = output_path.with_extension(suffix);
+        let mut temp = match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+        {
+            Ok(temp) => temp,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                attempt += 1;
+                if attempt >= 4 {
+                    return Err(AppError::from(error));
+                }
+                continue;
+            }
+            Err(error) => return Err(AppError::from(error)),
+        };
+        let result = (|| -> Result<(), std::io::Error> {
+            temp.write_all(bytes)?;
+            temp.sync_all()?;
+            drop(temp);
+            // Atomic on Unix; Windows cannot always rename over an existing
+            // file, so fall back to remove-then-rename there.
+            if fs::rename(&temp_path, output_path).is_err() {
+                let _ = fs::remove_file(output_path);
+                fs::rename(&temp_path, output_path)?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            let _ = fs::remove_file(&temp_path);
+            return Err(AppError::from(error));
+        }
+        return Ok(());
+    }
 }
 
 /// Serialize the optimized document and assemble the notice stack and
@@ -754,7 +824,7 @@ pub(crate) struct DocumentPreparation {
     /// indexed palettes, resolved name aliases).
     pub color_space_by_image: HashMap<ObjectId, super::colorspace::ImageColorSpaceInfo>,
     /// `/JBIG2Globals` segment bytes per image (shared symbol dictionaries).
-    pub jbig2_globals_by_image: HashMap<ObjectId, Vec<u8>>,
+    pub jbig2_globals_by_image: HashMap<ObjectId, Arc<Vec<u8>>>,
 }
 
 /// Shared preparation pass used by both compression entry points: lossless
@@ -913,8 +983,8 @@ where
     // parameters); the stream-dictionary top level is kept as a fallback
     // for nonstandard producers. Multiple images typically share one
     // globals object, so the bytes decompress once per object. ---
-    let mut jbig2_globals_by_image: HashMap<ObjectId, Vec<u8>> = HashMap::new();
-    let mut globals_bytes_by_object: HashMap<ObjectId, std::sync::Arc<Vec<u8>>> = HashMap::new();
+    let mut jbig2_globals_by_image: HashMap<ObjectId, Arc<Vec<u8>>> = HashMap::new();
+    let mut globals_bytes_by_object: HashMap<ObjectId, Arc<Vec<u8>>> = HashMap::new();
     for &image_id in &image_object_ids {
         let Some(Object::Stream(stream)) = document.objects.get(&image_id) else {
             continue;
@@ -938,9 +1008,9 @@ where
                 let Some(Object::Stream(globals)) = document.objects.get(&globals_id) else {
                     continue;
                 };
-                match globals.get_plain_content() {
+                match globals.get_plain_content_with_limit(super::MAX_JBIG2_GLOBALS_BYTES) {
                     Ok(bytes) => {
-                        let bytes = std::sync::Arc::new(bytes);
+                        let bytes = Arc::new(bytes);
                         globals_bytes_by_object.insert(globals_id, bytes.clone());
                         bytes
                     }
@@ -948,7 +1018,9 @@ where
                 }
             }
         };
-        jbig2_globals_by_image.insert(image_id, (*bytes).clone());
+        // Arc, not a byte copy: one shared globals object fans out to every
+        // referencing image without duplicating its bytes per image.
+        jbig2_globals_by_image.insert(image_id, bytes);
     }
 
     Ok(DocumentPreparation {
@@ -1173,6 +1245,30 @@ fn dedupe_identical_streams(document: &mut Document) -> (u32, u32) {
 // Image stream batch optimization
 // ---------------------------------------------------------------------------
 
+/// Run one image optimization, converting a decoder panic into a per-image
+/// skip. The decoders face hostile input; a panic in one image must leave
+/// that image untouched (the skip path restores the originals) instead of
+/// taking down the whole task or process.
+fn optimization_or_panic(
+    optimize: impl FnOnce() -> Result<ImageOptimization, AppError>,
+) -> Result<ImageOptimization, AppError> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(optimize)) {
+        Ok(result) => result,
+        Err(payload) => {
+            let reason = if let Some(message) = payload.downcast_ref::<&str>() {
+                (*message).to_string()
+            } else if let Some(message) = payload.downcast_ref::<String>() {
+                message.clone()
+            } else {
+                "unknown panic".to_string()
+            };
+            Ok(ImageOptimization::Skipped {
+                reason: format!("image decoder panicked ({reason}); image left untouched"),
+            })
+        }
+    }
+}
+
 /// Extract image streams from the document, optimize them (possibly in
 /// parallel), and write the results back.
 fn optimize_image_streams<F>(
@@ -1223,17 +1319,19 @@ where
                 jbig2_globals,
                 ..
             } = task;
-            let optimization = optimize_image_stream(
-                &stream,
-                smask.as_ref().map(|(_, smask)| smask),
-                settings,
-                runtime.cancel_flag,
-                runtime.task_id,
-                skip_policy,
-                None,
-                color_space.as_ref(),
-                jbig2_globals.as_deref(),
-            )?;
+            let optimization = optimization_or_panic(|| {
+                optimize_image_stream(
+                    &stream,
+                    smask.as_ref().map(|(_, smask)| smask),
+                    settings,
+                    runtime.cancel_flag,
+                    runtime.task_id,
+                    skip_policy,
+                    None,
+                    color_space.as_ref(),
+                    jbig2_globals.as_deref().map(Vec::as_slice),
+                )
+            })?;
             apply_image_optimization(document, object_id, stream, smask, optimization, stats);
             report_progress_if_needed(
                 report_progress,
@@ -1264,17 +1362,19 @@ where
                 jbig2_globals,
                 ..
             } = task;
-            let result = optimize_image_stream(
-                &stream,
-                smask.as_ref().map(|(_, smask)| smask),
-                settings,
-                runtime.cancel_flag,
-                runtime.task_id,
-                skip_policy,
-                None,
-                color_space.as_ref(),
-                jbig2_globals.as_deref(),
-            );
+            let result = optimization_or_panic(|| {
+                optimize_image_stream(
+                    &stream,
+                    smask.as_ref().map(|(_, smask)| smask),
+                    settings,
+                    runtime.cancel_flag,
+                    runtime.task_id,
+                    skip_policy,
+                    None,
+                    color_space.as_ref(),
+                    jbig2_globals.as_deref().map(Vec::as_slice),
+                )
+            });
             // The borrowed originals travel back with the outcome so
             // the main thread can restore them on skip.
             ImageTaskOutcome {
@@ -1324,7 +1424,7 @@ pub(super) fn take_image_tasks(
     image_object_ids: &[ObjectId],
     shared_smask_ids: &HashSet<ObjectId>,
     color_spaces: &HashMap<ObjectId, super::colorspace::ImageColorSpaceInfo>,
-    jbig2_globals: &HashMap<ObjectId, Vec<u8>>,
+    jbig2_globals: &HashMap<ObjectId, Arc<Vec<u8>>>,
 ) -> Vec<ImageTask> {
     let mut tasks = Vec::with_capacity(image_object_ids.len());
 
@@ -1521,7 +1621,18 @@ fn compress_non_image_streams(
             }
             handles
                 .into_iter()
-                .map(|handle| handle.join().unwrap_or(0))
+                .map(|handle| match handle.join() {
+                    Ok(compressed) => compressed,
+                    Err(_) => {
+                        // The chunk's streams stay uncompressed (restored
+                        // below) — but the panic must not be silent.
+                        eprintln!(
+                            "pdf-core: a stream-compression worker panicked; \
+                             its streams stay as-is"
+                        );
+                        0
+                    }
+                })
                 .sum()
         })
     };
@@ -1736,6 +1847,22 @@ impl Drop for OutputClaimGuard {
                 let _ = fs::remove_file(&self.0);
             }
         }
+        // A hard kill between temp creation and rename can strand a
+        // `<output>.<pid>.tmp` sibling; nothing else owns that name.
+        if let Some(residue) = self.0.file_name().and_then(|name| name.to_str()) {
+            if let Ok(entries) = fs::read_dir(self.0.parent().unwrap_or(Path::new("."))) {
+                let prefix = format!("{residue}.");
+                for entry in entries.flatten() {
+                    let file_name = entry.file_name();
+                    let Some(file_name) = file_name.to_str() else {
+                        continue;
+                    };
+                    if file_name.starts_with(&prefix) && file_name.ends_with(".tmp") {
+                        let _ = fs::remove_file(entry.path());
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1806,6 +1933,74 @@ pub(crate) fn build_output_path(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn atomic_write_refuses_to_clobber_an_existing_temp_name() {
+        // The temp name is predictable (`<output>.<pid>.tmp`); create_new
+        // must refuse a same-named file (or symlink) instead of truncating
+        // it, retry under a suffixed name, and still land the output.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let output = dir.path().join("out.pdf");
+        let sentinel = dir
+            .path()
+            .join(format!("out.pdf.{}.tmp", std::process::id()));
+        std::fs::write(&sentinel, b"SENTINEL").expect("seed sentinel");
+
+        write_output_atomically(&output, b"NEW CONTENT").expect("atomic write succeeds");
+
+        assert_eq!(
+            std::fs::read(&output).expect("output exists"),
+            b"NEW CONTENT",
+            "the output must carry the written bytes"
+        );
+        assert_eq!(
+            std::fs::read(&sentinel).expect("sentinel survives"),
+            b"SENTINEL",
+            "a pre-existing same-named temp file must never be truncated"
+        );
+    }
+
+    #[test]
+    fn claim_guard_sweeps_stranded_temp_siblings() {
+        // A hard kill between temp creation and rename strands
+        // `<output>.<pid>.tmp` files; the guard's Drop must sweep exactly
+        // those and leave unrelated files (and a non-empty output) alone.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let output = dir.path().join("out.pdf");
+        std::fs::write(&output, b"real output").expect("seed output");
+        let mine = format!("out.pdf.{}", std::process::id());
+        std::fs::write(dir.path().join(format!("{mine}.tmp")), b"x").expect("residue 1");
+        std::fs::write(dir.path().join(format!("{mine}.2.tmp")), b"x").expect("residue 2");
+        let unrelated_tmp = dir.path().join("other.pdf.999.tmp");
+        std::fs::write(&unrelated_tmp, b"x").expect("unrelated");
+        let lookalike = dir.path().join("out.pdf.txt");
+        std::fs::write(&lookalike, b"x").expect("lookalike");
+
+        drop(OutputClaimGuard(output.clone()));
+
+        assert!(output.exists(), "a non-empty output must survive");
+        assert!(
+            !dir.path().join(format!("{mine}.tmp")).exists()
+                && !dir.path().join(format!("{mine}.2.tmp")).exists(),
+            "this output's stranded temps must be swept"
+        );
+        assert!(
+            unrelated_tmp.exists() && lookalike.exists(),
+            "unrelated and non-.tmp files must not be touched"
+        );
+    }
+
+    #[test]
+    fn claim_guard_removes_an_empty_claim_placeholder() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let output = dir.path().join("claim.pdf");
+        std::fs::write(&output, b"").expect("seed empty claim");
+        drop(OutputClaimGuard(output.clone()));
+        assert!(
+            !output.exists(),
+            "an unclaimed 0-byte placeholder is removed"
+        );
+    }
 
     #[test]
     fn worker_count_stays_serial_below_parallel_threshold() {

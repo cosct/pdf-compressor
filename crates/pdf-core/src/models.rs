@@ -72,8 +72,8 @@ pub struct CompressionSettingsPayload {
     /// Re-encode color images as grayscale (best for black-and-white scans).
     #[serde(default)]
     pub grayscale: Option<bool>,
-    /// Output codec for near-bilevel scanned images: `"jpeg"` (default) or
-    /// `"ccitt-g4"` (lossless ITU T.6, best for text scans).
+    /// Output codec for near-bilevel scanned images: `"ccitt-g4"` (default,
+    /// lossless ITU T.6, best for text scans) or `"jpeg"`.
     #[serde(default)]
     pub bilevel_codec: Option<String>,
     /// Shrink embedded Type0/CIDFontType2 TrueType fonts to the used glyphs.
@@ -140,8 +140,8 @@ pub struct CompressScannedPdfRequest {
     #[serde(default)]
     pub max_image_size_percent: Option<u16>,
     pub grayscale: Option<bool>,
-    /// Output codec for near-bilevel scanned images: `"jpeg"` (default) or
-    /// `"ccitt-g4"`.
+    /// Output codec for near-bilevel scanned images: `"ccitt-g4"` (default)
+    /// or `"jpeg"`.
     #[serde(default)]
     pub bilevel_codec: Option<String>,
     pub strip_metadata: Option<bool>,
@@ -167,7 +167,7 @@ pub struct PresetProfilePayload {
     pub strip_metadata: Option<bool>,
     #[serde(default)]
     pub grayscale: Option<bool>,
-    /// `"jpeg"` (default) or `"ccitt-g4"` for near-bilevel scans.
+    /// `"ccitt-g4"` (default) or `"jpeg"` for near-bilevel scans.
     #[serde(default)]
     pub bilevel_codec: Option<String>,
     #[serde(default)]
@@ -242,7 +242,7 @@ pub struct QuickProfilePayload {
     pub strip_metadata: Option<bool>,
     #[serde(default)]
     pub grayscale: Option<bool>,
-    /// `"jpeg"` (default) or `"ccitt-g4"` for near-bilevel scans.
+    /// `"ccitt-g4"` (default) or `"jpeg"` for near-bilevel scans.
     #[serde(default)]
     pub bilevel_codec: Option<String>,
     #[serde(default)]

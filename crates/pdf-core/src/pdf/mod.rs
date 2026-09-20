@@ -35,9 +35,30 @@ use std::sync::{
     Arc,
 };
 
-use lopdf::{Document, Object, Stream};
+use lopdf::{Document, Object, ObjectId, Stream};
 
 use crate::error::AppError;
+
+/// Ceiling for any single stream's decompressed output while the document is
+/// loading (object and xref streams decode eagerly, before any engine code
+/// runs). Bounds the classic "tiny flate stream, huge expansion" bomb at the
+/// loader; per-consumer sites apply tighter `*_with_limit` caps on top.
+pub(crate) const MAX_LOAD_DECOMPRESSED_BYTES: usize = 512 * 1024 * 1024;
+
+/// Ceiling on total pixels a single image decode may allocate before it runs
+/// (100 megapixels ≈ 100 MB luma / 300 MB RGB). Per-edge caps alone bound the
+/// axes, not the product — 65535 × 65535 would otherwise request a 4.29 GB
+/// plane from a stream a few bytes long.
+pub(crate) const MAX_DECODE_PIXELS: u64 = 100_000_000;
+
+/// Bomb cap for one page's (or form's) concatenated content streams. Real
+/// page content is KB-to-low-MB scale; anything inflating past this is not
+/// legitimate drawing instructions.
+pub(crate) const MAX_CONTENT_STREAM_BYTES: usize = 64 << 20;
+
+/// Bomb cap for one `/JBIG2Globals` segment stream (shared symbol
+/// dictionaries are KB-to-MB scale in real scans).
+pub(crate) const MAX_JBIG2_GLOBALS_BYTES: usize = 64 << 20;
 
 /// Cooperative cancellation check — shared by the analyzer, the compressor,
 /// the image codec, and the worker pools.
@@ -84,10 +105,7 @@ pub(crate) fn load_document(
     password: Option<&str>,
 ) -> Result<Document, AppError> {
     let password = password.filter(|value| !value.is_empty());
-    let loaded = match &password {
-        Some(password) => Document::load_with_password(input_path, password),
-        None => Document::load(input_path),
-    };
+    let loaded = Document::load_with_options(input_path, load_options(password));
     classify_document_load(loaded)
 }
 
@@ -98,13 +116,46 @@ pub(crate) fn load_document_mem(
     password: Option<&str>,
 ) -> Result<Document, AppError> {
     let password = password.filter(|value| !value.is_empty());
-    let loaded = match &password {
-        Some(password) => {
-            Document::load_mem_with_options(bytes, lopdf::LoadOptions::with_password(password))
-        }
-        None => Document::load_mem(bytes),
-    };
+    let loaded = Document::load_mem_with_options(bytes, load_options(password));
     classify_document_load(loaded)
+}
+
+/// Loader options shared by both entry points: open password when given, and
+/// the decompression-bomb ceiling on eagerly decoded object/xref streams.
+fn load_options(password: Option<&str>) -> lopdf::LoadOptions {
+    lopdf::LoadOptions {
+        password: password.map(str::to_string),
+        max_decompressed_size: Some(MAX_LOAD_DECOMPRESSED_BYTES),
+        ..Default::default()
+    }
+}
+
+/// Whether declared image dimensions pass the shared decode budget: both
+/// edges in `1..=65535` (the JPEG re-encoder's format limit) and the pixel
+/// product under [`MAX_DECODE_PIXELS`]. Every image decoder gates on this
+/// before allocating; `None` means the shape must not be decoded.
+pub(crate) fn image_dims_within_budget(width: i64, height: i64) -> Option<(u32, u32)> {
+    if !(1..=65_535).contains(&width) || !(1..=65_535).contains(&height) {
+        return None;
+    }
+    let pixels = (width as u64) * (height as u64);
+    if pixels > MAX_DECODE_PIXELS {
+        return None;
+    }
+    Some((width as u32, height as u32))
+}
+
+/// Bomb-safe twin of `Document::get_and_decode_page_content`: the page's
+/// concatenated content streams decode against `limit` before the operation
+/// parser runs. `None` (missing stream, over the limit, unparsable) means
+/// callers skip that page, matching the unbounded version's error handling.
+pub(crate) fn decoded_page_content_with_limit(
+    document: &Document,
+    page_id: ObjectId,
+    limit: usize,
+) -> Option<lopdf::content::Content> {
+    let bytes = document.get_page_content_with_limit(page_id, limit).ok()?;
+    lopdf::content::Content::decode(&bytes).ok()
 }
 
 /// Map a lopdf load result onto the engine's error taxonomy. lopdf fails the
@@ -139,11 +190,19 @@ pub(crate) fn ensure_not_encrypted(
 ) -> Result<bool, AppError> {
     if document.trailer.has(b"Encrypt") {
         if document.get_pages().is_empty() {
-            return Err(if password_attempted {
-                // A password was tried and the object graph still did not
-                // parse: either the password is wrong or the handler is
-                // unsupported DRM. Report the actionable case; DRM files are
-                // rare enough that a wrong-password message is still honest.
+            // A password was tried and the object graph still did not parse.
+            // Distinguish what a password can and cannot fix: a non-standard
+            // security handler (EBX and friends) rejects every password by
+            // design, and reporting "wrong password" there sends the user
+            // into a retry loop no password can satisfy.
+            let drm_handler = document
+                .get_encrypted()
+                .ok()
+                .and_then(|encrypt| encrypt.get(b"Filter").ok())
+                .is_some_and(|filter| !matches!(filter, Object::Name(name) if name.as_slice() == b"Standard"));
+            return Err(if drm_handler {
+                AppError::Encrypted
+            } else if password_attempted {
                 AppError::WrongPassword
             } else {
                 AppError::PasswordRequired

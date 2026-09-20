@@ -46,10 +46,10 @@ pub(super) fn jbig2_input_shape(stream: &Stream) -> Option<Jbig2InputShape> {
     let width = optional_integer(stream, b"Width")?;
     let height = optional_integer(stream, b"Height")?;
     // Never let hostile dimensions reach the decoded-plane allocation: a
-    // negative i64 would wrap to a huge value at the `as u32` cast.
-    if !(1..=65_535).contains(&width) || !(1..=65_535).contains(&height) {
-        return None;
-    }
+    // negative i64 would wrap to a huge value at the `as u32` cast, and the
+    // per-edge ceiling alone does not bound the pixel product (the sink
+    // allocates width × height up front).
+    let (width, height) = super::image_dims_within_budget(width, height)?;
     if let Ok(parms) = stream.dict.get(b"DecodeParms") {
         let Object::Dictionary(parms) = &parms else {
             return None;
@@ -66,10 +66,7 @@ pub(super) fn jbig2_input_shape(stream: &Stream) -> Option<Jbig2InputShape> {
     if stream.dict.get(b"Decode").is_ok() {
         return None;
     }
-    Some(Jbig2InputShape {
-        width: width as u32,
-        height: height as u32,
-    })
+    Some(Jbig2InputShape { width, height })
 }
 
 /// Push-based decode sink: assembles the decoded bilevel plane as an 8-bit
@@ -221,6 +218,9 @@ mod tests {
         let (width, height) = crate::testutil::jbig2_scan_dimensions();
         assert!(jbig2_input_shape(&jbig2_stream(JBIG2_SCAN, 0, i64::from(height))).is_none());
         assert!(jbig2_input_shape(&jbig2_stream(JBIG2_SCAN, 65_536, i64::from(height))).is_none());
+        // Each edge passes its cap; the 4.29 Gpx product must not (the sink
+        // allocates width × height up front).
+        assert!(jbig2_input_shape(&jbig2_stream(JBIG2_SCAN, 65_535, 65_535)).is_none());
         let mut with_parms = jbig2_stream(JBIG2_SCAN, i64::from(width), i64::from(height));
         with_parms
             .dict

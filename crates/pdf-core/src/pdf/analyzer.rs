@@ -784,9 +784,7 @@ fn resolve_dictionary_object<'a>(
 }
 
 fn page_has_text_showing_operations(document: &Document, page_id: ObjectId) -> bool {
-    document
-        .get_and_decode_page_content(page_id)
-        .ok()
+    super::decoded_page_content_with_limit(document, page_id, super::MAX_CONTENT_STREAM_BYTES)
         .is_some_and(|content| {
             content
                 .operations
