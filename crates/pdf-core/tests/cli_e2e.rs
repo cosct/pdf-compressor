@@ -514,3 +514,36 @@ fn quick_dedupes_overlapping_directory_and_file_arguments() {
         .expect("results array");
     assert_eq!(results.len(), 1, "each PDF is compressed exactly once");
 }
+
+#[test]
+fn quick_partial_failure_exits_nonzero_but_still_reports_successes() {
+    // 0.11.0 behavior change: any failed input makes the exit nonzero — a
+    // partial success used to exit 0, hiding per-file failures from scripts.
+    // The successes still compress and the summary still carries both sides.
+    let work = scratch_dir("quick-partial");
+    write_fixture_pdf(&work, "good.pdf");
+    std::fs::write(work.join("broken.pdf"), b"%PDF-1.4 garbage bytes").expect("write broken");
+
+    let mut command = cli();
+    let output = run(command.arg("quick").arg(&work).arg("--no-notify"));
+
+    assert!(
+        !output.status.success(),
+        "one failed input must exit nonzero even alongside a success"
+    );
+    let summary = json(&output.stdout);
+    assert_eq!(
+        summary.get("filesFailed").and_then(|value| value.as_u64()),
+        Some(1),
+        "the broken PDF is counted as failed"
+    );
+    let succeeded = summary
+        .get("filesCompressed")
+        .and_then(|value| value.as_u64())
+        .expect("filesCompressed")
+        + summary
+            .get("filesNotSmaller")
+            .and_then(|value| value.as_u64())
+            .expect("filesNotSmaller");
+    assert_eq!(succeeded, 1, "the good PDF still produced its result");
+}

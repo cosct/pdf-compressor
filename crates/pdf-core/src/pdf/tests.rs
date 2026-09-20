@@ -381,8 +381,14 @@ fn analyze_reports_expected_signals() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = fresh_fixture(dir.path());
 
-    let response = analyze_pdf_with_progress(path.to_str().unwrap(), None, None, |_| {})
-        .expect("analysis must succeed");
+    let response = analyze_pdf_with_progress(
+        path.to_str().unwrap(),
+        None,
+        None,
+        &noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("analysis must succeed");
 
     assert_eq!(response.page_count, 1);
     assert_eq!(response.image_object_count, 1);
@@ -428,9 +434,14 @@ fn encrypted_document_without_password_reports_password_required() {
 
     for label in ["analyze", "compress", "target-size"] {
         let result = match label {
-            "analyze" => {
-                analyze_pdf_with_progress(path.to_str().unwrap(), None, None, |_| {}).map(|_| ())
-            }
+            "analyze" => analyze_pdf_with_progress(
+                path.to_str().unwrap(),
+                None,
+                None,
+                &noop_cancel_flag(),
+                |_| {},
+            )
+            .map(|_| ()),
             "compress" => compress_pdf_with_progress(
                 path.to_str().unwrap(),
                 None,
@@ -535,9 +546,14 @@ fn encrypted_document_with_password_compresses_to_plain_output() {
     .expect("target-size search must honor the password");
     assert!(target.compressed_size_bytes > 0.0);
 
-    let analysis =
-        analyze_pdf_with_progress(path.to_str().unwrap(), Some("open-secret"), None, |_| {})
-            .expect("analysis must honor the password");
+    let analysis = analyze_pdf_with_progress(
+        path.to_str().unwrap(),
+        Some("open-secret"),
+        None,
+        &noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("analysis must honor the password");
     assert_eq!(analysis.page_count, 1);
 }
 
@@ -548,8 +564,14 @@ fn owner_password_only_document_unlocks_and_compresses() {
     // Empty user password (owner-password-only): readable without a password.
     encrypt_fixture(&path, "owner-secret", "");
 
-    let analysis = analyze_pdf_with_progress(path.to_str().unwrap(), None, None, |_| {})
-        .expect("owner-password-only PDF must analyze");
+    let analysis = analyze_pdf_with_progress(
+        path.to_str().unwrap(),
+        None,
+        None,
+        &noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("owner-password-only PDF must analyze");
     assert_eq!(analysis.page_count, 1);
     assert!(analysis
         .notices
@@ -5089,8 +5111,14 @@ fn analysis_estimate_excludes_undecodable_codecs() {
     }
     document.save(&path).expect("save relabeled fixture");
 
-    let analysis = analyze_pdf_with_progress(path.to_str().unwrap(), None, None, |_| {})
-        .expect("analysis must succeed");
+    let analysis = analyze_pdf_with_progress(
+        path.to_str().unwrap(),
+        None,
+        None,
+        &noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("analysis must succeed");
     assert!(analysis
         .notices
         .iter()
@@ -5113,12 +5141,19 @@ fn analysis_with_settings_context_follows_the_caller_toggles() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = fresh_fixture(dir.path());
 
-    let plain = analyze_pdf_with_progress(path.to_str().unwrap(), None, None, |_| {})
-        .expect("context-free analysis");
+    let plain = analyze_pdf_with_progress(
+        path.to_str().unwrap(),
+        None,
+        None,
+        &noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("context-free analysis");
     let conservative = analyze_pdf_with_progress(
         path.to_str().unwrap(),
         None,
         Some(&balanced_settings()),
+        &noop_cancel_flag(),
         |_| {},
     )
     .expect("settings-aware analysis");
@@ -6467,13 +6502,39 @@ fn review_wrong_password_analysis_keeps_retry_error_code() {
     doc.encrypt(&state).unwrap();
     doc.save(&input).unwrap();
 
-    let error = analyze_pdf_with_progress(input.to_str().unwrap(), Some("wrong"), None, |_| {})
-        .unwrap_err();
+    let error = analyze_pdf_with_progress(
+        input.to_str().unwrap(),
+        Some("wrong"),
+        None,
+        &noop_cancel_flag(),
+        |_| {},
+    )
+    .unwrap_err();
     let payload = crate::AppErrorPayload::from(error);
     assert_eq!(
         payload.code, "error.wrongPassword",
         "the password prompt only retries password-specific codes"
     );
+}
+
+#[test]
+fn analysis_is_cancellable() {
+    // The cancel flag is checked at entry and inside the page/object scan
+    // loops: a pre-set flag aborts before any decoding work, and the error
+    // is the shared cancellation taxonomy (not a generic failure).
+    let dir = tempfile::tempdir().expect("tempdir");
+    let jpeg = encode_jpeg(fixture_rgb_image(1600, 1200), 95);
+    let path = write_fixture(
+        dir.path(),
+        "cancel-analysis.pdf",
+        &build_pdf_bytes(jpeg, 1600, 1200),
+    );
+
+    let cancelled = Arc::new(AtomicBool::new(true));
+    let error = analyze_pdf_with_progress(path.to_str().unwrap(), None, None, &cancelled, |_| {})
+        .expect_err("a cancelled analysis must error");
+    let payload = crate::AppErrorPayload::from(error);
+    assert_eq!(payload.code, "error.cancelled");
 }
 
 /// 4-bit indexed rows of odd width end with a padding nibble that is not a

@@ -593,7 +593,8 @@ README/用户指南通俗化）；**0.9.0（工程深水区 + 诚实性：e2e �
   `jpx` 会静默放弃一类扫描件的压缩（失败模式为保持原样，安全）。**解锁
   条件**：openjpeg-sys 发布 vendored ≥2.5.4 的版本即升级（例行
   `cargo update -p openjpeg-sys` + 全门禁回归）；若期间出现利用报告，
-  临时关闭 release/AUR 的 `jpx` feature。
+  临时关闭 release/AUR 的 `jpx` feature。复查记录：2026-09-20 复查一次，
+  index 最高仍为 1.0.12（vendored 2.5.3），上游未发修复版——维持追踪。
 
 ### 1.0 计划（成熟度声明，2026-09-16 评估；0.10.0 已于当日发布）
 

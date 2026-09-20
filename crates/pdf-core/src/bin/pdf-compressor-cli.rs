@@ -751,11 +751,15 @@ fn run(args: &[String]) -> Result<RunOutput, AppError> {
         .clone();
 
     match command.as_str() {
-        "analyze" => {
-            analyze_pdf_with_progress(&input, password_arg(rest)?.as_deref(), None, |_| {})
-                .map(|response| serde_json::to_string_pretty(&response).expect("serializable"))
-                .map(RunOutput::Text)
-        }
+        "analyze" => analyze_pdf_with_progress(
+            &input,
+            password_arg(rest)?.as_deref(),
+            None,
+            &Arc::new(AtomicBool::new(false)),
+            |_| {},
+        )
+        .map(|response| serde_json::to_string_pretty(&response).expect("serializable"))
+        .map(RunOutput::Text),
         "compress" => {
             if rest.iter().any(|arg| arg == "--stdout") {
                 return run_stdout_compress(rest, &input);
@@ -912,9 +916,10 @@ fn main() -> ExitCode {
             Ok(summary) => {
                 let printed = serde_json::to_string_pretty(&summary).expect("serializable");
                 print_line(&printed);
-                if summary.files_failed > 0
-                    && summary.files_compressed + summary.files_not_smaller == 0
-                {
+                // Any failed input is a nonzero exit (0.11.0 behavior
+                // change, see CHANGELOG): partial success used to exit 0,
+                // hiding per-file failures from scripts and CI.
+                if summary.files_failed > 0 {
                     ExitCode::FAILURE
                 } else {
                     ExitCode::SUCCESS

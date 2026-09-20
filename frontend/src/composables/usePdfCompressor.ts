@@ -256,6 +256,9 @@ export function usePdfCompressor() {
   let currentCompressionRunId: number | null = null
   let analysisQueuePromise: Promise<void> | null = null
   const activeCompressionTaskIds = new Map<string, string>()
+  // Analysis runs register backend task ids too (0.11.0): the cancel button
+  // must work while a large document is still being scanned.
+  const activeAnalysisTaskIds = new Set<string>()
   const cancelledCompressionRuns = new Set<number>()
 
   const selectedJob = computed(
@@ -292,7 +295,9 @@ export function usePdfCompressor() {
       !compressionRunning.value &&
       (allCompressionTargetIds.value.length > 0 || selectedCompressionTargetIds.value.length > 0),
   )
-  const canCancelCompression = computed(() => compressionRunning.value)
+  // Visible while either phase runs: analysis registers backend task ids
+  // too (0.11.0), so the same button cancels a slow analysis pass.
+  const canCancelCompression = computed(() => compressionRunning.value || analysisRunning.value)
   // The selected job is blocked on a password — drives the retry prompt.
   const selectedJobNeedsPassword = computed(
     () => selectedJob.value !== null && isPasswordError(selectedJob.value.error),
@@ -513,6 +518,12 @@ export function usePdfCompressor() {
     analysisQueuePromise = (async () => {
       try {
         while (analysisQueue.value.length) {
+          if (cancellationRequested.value) {
+            // A cancelled run stops draining: queued analyses stay queued
+            // (their jobs read "selected") instead of firing one by one.
+            analysisQueue.value = []
+            break
+          }
           const nextJobId = analysisQueue.value.shift()
           if (!nextJobId) {
             continue
@@ -540,10 +551,13 @@ export function usePdfCompressor() {
     job.result = null
     applyProgress(job, { phase: 'analyzing', percent: 0 })
 
+    const analysisTaskId = `${job.id}::analysis`
+    activeAnalysisTaskIds.add(analysisTaskId)
     try {
       const response = await analyzePdf(
         requestedPath,
         job.password,
+        analysisTaskId,
         (update) => {
           if (job.sourcePath === requestedPath) {
             applyProgress(job, update)
@@ -569,10 +583,21 @@ export function usePdfCompressor() {
         return
       }
 
+      if (isCancellationError(error)) {
+        // A cancelled analysis is not a failure: back to the selected state,
+        // ready for a fresh attempt.
+        job.error = null
+        job.progress = { phase: 'queued', percent: 0 }
+        setJobStatus(job, 'selected')
+        return
+      }
+
       job.error = normalizeError(error)
       pushErrorToast(job.error)
       job.progress = { phase: 'error', percent: 0 }
       setJobStatus(job, 'error')
+    } finally {
+      activeAnalysisTaskIds.delete(analysisTaskId)
     }
   }
 
@@ -759,7 +784,7 @@ export function usePdfCompressor() {
   }
 
   async function cancelCompressionRun() {
-    if (!compressionRunning.value || cancelInFlight.value) {
+    if ((!compressionRunning.value && !analysisRunning.value) || cancelInFlight.value) {
       return
     }
 
@@ -769,10 +794,16 @@ export function usePdfCompressor() {
       cancelledCompressionRuns.add(currentCompressionRunId)
     }
 
-    const activeIds = [...activeCompressionTaskIds.values()]
+    const activeIds = [
+      ...[...activeAnalysisTaskIds].map((taskId) => ({ taskId, kind: 'analysis' as const })),
+      ...[...activeCompressionTaskIds.values()].map((taskId) => ({
+        taskId,
+        kind: 'compression' as const,
+      })),
+    ]
 
     for (const job of jobs.value) {
-      if (job.status === 'compressing') {
+      if (job.status === 'compressing' || job.status === 'analyzing') {
         job.error = null
         job.result = null
         job.progress = { phase: 'queued', percent: 0 }
@@ -791,7 +822,7 @@ export function usePdfCompressor() {
     compressionRunning.value = false
     currentCompressionRunId = null
     activeCompressionTaskIds.clear()
-    await Promise.allSettled(activeIds.map((taskId) => cancelCompression(taskId)))
+    await Promise.allSettled(activeIds.map(({ taskId }) => cancelCompression(taskId)))
     // Reset only after the backend tasks settled: the old run's workers key
     // their exit off cancelledCompressionRuns (cleared by its own finally),
     // so this reset can no longer disarm them mid-flight.

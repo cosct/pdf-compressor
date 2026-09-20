@@ -76,6 +76,7 @@ function createProgressChannel(onProgress?: (update: ProgressUpdate) => void) {
 export async function analyzePdf(
   path: string,
   password: string | null | undefined,
+  taskId: string,
   onProgress?: (update: ProgressUpdate) => void,
   settings?: CompressionSettings | null,
 ): Promise<AnalysisResponseWire> {
@@ -99,7 +100,9 @@ export async function analyzePdf(
         outputDir: null,
       }
     : null
-  return unwrap(commands.analyzePdf(path, path, password ?? null, settingsPayload, channel))
+  // The task id registers the run with the backend registry so the cancel
+  // button also works while a large document is still being scanned.
+  return unwrap(commands.analyzePdf(taskId, path, path, password ?? null, settingsPayload, channel))
 }
 
 export async function compressPdf(

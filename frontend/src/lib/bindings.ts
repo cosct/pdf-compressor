@@ -22,7 +22,7 @@ export const commands = {
 	 *  artifacts ship all features; only source builds differ.
 	 */
 	buildFeatures: () => typedError<BuildFeatures, AppErrorPayload>(__TAURI_INVOKE("build_features")),
-	analyzePdf: (path: string | null, inputPath: string | null, password: string | null, settings: {
+	analyzePdf: (taskId: string, path: string | null, inputPath: string | null, password: string | null, settings: {
 	preset: string | null,
 	imageQuality: number | null,
 	/**
@@ -56,7 +56,7 @@ export const commands = {
 	 */
 	cmykConversion?: boolean | null,
 	outputDir: string | null,
-} | null, onProgress: Channel<ProgressUpdate>) => typedError<AnalysisResponse, AppErrorPayload>(__TAURI_INVOKE("analyze_pdf", { path, inputPath, password, settings, onProgress })),
+} | null, onProgress: Channel<ProgressUpdate>) => typedError<AnalysisResponse, AppErrorPayload>(__TAURI_INVOKE("analyze_pdf", { taskId, path, inputPath, password, settings, onProgress })),
 	compressPdf: (request: CompressPdfRequest, onProgress: Channel<ProgressUpdate>) => typedError<CompressionResponse, AppErrorPayload>(__TAURI_INVOKE("compress_pdf", { request, onProgress })),
 	compressScannedPdf: (request: CompressScannedPdfRequest_Deserialize, onProgress: Channel<ProgressUpdate>) => typedError<CompressionResponse, AppErrorPayload>(__TAURI_INVOKE("compress_scanned_pdf", { request, onProgress })),
 	cancelCompression: (taskId: string) => typedError<null, AppErrorPayload>(__TAURI_INVOKE("cancel_compression", { taskId })),

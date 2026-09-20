@@ -304,11 +304,21 @@ pub fn load_preset_user_config() -> Result<PresetUserConfigPayload, AppErrorPayl
 
 #[tauri::command]
 #[specta::specta]
-pub fn save_preset_user_config(
+pub async fn save_preset_user_config(
     config: PresetUserConfigPayload,
 ) -> Result<PresetUserConfigPayload, AppErrorPayload> {
-    write_preset_user_config(&config).map_err(AppErrorPayload::from)?;
-    Ok(config)
+    // The writer fsyncs (write_all + sync_all) — keep that off the main
+    // thread; sync commands run on it in Tauri v2.
+    tauri::async_runtime::spawn_blocking(move || {
+        write_preset_user_config(&config).map_err(AppErrorPayload::from)?;
+        Ok(config)
+    })
+    .await
+    .map_err(|join| {
+        AppErrorPayload::from(AppError::Config(format!(
+            "background config save failed: {join}"
+        )))
+    })?
 }
 
 #[tauri::command]
@@ -370,7 +380,7 @@ pub fn open_path(
 
 #[tauri::command]
 #[specta::specta]
-pub fn reveal_path_in_folder(
+pub async fn reveal_path_in_folder(
     path: String,
     outputs: State<'_, SessionOutputRegistry>,
 ) -> Result<(), AppErrorPayload> {
@@ -380,7 +390,17 @@ pub fn reveal_path_in_folder(
         )));
     }
 
-    reveal_path_in_folder_with_system(&PathBuf::from(path)).map_err(AppErrorPayload::from)
+    // opener::reveal blocks on D-Bus (Linux) or waits on a child process
+    // (macOS) — a sync command would freeze the UI thread for its duration.
+    tauri::async_runtime::spawn_blocking(move || {
+        reveal_path_in_folder_with_system(&PathBuf::from(path)).map_err(AppErrorPayload::from)
+    })
+    .await
+    .map_err(|join| {
+        AppErrorPayload::from(AppError::Config(format!(
+            "background reveal failed: {join}"
+        )))
+    })?
 }
 
 /// Which optional engine components this build carries (0.9.0 honesty
@@ -396,11 +416,13 @@ pub fn build_features() -> Result<BuildFeatures, AppErrorPayload> {
 #[tauri::command]
 #[specta::specta]
 pub async fn analyze_pdf(
+    task_id: String,
     path: Option<String>,
     input_path: Option<String>,
     password: Option<String>,
     settings: Option<pdf_core::models::CompressionSettingsPayload>,
     on_progress: Channel<ProgressUpdate>,
+    registry: State<'_, CompressionTaskRegistry>,
 ) -> Result<AnalysisResponse, AppErrorPayload> {
     let requested_path = input_path.or(path).ok_or_else(|| {
         AppErrorPayload::from(AppError::PdfBuild(
@@ -414,23 +436,35 @@ pub async fn analyze_pdf(
         CompressionSettings::from_sources(Some(payload), CompressionSettingsOverrides::default())
     });
 
-    tauri::async_runtime::spawn_blocking(move || {
+    // 0.11.0: analysis registers with the same task registry as compression,
+    // so the cancel button works while a large document is still being
+    // scanned (the engine checks at entry and inside the page/object loops).
+    let cancel_flag = registry
+        .register(task_id.clone())
+        .map_err(AppErrorPayload::from)?;
+    let join_result = tauri::async_runtime::spawn_blocking(move || {
         analyze_pdf_with_progress(
             &requested_path,
             password.as_deref(),
             analysis_settings.as_ref(),
+            &cancel_flag,
             |update| {
                 let _ = on_progress.send(update);
             },
         )
     })
-    .await
-    .map_err(|error| {
-        AppErrorPayload::from(AppError::PdfBuild(format!(
-            "Failed to join analyze task: {error}"
-        )))
-    })?
-    .map_err(AppErrorPayload::from)
+    .await;
+    registry
+        .unregister(&task_id)
+        .map_err(AppErrorPayload::from)?;
+
+    join_result
+        .map_err(|error| {
+            AppErrorPayload::from(AppError::PdfBuild(format!(
+                "Failed to join analyze task: {error}"
+            )))
+        })?
+        .map_err(AppErrorPayload::from)
 }
 
 /// Bundle of resolved request fields consumed by [`run_compression`].
@@ -624,11 +658,19 @@ pub fn cancel_compression(
 /// file to fail analysis.
 #[tauri::command]
 #[specta::specta]
-pub fn existing_paths(paths: Vec<String>) -> Result<Vec<String>, AppErrorPayload> {
-    Ok(paths
-        .into_iter()
-        .filter(|path| !path.trim().is_empty() && Path::new(path).exists())
-        .collect())
+pub async fn existing_paths(paths: Vec<String>) -> Result<Vec<String>, AppErrorPayload> {
+    // Path::exists can block on network mounts (UNC paths may prompt for
+    // SMB credentials on Windows) — keep the probes off the main thread.
+    tauri::async_runtime::spawn_blocking(move || {
+        paths
+            .into_iter()
+            .filter(|path| !path.trim().is_empty() && Path::new(path).exists())
+            .collect::<Vec<String>>()
+    })
+    .await
+    .map_err(|join| {
+        AppErrorPayload::from(AppError::Config(format!("existence probe failed: {join}")))
+    })
 }
 
 #[tauri::command]
@@ -933,11 +975,11 @@ mod tests {
         let file = dir.path().join("a.pdf");
         fs::write(&file, b"%PDF-1.5").expect("write");
 
-        let kept = existing_paths(vec![
+        let kept = tauri::async_runtime::block_on(existing_paths(vec![
             file.to_string_lossy().into_owned(),
             "/definitely/missing.pdf".to_string(),
             "   ".to_string(),
-        ])
+        ]))
         .expect("existing_paths");
 
         assert_eq!(kept.len(), 1);

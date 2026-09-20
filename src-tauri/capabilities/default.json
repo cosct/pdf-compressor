@@ -1,12 +1,15 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "enables the default permissions",
+  "description": "Least-privilege set for the main window. Deliberately narrowed from core:default (0.11.0): core:path / core:image / core:resources / core:menu / core:tray are unused by this app and were dropped — core:image's allow-from-path has no scope and is an arbitrary-file-read primitive in principle. Retained: app (getVersion for the updater panel), event (listen/emit for open-pdf and window-state events), webview (drag-drop event surface), window getters (isMaximized for the title bar) plus exactly the window actions the title bar invokes. Note windows:[\"main\"] only gates plugin commands — local-origin app commands are always allowed (no app ACL manifest is declared; see docs/PLAN-1.0.md §3.3 for the reasoning).",
   "windows": [
     "main"
   ],
   "permissions": [
-    "core:default",
+    "core:app:default",
+    "core:event:default",
+    "core:webview:default",
+    "core:window:default",
     "dialog:default",
     "updater:default",
     "process:allow-restart",

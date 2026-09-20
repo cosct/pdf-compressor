@@ -10,6 +10,10 @@
 use std::{
     collections::{BTreeMap, HashSet},
     fs,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
 };
 
 use lopdf::{Dictionary, Document, Object, ObjectId, Stream};
@@ -22,7 +26,7 @@ use crate::{
 };
 
 use super::compressor::ensure_input_size_supported;
-use super::{optional_integer, validate_input_path};
+use super::{ensure_not_cancelled, optional_integer, validate_input_path};
 
 const TEXT_NATIVE_KIND: &str = "text-native";
 const MIXED_KIND: &str = "mixed";
@@ -95,12 +99,14 @@ pub fn analyze_pdf_with_progress<F>(
     path: &str,
     password: Option<&str>,
     settings: Option<&CompressionSettings>,
+    cancel_flag: &Arc<AtomicBool>,
     mut report_progress: F,
 ) -> Result<AnalysisResponse, AppError>
 where
     F: FnMut(ProgressUpdate),
 {
     report_progress(ProgressUpdate::new("analyzing", 5.0));
+    ensure_not_cancelled(cancel_flag, "analyze")?;
 
     let input_path = validate_input_path(path)?;
     let file_size_bytes = fs::metadata(&input_path)?.len();
@@ -127,7 +133,7 @@ where
 
     let page_map = document.get_pages();
     let page_count = page_map.len();
-    let image_records = collect_image_stream_records(&document);
+    let image_records = collect_image_stream_records(&document, cancel_flag)?;
     let image_object_count = image_records.len();
     let longest_edges: Vec<u32> = image_records
         .iter()
@@ -136,7 +142,7 @@ where
 
     report_progress(ProgressUpdate::new("analyzing", 45.0));
 
-    let signals = collect_analysis_signals(&document, &page_map);
+    let signals = collect_analysis_signals(&document, &page_map, cancel_flag)?;
     let inspected_page_count = signals.inspected_pages.max(1);
 
     report_progress(ProgressUpdate::new("analyzing", 80.0));
@@ -390,12 +396,14 @@ where
 fn collect_analysis_signals(
     document: &Document,
     page_map: &BTreeMap<u32, ObjectId>,
-) -> AnalysisSignals {
+    cancel_flag: &Arc<AtomicBool>,
+) -> Result<AnalysisSignals, AppError> {
     let mut signals = AnalysisSignals::default();
     let sampled_pages = build_analysis_page_sample(page_map);
     signals.inspected_pages = sampled_pages.len();
 
     for (page_number, page_id) in sampled_pages {
+        ensure_not_cancelled(cancel_flag, "analyze")?;
         let (page_text_characters, had_text_extraction_error) =
             extract_page_text_characters(document, page_number);
         let (page_image_references, direct_image_references) =
@@ -433,7 +441,7 @@ fn collect_analysis_signals(
         }
     }
 
-    signals
+    Ok(signals)
 }
 
 fn build_analysis_page_sample(page_map: &BTreeMap<u32, ObjectId>) -> Vec<(u32, ObjectId)> {
@@ -465,10 +473,16 @@ fn build_analysis_page_sample(page_map: &BTreeMap<u32, ObjectId>) -> Vec<(u32, O
 }
 
 /// Scan every image XObject in the document into raw records.
-fn collect_image_stream_records(document: &Document) -> Vec<ImageStreamRecord> {
+fn collect_image_stream_records(
+    document: &Document,
+    cancel_flag: &Arc<AtomicBool>,
+) -> Result<Vec<ImageStreamRecord>, AppError> {
     let mut records = Vec::new();
 
     for object in document.objects.values() {
+        if cancel_flag.load(Ordering::Relaxed) {
+            return Err(AppError::Cancelled("analyze".to_string()));
+        }
         let Object::Stream(stream) = object else {
             continue;
         };
@@ -503,7 +517,7 @@ fn collect_image_stream_records(document: &Document) -> Vec<ImageStreamRecord> {
         });
     }
 
-    records
+    Ok(records)
 }
 
 /// Fold raw records into stats under the effective size cap and the

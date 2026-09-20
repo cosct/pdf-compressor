@@ -25,8 +25,9 @@ fuzz_target!(|data: &[u8]| {
         return;
     }
     let path_str = path.to_string_lossy().into_owned();
+    let cancel = Arc::new(AtomicBool::new(false));
 
-    let _ = analyze_pdf_with_progress(&path_str, None, None, |_| {});
+    let _ = analyze_pdf_with_progress(&path_str, None, None, &cancel, |_| {});
 
     // Font subsetting on: its embedded-program parsers (TrueType via the
     // subsetter, CFF via pdf/cff.rs) face the same hostile input surface as
@@ -41,25 +42,12 @@ fuzz_target!(|data: &[u8]| {
             ..Default::default()
         },
     );
-    let _ = compress_pdf_with_progress(
-        &path_str,
-        None,
-        settings.clone(),
-        Arc::new(AtomicBool::new(false)),
-        |_| {},
-    );
+    let _ = compress_pdf_with_progress(&path_str, None, settings.clone(), cancel.clone(), |_| {});
 
     // The target-size search is a separate hot path (in-memory probing,
     // binary quality/edge schedule, materialize + verify) — fuzz it too.
     // The modest budget keeps valid inputs inside a few probe rounds.
-    let _ = compress_pdf_to_target_size(
-        &path_str,
-        None,
-        64 * 1024,
-        settings,
-        Arc::new(AtomicBool::new(false)),
-        &mut |_| {},
-    );
+    let _ = compress_pdf_to_target_size(&path_str, None, 64 * 1024, settings, cancel, &mut |_| {});
 
     // Keep the scratch directory empty: output naming deduplicates, so
     // leftover files would change behavior across iterations.

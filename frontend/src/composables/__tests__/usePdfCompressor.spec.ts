@@ -528,6 +528,45 @@ describe('run startup races', () => {
   })
 })
 
+describe('analysis cancellation', () => {
+  it('cancels an in-flight analysis through the backend registry and resets the job', async () => {
+    // 0.11.0: analysis registers a backend task id, the cancel button is
+    // available while a document is being scanned, and a cancelled run
+    // resets the job quietly instead of flagging an error.
+    let rejectAnalysis!: (reason: unknown) => void
+    mockedAnalyze.mockImplementation(
+      () =>
+        new Promise<AnalysisResponse>((_, reject) => {
+          rejectAnalysis = reject
+        }),
+    )
+    const composable = usePdfCompressor()
+    composable.addSourcePaths(['/tmp/slow.pdf'])
+    await vi.waitFor(() => {
+      expect(composable.jobs.value[0].status).toBe('analyzing')
+    })
+    expect(composable.canCancelCompression.value).toBe(true)
+
+    await composable.cancelCompressionRun()
+    expect(mockedCancel).toHaveBeenCalledWith(expect.stringMatching(/::analysis$/))
+
+    rejectAnalysis(
+      Object.assign(new Error('cancelled'), {
+        code: 'error.cancelled',
+        fallback: 'The active compression task was cancelled.',
+      }),
+    )
+    await vi.waitFor(() => {
+      expect(composable.jobs.value[0].status).toBe('selected')
+    })
+    expect(composable.jobs.value[0].error).toBeNull()
+    // The drain's finally lands a microtask after the job resets.
+    await vi.waitFor(() => {
+      expect(composable.canCancelCompression.value).toBe(false)
+    })
+  })
+})
+
 describe('localizeNotices', () => {
   it('maps backend notice codes to localized bodies with values', () => {
     const notices = localizeNotices([
@@ -626,9 +665,9 @@ describe('queue restore', () => {
 
     expect(mockedAnalyze).toHaveBeenCalledTimes(2)
     expect(mockedAnalyze.mock.calls[0][0]).toBe('/tmp/first.pdf')
-    expect(mockedAnalyze.mock.calls[0][3]).toMatchObject({ preset: 'maximum', imageQuality: 45 })
+    expect(mockedAnalyze.mock.calls[0][4]).toMatchObject({ preset: 'maximum', imageQuality: 45 })
     expect(mockedAnalyze.mock.calls[1][0]).toBe('/tmp/second.pdf')
-    expect(mockedAnalyze.mock.calls[1][3]).toMatchObject({
+    expect(mockedAnalyze.mock.calls[1][4]).toMatchObject({
       preset: 'conservative',
       imageQuality: 30,
     })
@@ -717,6 +756,7 @@ describe('password retry', () => {
     expect(mockedAnalyze).toHaveBeenLastCalledWith(
       '/tmp/locked.pdf',
       'open-secret',
+      expect.any(String),
       expect.any(Function),
       // The job's live settings ride along as the analysis context (0.9.0
       // honesty pass) — the balanced draft defaults in this test.
@@ -754,6 +794,7 @@ describe('password retry', () => {
     expect(mockedAnalyze).toHaveBeenLastCalledWith(
       '/tmp/locked.pdf',
       ' open secret ',
+      expect.any(String),
       expect.any(Function),
       expect.anything(),
     )
