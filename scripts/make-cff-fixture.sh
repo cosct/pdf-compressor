@@ -35,7 +35,11 @@ with tempfile.TemporaryDirectory() as work:
             f"--text={text}",
             f"--output-file={otf}",
             "--no-hinting", "--desubroutinize",
-            "--name-IDs=0,1,2,3,4,5,6",
+            # Keep the OFL license name records (13/14) in the subset — the fixture
+            # derives from Adobe Source Han Serif (OFL 1.1); stripping the
+            # license text from a redistributable derivative is a compliance
+            # smell even for test fixtures.
+            "--name-IDs=*",
         ],
         check=True,
     )

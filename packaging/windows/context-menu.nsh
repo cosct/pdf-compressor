@@ -1,7 +1,7 @@
 ; NSIS installer hooks for PDF Compressor — Windows Explorer context menu
 ; for .pdf files. Windows 资源管理器右键菜单集成（安装时写入，卸载时移除）。
 ;
-; Wired into the bundle via tauri.conf.json:
+; Wired into the bundle via src-tauri/tauri.release.windows.conf.json:
 ;   bundle.windows.nsis.installerHooks = "packaging/windows/context-menu.nsh"
 ;
 ; The entries call the headless CLI bundled as a resource next to the app
@@ -13,7 +13,10 @@
   ; A nested "shell" structure turns the entry into a submenu (SubCommands
   ; enumerates children automatically on Windows 7+).
   WriteRegStr SHCTX "SystemFileAssociations\.pdf\shell\PDFCompressor" "MUIVerb" "Compress with PDF Compressor"
-  WriteRegStr SHCTX "SystemFileAssociations\.pdf\shell\PDFCompressor" "Icon" "$INSTDIR\pdf-compressor.exe,0"
+  ; The main binary keeps its Cargo package name (no mainBinaryName is set in
+  ; the release configs) — the installer payload ships it as app.exe, which
+  ; the release workflow's NSIS smoke-check pins on every Windows build.
+  WriteRegStr SHCTX "SystemFileAssociations\.pdf\shell\PDFCompressor" "Icon" "$INSTDIR\app.exe,0"
   WriteRegStr SHCTX "SystemFileAssociations\.pdf\shell\PDFCompressor" "SubCommands" ""
 
   WriteRegStr SHCTX "SystemFileAssociations\.pdf\shell\PDFCompressor\shell\settings" "MUIVerb" "App settings"

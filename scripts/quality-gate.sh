@@ -12,6 +12,13 @@ cd "$(dirname "$0")/.."
 
 log() { printf '\n\033[1;36m==> %s\033[0m\n' "$1"; }
 
+# The engine's renderer fidelity gates silently skip when pdftoppm is
+# absent — a green gate without poppler is weaker than it looks, so say so
+# loudly up front instead of letting the skips pass unnoticed.
+if ! command -v pdftoppm >/dev/null 2>&1; then
+  printf '\n\033[1;33m⚠ pdftoppm (poppler) 不可用：画质保真门禁将以 skip 通过，\n  本地结果弱于 CI。Arch: pacman -S poppler；Debian: apt install poppler-utils。\033[0m\n\n'
+fi
+
 log "cargo fmt（workspace 格式检查）"
 cargo fmt --all -- --check
 

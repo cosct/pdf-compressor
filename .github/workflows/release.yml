@@ -5,10 +5,47 @@ on:
     tags: ['v*']
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  # Single source of truth for the version: the tag must match every
+  # manifest before anything builds, so a mistagged push fails in the first
+  # minute instead of surfacing as AUR asset 404s at the end of the pipeline.
+  verify-version:
+    name: Verify tag ↔ manifest version consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Assert the tag matches every version field
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          for file in package.json src-tauri/tauri.conf.json; do
+            manifest=$(sed -n 's/.*"version" *: *"\([^"]*\)".*/\1/p' "$file" | head -n1)
+            [ "$manifest" = "$tag" ] || { echo "::error::$file has version '$manifest', tag says '$tag'"; exit 1; }
+          done
+          # NOTE: the root Cargo.toml is a virtual [workspace] manifest with
+          # no version field — the crate manifests are crates/pdf-core and
+          # src-tauri.
+          for file in crates/pdf-core/Cargo.toml src-tauri/Cargo.toml; do
+            manifest=$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' "$file" | head -n1)
+            [ "$manifest" = "$tag" ] || { echo "::error::$file has version '$manifest', tag says '$tag'"; exit 1; }
+          done
+          # -F'\"' puts the bare version in field 2 — a gsub-stripping
+          # approach leaves a leading space and never matches.
+          for crate in pdf-core app; do
+            locked=$(awk -F'\"' -v crate="$crate" '$1 == "name = " && $2 == crate {getline; if ($1 == "version = ") {print $2; exit}}' Cargo.lock)
+            [ "$locked" = "$tag" ] || { echo "::error::Cargo.lock pins $crate at '$locked', tag says '$tag' (run pnpm sync-version)"; exit 1; }
+          done
+          grep -q "^## \[${tag}\]" CHANGELOG.md || { echo "::error::CHANGELOG.md has no section for [$tag]"; exit 1; }
+          echo "All manifests agree on ${tag}."
+
   build-desktop-artifacts:
+    needs: verify-version
+    permissions:
+      contents: write
+    timeout-minutes: 60
     name: Build ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -27,16 +64,16 @@ jobs:
             args: '--config src-tauri/tauri.release.conf.json'
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 22
           cache: pnpm
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           # `universal-apple-darwin` is a tauri-action convention, not a rustup
           # target — install the two real slices instead (tauri build lipo's
@@ -49,7 +86,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev librsvg2-dev patchelf
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
@@ -73,11 +110,17 @@ jobs:
           else
             cargo build --release --locked -p pdf-core --bin pdf-compressor-cli --features jpx,cmyk-cms
             mkdir -p src-tauri/binaries
-            cp target/release/pdf-compressor-cli* src-tauri/binaries/
+            # Copy the exact binary, not a glob: a bare `cli*` would sweep
+            # any accompanying .pdb into the bundle resources on Windows.
+            if [ "${{ runner.os }}" = "Windows" ]; then
+              cp target/release/pdf-compressor-cli.exe src-tauri/binaries/
+            else
+              cp target/release/pdf-compressor-cli src-tauri/binaries/
+            fi
           fi
           ls -l src-tauri/binaries/
 
-      - uses: tauri-apps/tauri-action@v1
+      - uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Update signing key — the public half lives in tauri.conf.json;
@@ -91,15 +134,47 @@ jobs:
           prerelease: false
           # `--features jpx,cmyk-cms` turn on JPEG 2000 decode (vendored
           # OpenJPEG, statically linked) and real CMYK color management
-          # (vendored lcms2) in the shipped desktop binaries.
-          args: ${{ matrix.args }} --features jpx,cmyk-cms
+          # (vendored lcms2) in the shipped desktop binaries. `--locked`
+          # keeps the release reproducible against Cargo.lock.
+          args: ${{ matrix.args }} --locked --features jpx,cmyk-cms
+
+      # Unpack the built NSIS installer and verify its payload layout. The
+      # Explorer context-menu entries reference $INSTDIR\app.exe (no
+      # mainBinaryName is configured, so the Cargo package name ships as the
+      # main binary) and the headless CLI rides in binaries\. Catches path
+      # drift between the NSIS hooks and the bundle contents — the 0.10.0
+      # installers shipped with a context-menu icon pointing at a file that
+      # did not exist.
+      - name: Smoke-check the NSIS installer payload
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The workspace builds into the repo-root target dir — src-tauri is
+          # a workspace member, not a workspace of its own.
+          installer=$(ls target/release/bundle/nsis/*-setup.exe | head -n1)
+          echo "installer: $installer"
+          rm -rf nsis-payload && mkdir nsis-payload
+          7z x -y -onsis-payload "$installer" >/dev/null
+          listing=$(find nsis-payload -maxdepth 4 -type f | sort)
+          echo "$listing" | sed 's/^/  /' | head -40
+          # 7-Zip prefixes NSIS payload entries with the installer's
+          # install-dir macro (e.g. `$INSTDIR\`), so assert on names relative
+          # to the main binary instead of a hard-coded flat layout.
+          main=$(find nsis-payload -type f -name 'app.exe' -print -quit)
+          [ -n "$main" ] || { echo "::error::expected the main binary as app.exe (the context-menu Icon targets it)"; exit 1; }
+          main_dir=$(dirname "$main")
+          [ -f "$main_dir/binaries/pdf-compressor-cli.exe" ] \
+            || { echo "::error::expected the headless CLI at binaries\\pdf-compressor-cli.exe next to the main binary (the context-menu commands target it)"; exit 1; }
+          [ -z "$(find nsis-payload -type f -name 'pdf-compressor.exe' -print -quit)" ] \
+            || echo "::warning::pdf-compressor.exe also exists in the payload — the context-menu Icon should point at it instead"
 
       # The Arch package job rebuilds the .pkg.tar.zst from these raw release
       # binaries via the same makepkg pipeline as a local `pnpm run tauri:arch`
       # (scripts/build-arch-bundle.sh) — no recompilation, no drift.
       - name: Export the release binaries for the Arch package job
         if: matrix.os == 'ubuntu-22.04'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: linux-release-binaries
           path: |
@@ -118,8 +193,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Fill the draft release body
         env:
@@ -127,6 +203,37 @@ jobs:
         run: |
           ./scripts/release-notes.sh "${GITHUB_REF_NAME}" > notes.md
           gh release edit "${GITHUB_REF_NAME}" --notes-file notes.md
+
+  # The artifacts are unsigned at the OS level (updater signatures only);
+  # a published checksum file is the integrity story users can verify.
+  # Own job (not a step of release-notes): it must wait for the zst to land,
+  # or the sums nondeterministically omit the Arch package when the
+  # arch-package upload wins the race.
+  release-checksums:
+    name: SHA256SUMS for the release assets
+    needs: [build-desktop-artifacts, arch-package]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    timeout-minutes: 10
+    steps:
+      - name: Attach SHA256SUMS for the release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          gh release download "${GITHUB_REF_NAME}" --dir release-assets --clobber
+          rm -f release-assets/SHA256SUMS
+          (
+            cd release-assets
+            : > ../SHA256SUMS
+            for asset in *; do
+              [ -f "$asset" ] || continue
+              sha256sum "$asset" >> ../SHA256SUMS
+            done
+          )
+          gh release upload "${GITHUB_REF_NAME}" SHA256SUMS --clobber
 
   arch-package:
     name: Arch package (zst)
@@ -143,10 +250,10 @@ jobs:
       - name: Install container tools
         run: pacman -Syu --noconfirm archlinux-keyring git github-cli openssh
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Restore the release binaries into target/release
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: linux-release-binaries
           path: target/release

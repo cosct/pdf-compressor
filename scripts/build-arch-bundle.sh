@@ -53,7 +53,7 @@ pkgrel=1
 pkgdesc='Local-first desktop PDF compressor built with Vue, Tauri, and Rust (GUI + headless CLI)'
 arch=('x86_64')
 url='https://github.com/cosct/pdf-compressor'
-license=('MIT')
+license=('MIT' 'Zlib' 'BSD' 'custom:IJG')
 depends=('gtk3' 'webkit2gtk-4.1' 'hicolor-icon-theme')
 optdepends=('libnotify: desktop notifications for the right-click quick-compress mode')
 # Artifacts come from the completed tauri build — nothing is compiled here.
@@ -69,6 +69,7 @@ package() {
   install -Dm644 "\$root/src-tauri/icons/32x32.png" "\$pkgdir/usr/share/icons/hicolor/32x32/apps/pdf-compressor.png"
   install -Dm644 "\$root/README.md" "\$pkgdir/usr/share/doc/\$pkgname/README.md"
   install -Dm644 "\$root/README.zh-CN.md" "\$pkgdir/usr/share/doc/\$pkgname/README.zh-CN.md"
+  install -Dm644 "\$root/THIRD-PARTY-NOTICES.md" "\$pkgdir/usr/share/licenses/\$pkgname/THIRD-PARTY-NOTICES.md"
   install -Dm644 "\$root/packaging/pdf-compressor.desktop" "\$pkgdir/usr/share/applications/pdf-compressor.desktop"
   install -Dm644 "\$root/packaging/servicemenus/pdf-compressor.desktop" "\$pkgdir/usr/share/kio/servicemenus/pdf-compressor.desktop"
 
@@ -104,6 +105,7 @@ cp "$pkg" "$asset"
 required=(
   usr/bin/pdf-compressor
   usr/bin/pdf-compressor-cli
+  usr/share/licenses/pdf-compressor/THIRD-PARTY-NOTICES.md
   usr/share/applications/pdf-compressor.desktop
   usr/share/kio/servicemenus/pdf-compressor.desktop
   usr/share/pdf-compressor/nautilus/compress-maximum.sh

@@ -40,3 +40,25 @@ for (const cargoPath of ['src-tauri/Cargo.toml', 'crates/pdf-core/Cargo.toml']) 
     console.log(`${cargoPath}: already at ${version}`)
   }
 }
+
+// --- Cargo.lock (workspace members: no checksum, only the version line of
+// each member's [[package]] block changes; mirrors what the next cargo
+// invocation would write) ---
+const lockPath = 'Cargo.lock'
+const lock = readFileSync(lockPath, 'utf8')
+let updatedLock = lock
+for (const crate of ['pdf-core', 'app']) {
+  const blockPattern = new RegExp(
+    `(\\[\\[package\\]\\]\\nname = "${crate}"\\nversion = ")[^"]+(")`,
+  )
+  if (!blockPattern.test(updatedLock)) {
+    throw new Error(`No [[package]] block for ${crate} found in ${lockPath}`)
+  }
+  updatedLock = updatedLock.replace(blockPattern, `$1${version}$2`)
+}
+if (updatedLock !== lock) {
+  writeFileSync(lockPath, updatedLock)
+  console.log(`${lockPath}: pdf-core, app -> ${version}`)
+} else {
+  console.log(`${lockPath}: already at ${version}`)
+}

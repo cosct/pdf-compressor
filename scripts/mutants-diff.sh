@@ -17,7 +17,7 @@ cd "$(dirname "$0")/.."
 
 BASELINE="${1:-origin/main}"
 
-if ! command -v cargo mutants >/dev/null 2>&1; then
+if ! command -v cargo-mutants >/dev/null 2>&1; then
     echo "error: cargo-mutants is not installed (cargo install cargo-mutants)" >&2
     exit 1
 fi

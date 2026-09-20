@@ -38,4 +38,10 @@ name = "jpx"
 path = "fuzz_targets/jpx.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "bytes"
+path = "fuzz_targets/bytes.rs"
+test = false
+doc = false
 bench = false

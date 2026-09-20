@@ -12,6 +12,8 @@ dist
 dist-ssr
 target
 src-tauri/target
+# Release runs (and the release workflow) drop the CLI binary here.
+src-tauri/binaries
 mutants.out
 mutants.out.old
 *.local
