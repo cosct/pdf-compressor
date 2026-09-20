@@ -2,9 +2,12 @@
 
 本项目的所有显著变更都记录在此文件中。格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。日期为提交日期。
 
-## [未发布]
+## [0.11.0] - 2026-09-20
 
-本节为 0.11.0「审查收口专项」的变更骨架（docs/PLAN-0.11.0.md），发布时整理定稿。
+审查收口专项（docs/PLAN-0.11.0.md）+ 1.0 前置清单（docs/PLAN-1.0.md §3）：
+两轮独立全面审查、逐项核验（41 条论断 38 条属实、6 条亲手复现）后的
+完整收口——输入健壮性、功能正确性、前端契约、发布链断言与接口冻结前
+的最后收窄。
 
 ### 破坏性变更 / 行为变更
 
@@ -51,13 +54,19 @@
   并入 `CONFIG_VERSION` 单源。
 - 桌面壳：冷启动 "Open with" argv 缓存重放（macOS Opened 事件同接入）；
   splash 10 秒兜底；DRM 加密文档区分 `error.encryptedPdf`（不再误报
-  密码错误）。
+  密码错误）；**分析可取消**——`analyze_pdf` 注册任务表并新增 `task_id`
+  参数（IPC 签名变更，赶在 1.0 冻结前），取消按钮在大型文档扫描期间
+  生效，被取消的分析静默回到选中态而非报错。
 
 ### 发布链 / 工程化
 
-- 发布前置版本一致性断言（tag ↔ package.json ↔ 双 Cargo.toml ↔
-  Cargo.lock ↔ CHANGELOG 段落）；Release 附 SHA256SUMS；README 双语明示
+- 发布前置版本一致性断言（tag ↔ package.json ↔ 双 crate manifest ↔
+  Cargo.lock 双包 ↔ CHANGELOG 段落）；Release 附 SHA256SUMS；README 双语明示
   未签名状态。
+- capability 收窄：`core:default` 拆为实际使用的 app/event/webview/window
+  最小集（去掉 path/image/resources/menu/tray 五个未用权限）；三个真阻塞
+  命令（配置保存的 fsync、文件管理器揭示的 D-Bus 等待、路径存在性探测）
+  改 async + `spawn_blocking` 移出主线程。
 - Windows 右键菜单图标指向修正（`app.exe`）；NSIS 载荷冒烟检查随发布跑。
 - 发布链自检修复（上述防线此前从未跑通过）：NSIS 冒烟步骤的产物路径
   （根 `target/`，非 `src-tauri/target/`）与 7z 开关拼写；SHA256SUMS 改为
@@ -326,7 +335,8 @@
 
 - 首个版本：纯 Rust 分析引擎（文本/扫描件分类、预估与预设推荐）、选择性压缩管线（JPEG 重编码 + 下采样）、Tauri 桌面壳
 
-[未发布]: https://github.com/cosct/pdf-compressor/compare/v0.10.0...HEAD
+[未发布]: https://github.com/cosct/pdf-compressor/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/cosct/pdf-compressor/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/cosct/pdf-compressor/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/cosct/pdf-compressor/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/cosct/pdf-compressor/compare/v0.7.1...v0.8.0
