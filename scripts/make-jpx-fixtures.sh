@@ -72,6 +72,27 @@ EOF
 
 # Lossless (-r 0), single tile (-n 1): decoded planes compare pixel-identical
 # against the reference planes in src/testutil.rs.
+# Indexed probe: a single-component codestream (the PDF side pairs it with
+# [/Indexed /DeviceRGB 255 <all-red palette>] — see tests.rs
+# `rereview_jpx_indexed_...`). The pre-0.11.0 committed asset's byte
+# pattern had no recorded origin; the 2026-09-20 regeneration replaced it
+# with this deterministic LCG-noise pattern (same 1200x900x1 shape; the
+# test asserts structure/index flow, not specific bytes).
+python3 - "$WORK" <<'PYIDX'
+import sys
+work = sys.argv[1]
+w, h = 1200, 900
+state = 0xC0FFEE
+with open(f"{work}/indexed.pgm", "wb") as f:
+    f.write(f"P5\n{w} {h}\n255\n".encode())
+    row = bytearray()
+    for _ in range(w * h):
+        state = (state * 1664525 + 1013904223) & 0xFFFFFFFF
+        row.append((state >> 24) & 0xFF)
+    f.write(row)
+PYIDX
+opj_compress -i "$WORK/indexed.pgm" -o "$OUT/jpx-indexed.jp2" -n 1 -r 0 >/dev/null
+
 opj_compress -i "$WORK/rgb.ppm"      -o "$OUT/jpx-rgb.j2k"      -n 1 -r 0 >/dev/null
 opj_compress -i "$WORK/rgb.ppm"      -o "$OUT/jpx-rgb.jp2"      -n 1 -r 0 >/dev/null
 opj_compress -i "$WORK/gray.pgm"     -o "$OUT/jpx-gray.j2k"     -n 1 -r 0 >/dev/null

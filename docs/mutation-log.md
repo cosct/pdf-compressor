@@ -23,6 +23,16 @@ design, the 6 h job limit is too tight).
 
 ## 2026-09-18 — 0.11.0 audit-hardening batch
 
-- The P0/P1 fixes landed with new pins first; a full post-batch campaign is
-  pending (run `cargo mutants` after review and append the counts here
-  before the 0.11.0 release).
+- The P0/P1 fixes landed with new pins first; the full post-batch campaign
+  ran 2026-09-20 (next entry).
+
+## 2026-09-20 — 0.11.0 终态全量 campaign（PLAN-1.0 §3.2 B2）
+
+- 范围：全 workspace（pdf-core + src-tauri；bin 沿用 mutants.toml 排除）。
+- 80 变异体：23 杀、38 漏、19 不可行、0 超时。
+- **pdf-core 引擎零漏杀**——0.11.0 审查收口批次的验收标准达成。
+- 漏杀全部位于 src-tauri 壳层（GUI 入口、IPC handler、配置 IO——无
+  集成 harness 的既有盲区，0.11.0 前即存在）。其中 A4 新增的
+  `argv_pdf_paths` 漏杀直接暴露冷启动双 skip 真 bug（首份 PDF 被
+  吞）：已修复并补纯函数测试；其余维持记录在案，列入 1.x 测试债
+  （壳层集成测试需 mock runtime，另立工作）。

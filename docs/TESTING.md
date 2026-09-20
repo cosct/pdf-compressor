@@ -110,3 +110,11 @@ cd crates/pdf-core && cargo mutants            # 本地全量（数小时）
 4. AUR PKGBUILD 的 pkgver/sha256 由 _aur-publish workflow_ 自动渲染并断言（0.11.0 起含 verifysource 与占位值拦截）
 
 发版前可本地预览生成的 notes：`./scripts/release-notes.sh v<版本>`（打印到 stdout，与 job 产出一致）。
+
+### 夹具再生溯源（0.11.0 复核）
+
+- `crates/pdf-core/assets/` 下全部夹具均有确定性再生脚本
+  （make-cff/jbig2/jpx-fixture(s).sh、make-cmyk-app14-fixture.sh），重跑
+  产出字节恒定——唯一例外是 `jpx-indexed.jp2`：原始字节来源无记录，
+  2026-09-20 起以确定性 LCG 噪声配方再生并替换资产（同形状单分量码流；
+  消费它的测试只断言结构不依赖字节），此后同样字节可复现。

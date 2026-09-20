@@ -208,6 +208,59 @@ fn build_gray_pdf_bytes(jpeg: Vec<u8>, width: u32, height: u32) -> Vec<u8> {
     bytes
 }
 
+/// One-page PDF with the JPEG embedded as DCTDecode/DeviceCMYK — the Adobe
+/// APP14 polarity probes render through this (poppler comparison).
+#[cfg(feature = "cmyk-cms")]
+fn build_cmyk_pdf_bytes(jpeg: Vec<u8>, width: u32, height: u32) -> Vec<u8> {
+    let mut doc = Document::with_version("1.5");
+    let info_id = doc.add_object(dictionary! {
+        "Producer" => Object::string_literal("pdf-compressor test fixture"),
+    });
+    let pages_id = doc.new_object_id();
+    let image_id = doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Image",
+            "Width" => width as i64,
+            "Height" => height as i64,
+            "ColorSpace" => "DeviceCMYK",
+            "BitsPerComponent" => 8,
+            "Filter" => "DCTDecode",
+        },
+        jpeg,
+    ));
+    let resources_id = doc.add_object(dictionary! {
+        "XObject" => dictionary! {
+            "Im0" => Object::Reference(image_id),
+        },
+    });
+    let content = format!("q {w} 0 0 {h} 0 0 cm /Im0 Do Q\n", w = width, h = height);
+    let content_id = doc.add_object(Stream::new(dictionary! {}, content.into_bytes()));
+    let page_id = doc.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => pages_id,
+        "Contents" => content_id,
+        "Resources" => resources_id,
+        "MediaBox" => vec![0.into(), 0.into(), (width as i64).into(), (height as i64).into()],
+    });
+    doc.objects.insert(
+        pages_id,
+        Object::Dictionary(dictionary! {
+            "Type" => "Pages",
+            "Kids" => vec![Object::Reference(page_id)],
+            "Count" => 1,
+        }),
+    );
+    let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+    doc.trailer.set("Root", catalog_id);
+    doc.trailer.set("Info", info_id);
+
+    let mut bytes = Vec::new();
+    doc.save_modern(&mut bytes)
+        .expect("failed to save fixture PDF");
+    bytes
+}
+
 /// Build a one-page PDF whose single embedded image is a CCITT fax stream
 /// with the given `K` parameter (G4 transcode fixtures).
 fn build_ccitt_pdf_bytes(g4: Vec<u8>, width: u32, height: u32, k: i64) -> Vec<u8> {
@@ -2345,6 +2398,78 @@ fn icc_rgb_raw_image_recompresses_and_keeps_profile() {
         extracted_text(Path::new(&response.output_path)).contains(FIXTURE_TEXT),
         "text must survive the rewrite"
     );
+}
+
+/// Adobe APP14 (transform=0) CMYK polarity pin (PLAN-1.0 §3.2 B1, verified
+/// against poppler 26.08 on 2026-09-20). Photoshop stores Adobe-marked CMYK
+/// JPEGs inverted (255 − ink); renderers AND the engine's zune-jpeg path
+/// both un-invert Adobe-MARKED streams while leaving unmarked ones alone:
+/// the plain-storage variant therefore decodes inverted and the
+/// Photoshop-inverted variant decodes to the logical colors — and the
+/// engine's decode must match poppler's rendering of the same embedded
+/// image at every quadrant center.
+#[cfg(feature = "cmyk-cms")]
+#[test]
+fn adobe_app14_cmyk_polarity_matches_poppler() {
+    use crate::testutil::{CMYK_APP14_INVERTED, CMYK_APP14_PLAIN, CMYK_APP14_QUADRANTS};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    for (variant, fixture) in [
+        ("plain", CMYK_APP14_PLAIN),
+        ("inverted", CMYK_APP14_INVERTED),
+    ] {
+        let Some(image) = super::cmyk::decode_dct_cmyk_stream(fixture, None, None) else {
+            panic!("{variant}: fixture must decode as a 4-component CMYK stream");
+        };
+        let engine = image.to_rgb8();
+
+        // Renderer side: poppler rasterizes the same codestream embedded as
+        // DCTDecode/DeviceCMYK (absent pdftoppm degrades to the engine-side
+        // polarity assertions only, per the house skip pattern).
+        let pdf = build_cmyk_pdf_bytes(fixture.to_vec(), 64, 64);
+        let path = write_fixture(dir.path(), &format!("cmyk-app14-{variant}.pdf"), &pdf);
+        let prefix = dir.path().join(format!("cmyk-app14-{variant}-render"));
+        let rendered = crate::testutil::render_poppler_png(
+            &path,
+            &prefix,
+            &["-r", "96", "-png"],
+            &dir.path()
+                .join(format!("cmyk-app14-{variant}-render-1.png")),
+        )
+        .and_then(|png| image::load_from_memory(&png).ok().map(|img| img.to_rgb8()));
+
+        for (label, x, y) in CMYK_APP14_QUADRANTS {
+            let pixel = engine.get_pixel(x, y).0;
+            let luma = (u16::from(pixel[0]) + u16::from(pixel[1]) + u16::from(pixel[2])) / 3;
+            match (variant, label) {
+                // Logical TL is white and TR is K-black: the inverted
+                // variant must decode to the logical colors, the plain
+                // storage (mis-marked Adobe) to their polar opposite.
+                // (CMYK inversion is not a luma inversion: mis-marked plain
+                // storage turns TL into rich black and TR into composite
+                // black — both dark. Only the unambiguous quadrants pin
+                // polarity; the engine-vs-poppler equality below carries
+                // the full-strength check.)
+                ("inverted", "TL") => assert!(luma >= 200, "TL must be white, got {pixel:?}"),
+                ("inverted", "TR") => assert!(luma <= 60, "TR must be black, got {pixel:?}"),
+                ("plain", "TL") => {
+                    assert!(luma <= 60, "plain storage decodes inverted, got {pixel:?}")
+                }
+                _ => {}
+            }
+            if let Some(reference) = &rendered {
+                let poppler_pixel = reference.get_pixel(x, y).0;
+                for channel in 0..3 {
+                    let mine = u16::from(pixel[channel]);
+                    let theirs = u16::from(poppler_pixel[channel]);
+                    assert!(
+                        mine.abs_diff(theirs) <= 6,
+                        "{variant} {label}: engine ({pixel:?}) must match poppler ({poppler_pixel:?})"
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[cfg(feature = "cmyk-cms")]

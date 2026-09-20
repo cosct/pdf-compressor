@@ -513,6 +513,13 @@ README/用户指南通俗化）；**0.9.0（工程深水区 + 诚实性：e2e �
   AUR 社区偏好，aur-publish 工作流已同时渲染两份模板，边际成本极低；
   tauri-project-structure 技能模板已同步修正（其"源码包已弃用"表述过时）。
 
+- **CMYK APP14 极性（2026-09-20 调查定论，PLAN-1.0 §3.2 B1）**：zune-jpeg
+  与 poppler 的 DCTStream 一样，在解码内对 Adobe APP14 标记的 4 分量流做
+  反转——引擎拿到的 CMYK 平面永远是明文 ink（0=无墨），Photoshop 产出的
+  反转存储不会被误读。双夹具（明文/反转存储，make-cmyk-app14-fixture.sh
+  确定性再生）与像素级钉子 `adobe_app14_cmyk_polarity_matches_poppler`
+  钉死该约定；cmyk.rs 的两处历史矛盾注释已改写。
+
 ### 维持暂缓（2026-09-16 逐项复核，事实均已核实）
 
 - **线性化（Fast Web View）**：

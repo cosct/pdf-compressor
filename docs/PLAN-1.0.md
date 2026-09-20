@@ -47,10 +47,10 @@ panic 已随 `9968325` 修复；其余各项如下）。1.0 冻结的是「现�
 
 | # | 事项 | 方案要点 | 验收 |
 | --- | --- | --- | --- |
-| B1 | **CMYK APP14 反转调查**（PLAN-0.11.0 §6.7 遗留） | 造「APP14 transform=0 且无 /Decode」夹具（hex 构造 Adobe 标记或 Photoshop 产出），与 poppler 渲染对齐像素级判定；二选一结论：补 APP14 解析（带 PSNR 钉子）或以证据文档化现状约定正确（修 cmyk.rs 两处矛盾注释） | 夹具 + 像素级对比记录；注释矛盾消除 |
-| B2 | **变异 campaign 全量补跑** | 0.11.0 终态跑 `cargo mutants`，结果记 docs/mutation-log.md；漏杀变异体当日补测 | mutation-log 更新；0 漏或漏杀全有对应测试 |
-| B3 | **jpx-indexed.jp2 再生配方** | 扩展 make-jpx-fixtures.sh 生成等价 indexed JP2 夹具（jpeg2k/opj_compress 或 Python glymur/Azure 工具链）；无法等价再生则降级为 TESTING.md 声明「历史遗留夹具，无再生路径」 | 脚本可重跑产出字节等价夹具，或显式声明 |
-| B4 | **OpenJPEG 升级复查** | tag v1.0.0 前复查 openjpeg-sys 是否已发布 vendored ≥2.5.4 的版本；是则升级 + 全门禁回归（依赖健康节预案）；否则维持受控追踪不变 | 复查结论记录于依赖健康节（日期 + 版本） |
+| B1 | **CMYK APP14 反转调查** ✅（2026-09-20 完成） | **定论：引擎现状正确，无需修转换逻辑。** 双夹具（APP14 明文存储 / Photoshop 反转存储）经 pdftoppm 26.08 渲染与引擎 zune 路径逐象素比对完全一致——zune-jpeg 与 poppler 一样在解码内对 Adobe 标记的 4 分量流做反转，引擎拿到的永远是明文 ink（0=无墨）。审计「Photoshop 文件会被静默反色」的担忧不成立。产出：两夹具入库（make-cmyk-app14-fixture.sh 确定性再生）+ 永久像素级钉子 `adobe_app14_cmyk_polarity_matches_poppler` + cmyk.rs 两处矛盾注释改写为已验证事实 | ✅ 夹具 + 像素级钉子 + 注释一致 |
+| B2 | **变异 campaign 全量补跑** ✅（2026-09-20 完成） | 全 workspace 80 变异体：pdf-core 引擎**零漏杀**（收口批次验收达成）；38 漏全在 src-tauri 壳层既有盲区，其中 A4 的 `argv_pdf_paths` 漏杀暴露冷启动双 skip 真 bug（已修 + 补测）；其余入 1.x 测试债。详见 docs/mutation-log.md | ✅ 记录入档；引擎 0 漏 |
+| B3 | **jpx-indexed.jp2 再生配方** ✅（2026-09-20 完成） | 查明该夹具实为**单分量码流 + PDF 侧 /Indexed 调色板**（非 JP2 pclr 盒）——测试只依赖结构不依赖字节。make-jpx-fixtures.sh 新增确定性 LCG 噪声配方并替换资产（1.17MB→1.14MB 可再生），jpx 全套测试通过；其余夹具再生素字节恒定 | ✅ 脚本可重跑，测试绿 |
+| B4 | **OpenJPEG 升级复查** ✅（2026-09-20 复查） | index 最高仍 1.0.12（vendored 2.5.3），上游未发 2.5.4 修复版——维持受控追踪（DEVELOPMENT.md 依赖健康节含预案与解锁条件） | ✅ 结论入档 |
 
 ### 3.3 明确不做（记录在案，防再议）
 

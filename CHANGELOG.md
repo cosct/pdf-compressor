@@ -78,6 +78,20 @@
   的错误表述；THIRD-PARTY-NOTICES.md 入库并随包分发，AUR license 字段
   同步。
 
+### 调查定论（2026-09-20，PLAN-1.0 §3.2）
+
+- **CMYK APP14 极性**：双夹具经 poppler 26.08 与引擎逐象素比对定论——
+  zune 与渲染器同在解码内反转 Adobe 标记的 CMYK 流，引擎现状正确、
+  Photoshop 产出不会被反色；矛盾注释改写，双夹具与像素级钉子入库
+  （`adobe_app14_cmyk_polarity_matches_poppler`）。
+- **变异全量 campaign**：pdf-core 引擎零漏杀；38 个漏杀全在壳层既有
+  盲区，顺带暴露并修复冷启动 argv 双 skip 真 bug（首份 PDF 被吞），
+  `argv_pdf_paths` 补纯函数测试；其余入 1.x 测试债（mutation-log.md）。
+- **jpx-indexed.jp2**：查明为单分量码流 + PDF 侧 /Indexed 结构，
+  确定性再生配方落地并替换资产，夹具不再有无溯源孤本。
+- 修复：冷启动 "Open with" 首份 PDF 被吞（args_os 预跳过与 helper 自带
+  skip(1) 叠加）。
+
 ### 已知受控风险
 
 - vendored OpenJPEG 2.5.3 携带 CVE-2025-54874（openjpeg-sys 上游无修复

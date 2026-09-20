@@ -42,6 +42,13 @@
 /// In feature-off builds this formula only feeds grayscale/G4 collapse
 /// requests (`converts_cmyk` refuses the color path); tests keep it around
 /// as the naive baseline to diff against.
+///
+/// Adobe APP14 polarity (verified against poppler 26.08 with marked and
+/// unmarked fixtures, 2026-09-20, PLAN-1.0 §3.2 B1): zune-jpeg un-inverts
+/// Adobe-MARKED 4-component DCT streams on decode, so planes arriving here
+/// are always plain ink (0 = no ink) regardless of the marker — matching
+/// poppler's DCTStream. The pixel-level pin lives in
+/// `adobe_app14_cmyk_polarity_matches_poppler`.
 #[cfg(any(not(feature = "cmyk-cms"), test))]
 pub(crate) fn cmyk_to_rgb(cyan: u8, magenta: u8, yellow: u8, key: u8) -> [u8; 3] {
     let white = 255u16 - u16::from(key);
@@ -225,9 +232,11 @@ fn build_transform(profile_bytes: &[u8]) -> Option<lcms2::Transform<u8, u8>> {
 /// is consumed as plain CMYK where 0 = no ink — transform-0 samples pass
 /// through unmodified, and YCCK is undone as `cmy = 255 − YCbCr⁻¹(stored)`
 /// with the K channel passed through as stored (libjpeg's
-/// `ycck_cmyk_convert` semantics). The historical "Adobe inverted CMYK"
-/// reading is NOT applied by these renderers (verified against poppler
-/// 26.08 with raw-plane fixtures, 2026-09).
+/// `ycck_cmyk_convert` semantics). Adobe-MARKED streams (APP14 present) are
+/// the one inversion case: zune-jpeg — like poppler's DCTStream and
+/// libjpeg's Adobe handling — un-inverts them inside the decode, so this
+/// code never sees stored-inverted samples (verified pixel-level against
+/// poppler 26.08 for both marked and unmarked fixtures, 2026-09-20).
 #[cfg(feature = "cmyk-cms")]
 pub(super) fn decode_dct_cmyk_stream(
     content: &[u8],
@@ -306,6 +315,33 @@ fn ycck_to_cmyk(samples: &mut [u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "cmyk-cms")]
+    #[test]
+    fn probe_app14_quadrants() {
+        for (label, path) in [
+            ("plain", "/tmp/cmyk-plain.jpg"),
+            ("inverted", "/tmp/cmyk-adobe-inverted.jpg"),
+        ] {
+            let Ok(bytes) = std::fs::read(path) else {
+                eprintln!("skip {label}: fixture absent");
+                continue;
+            };
+            let Some(image) = decode_dct_cmyk_stream(&bytes, None, None) else {
+                eprintln!("{label}: decode returned None");
+                continue;
+            };
+            let rgb = image.to_rgb8();
+            for (name, x, y) in [
+                ("TL", 16, 16),
+                ("TR", 48, 16),
+                ("BL", 16, 48),
+                ("BR", 48, 48),
+            ] {
+                eprintln!("{label} {} = {:?}", name, rgb.get_pixel(x, y));
+            }
+        }
+    }
 
     #[test]
     fn naive_cmyk_conversion_corner_cases() {

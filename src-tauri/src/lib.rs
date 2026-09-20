@@ -151,10 +151,11 @@ pub fn run() {
             // Cold-start "Open with…": the argv the OS handed us at launch.
             // Non-UTF-8 paths are skipped rather than fatal (args_os, not
             // args — the CLI learned this the hard way).
-            let cold_start = std::env::args_os()
-                .filter_map(|arg| arg.into_string().ok())
-                .collect::<Vec<String>>();
-            let cold_start_pdfs = argv_pdf_paths(cold_start);
+            // argv_pdf_paths applies its own skip(1) (argv[0] = program):
+            // hand it the raw OS args — pre-skipping here would swallow the
+            // first handed-over PDF path.
+            let cold_start_pdfs =
+                argv_pdf_paths(std::env::args_os().filter_map(|arg| arg.into_string().ok()));
             if !cold_start_pdfs.is_empty() {
                 // The frontend is never ready this early — stage() queues.
                 let _ = app
@@ -322,5 +323,35 @@ mod specta_export {
                 "../frontend/src/lib/bindings.ts",
             )
             .expect("failed to export typescript bindings");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::argv_pdf_paths;
+
+    #[test]
+    fn argv_pdf_paths_filters_pdf_args_after_the_program_slot() {
+        let args = vec![
+            "/usr/bin/app".to_string(),
+            "/docs/report.pdf".to_string(),
+            "--flag".to_string(),
+            "/docs/UPPER.PDF".to_string(),
+            "/docs/nope.txt".to_string(),
+        ];
+        assert_eq!(
+            argv_pdf_paths(args),
+            vec![
+                "/docs/report.pdf".to_string(),
+                "/docs/UPPER.PDF".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn argv_pdf_paths_without_pdf_args_is_empty() {
+        assert!(argv_pdf_paths(vec!["/usr/bin/app".to_string(), "-v".to_string()]).is_empty());
+        // Nothing handed over at all stays empty too.
+        assert!(argv_pdf_paths(Vec::<String>::new()).is_empty());
     }
 }

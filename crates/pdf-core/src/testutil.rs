@@ -29,6 +29,21 @@ pub const TEST_FONT_GID_P: u16 = 34;
 /// scripts/make-cff-fixture.sh). Regenerating changes the exact CIDs, so the
 /// constants below and the script's `--text` must move together.
 pub const TEST_CFF_FONT: &[u8] = include_bytes!("../assets/test-font-cid.cff");
+
+/// Adobe APP14 (transform=0) CMYK JPEG probes — see
+/// `scripts/make-cmyk-app14-fixture.sh` for the quadrant layout and the
+/// convention dispute these pin (PLAN-1.0 §3.2 B1).
+pub const CMYK_APP14_PLAIN: &[u8] = include_bytes!("../assets/cmyk-app14-plain.jpg");
+pub const CMYK_APP14_INVERTED: &[u8] = include_bytes!("../assets/cmyk-app14-inverted.jpg");
+
+/// Quadrant centers of the 64×64 probe layout (logical colors):
+/// TL white, TR K-black, BL Y+M red, BR C+Y green.
+pub const CMYK_APP14_QUADRANTS: [(&str, u32, u32); 4] = [
+    ("TL", 16, 16),
+    ("TR", 48, 16),
+    ("BL", 16, 48),
+    ("BR", 48, 48),
+];
 /// The same program in its OpenType (OTTO) wrapper, for `/OpenType`
 /// FontFile3 inputs.
 pub const TEST_CFF_FONT_OTF: &[u8] = include_bytes!("../assets/test-font-cid.otf");
