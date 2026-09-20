@@ -30,6 +30,12 @@ Make PDFs smaller **without breaking them**: text stays searchable and copyable,
 | Other Linux | Grab the `.AppImage` or `.deb` from [Releases](https://github.com/cosct/pdf-compressor/releases) |
 | From source | `pnpm install && pnpm run tauri build` (Rust 1.93+, Node.js 22+) |
 
+> **Signing note**: release artifacts are **not** signed at the OS level (no
+> Apple notarization, no Authenticode) — macOS Gatekeeper and Windows
+> SmartScreen will warn on first launch and need a manual override. In-app
+> *update* artifacts are minisign-signed by the updater key. Every release
+> carries a `SHA256SUMS` file you can verify against the assets.
+
 ## Quick start
 
 **GUI** — drag PDFs in, glance at the analysis (expected savings and a recommended preset), press *Start compression*. Results land next to the originals; the original file is never touched.
@@ -52,6 +58,34 @@ The CLI drives the same engine as the GUI with identical parameter semantics —
 A PDF is usually big because images are stored larger than needed, whole fonts are embedded, or years of edits left redundant data behind. This tool inspects each of those and reorganizes them to **shrink bytes without changing appearance**: images are re-encoded to the target quality, duplicates merged, unused font data trimmed. Text, bookmarks, links, and page structure are always preserved — so the compressed file still searches, copies, and prints like the original.
 
 Curious what each setting means and the trade-offs behind it? Read the [settings walkthrough](docs/USER-GUIDE.zh-CN.md#3-压缩参数详解) in the user guide.
+
+## Stability
+
+Starting with 1.0, the following surfaces are covered by a backward-
+compatibility promise for the whole 1.x series:
+
+- the `pdf-core` public engine API (entry points, settings/result types,
+  `MAX_INPUT_BYTES`, config-migration helpers) — compile-pinned by its four
+  consumers;
+- the 14 IPC commands and their payload fields — signature-pinned by
+  regenerated TypeScript bindings;
+- the CLI contract: subcommands, flags, exit codes, and stream discipline
+  (stdout carries the PDF, stderr carries JSON) — process-level `cli_e2e`
+  pins;
+- the 11 `error.*` codes and their values keys — pinned on both sides
+  (engine taxonomy test + frontend locale mirror);
+- the on-disk config formats v3+ (`preset-user-config`, `quick-profile`)
+  — migration-chain tests pin upgrades from every older shape.
+
+Breaking changes to any of these happen only in a new major version, and
+only after a deprecation window (the old form keeps working, with a
+warning, for at least one minor release). See the development guide for
+the exact process.
+
+**Defaults are not frozen**: the promise covers interfaces and file
+formats, not behavior presets. Honesty and correctness fixes may still
+change defaults — always through a config migration and prominently noted
+in the changelog (as 0.8 and 0.10 did).
 
 ## Documentation
 

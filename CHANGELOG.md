@@ -2,6 +2,82 @@
 
 本项目的所有显著变更都记录在此文件中。格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。日期为提交日期。
 
+## [未发布]
+
+本节为 0.11.0「审查收口专项」的变更骨架（docs/PLAN-0.11.0.md），发布时整理定稿。
+
+### 破坏性变更
+
+- **错误码 `error.image` 从 taxonomy 移除**（12 → 11 码）：该变体在生产
+  代码中无任何构造点（解码失败一律走 `error.pdfBuild` + 逐图 skip 通知），
+  前端 locale 键已同步删除。匹配该码的消费者（若有）需迁移。
+
+### 安全 / 健壮性
+
+- 恶意 PDF 不再能触发进程崩溃或失控内存：零/负宽度图片、字体子集化
+  65536-CID 溢出两条可复现 panic 修复；全部解压入口加上限（loader
+  512 MiB——仅作用于加载期解码的对象/xref 流；各消费点按声明几何或固定
+  预算）；像素总量预算 100 MP 收口 CCITT/JBIG2/raw/JPEG；JPEG 解码前
+  校验字典与码流 SOF 维度一致；畸形 `/Filter` 判为不可解码。
+- worker panic 全路径隔离（catch_unwind → 逐图 skip / 任务级错误），
+  进程不再因单个畸形对象退出。
+- 输出写盘改原子写（create_new 临时文件 + fsync + rename），ENOSPC/kill
+  不再留下截断或同名覆盖风险；写前最后一次取消检查。
+- 快速模式配置与预设配置写入器对齐同一原子写纪律（create_new + pid
+  后缀临时文件，不再截断同名 `.tmp` 或已植入的同名符号链接）。
+- 桌面壳并发竞态收口："Open with" 路径分发的 ready 标志与待发队列收进
+  同一把锁（交错不再可能把 PDF 遗留在已清空的队列）；重复 task_id
+  注册压缩任务改为显式报错（此前静默顶掉前一任务的取消标志，且任一
+  任务先结束会误删另一任务的取消入口）。
+
+### 修复
+
+- 目标大小搜索三连：quality 报告回落到编码器域（≤100，原报 255）；管道
+  模式账目如实（outputWasSmaller/savedBytes 与实发字节一致，原报
+  smaller:false/saved:0）；紧预算不再钉死质量地板（200 KB 用例利用率
+  41% → 97%，quality 15 → 46）。
+- 前端：取消后立即重启/分析排空中双击的竞态；含空格的 PDF 密码不再被
+  trim 破坏；密码弹窗 dismiss 后新失败重开；预设显式 `jpeg` 不再被静默
+  改写为 `ccitt-g4`；配置版本单源化（v3）；队列恢复先写回设置再分析。
+- 前端补丁：主视图预设条色彩模式回读按 grayscale 优先判定的规则修正
+  （G4 默认 + 彩色任务不再误标「黑白」，与快速面板同规则，附回归测试）；
+  队列恢复的**第一个**任务此前仍以草稿设置请求分析（预估基线错误），
+  现随入队携带恢复设置；快速面板/浏览器兜底残留的 `version: 3` 字面量
+  并入 `CONFIG_VERSION` 单源。
+- 桌面壳：冷启动 "Open with" argv 缓存重放（macOS Opened 事件同接入）；
+  splash 10 秒兜底；DRM 加密文档区分 `error.encryptedPdf`（不再误报
+  密码错误）。
+
+### 发布链 / 工程化
+
+- 发布前置版本一致性断言（tag ↔ package.json ↔ 双 Cargo.toml ↔
+  Cargo.lock ↔ CHANGELOG 段落）；Release 附 SHA256SUMS；README 双语明示
+  未签名状态。
+- Windows 右键菜单图标指向修正（`app.exe`）；NSIS 载荷冒烟检查随发布跑。
+- 发布链自检修复（上述防线此前从未跑通过）：NSIS 冒烟步骤的产物路径
+  （根 `target/`，非 `src-tauri/target/`）与 7z 开关拼写；SHA256SUMS 改为
+  等待 Arch zst 上传后独立产出（消除与 arch-package 并行导致的随机缺项）；
+  AUR 推送的目录授权提前到 `makepkg --verifysource` 之前（修复必然的
+  EACCES）；Arch zst 实际装入 THIRD-PARTY-NOTICES.md（与 license 声明
+  一致）；`sync-version` 同步 Cargo.lock（verify-version 的报错指引不再
+  指向修不好的命令）；rust-cache 工作区目录修正（编译缓存恢复命中）。
+- AUR 渲染加占位值断言与 `makepkg --verifysource`；dispatch 输入改环境
+  变量传递（消除 run: 注入面）。
+- CI：action 全部钉提交 SHA；`permissions: contents: read` + 超时；引擎
+  测试矩阵加 Windows/macOS；独立 audit 工作流（周调度，覆盖 fuzz 独立
+  锁）；绑定新鲜度 `git diff --exit-code` 门禁；preset-defaults.json 改
+  `include_str!` 真镜像；新增 bytes 管线 fuzz target；pdf-core `specta`
+  feature 补 `derive` 依赖（此前被工作区内 tauri-specta 掩盖、单独编译
+  必失败）并纳入 CI 可选 feature 测试腿。
+- PKGBUILD.source 补 cmake 依赖；修正文档中"默认构建纯 Rust/无需 cmake"
+  的错误表述；THIRD-PARTY-NOTICES.md 入库并随包分发，AUR license 字段
+  同步。
+
+### 已知受控风险
+
+- vendored OpenJPEG 2.5.3 携带 CVE-2025-54874（openjpeg-sys 上游无修复
+  版本，追踪条件见 DEVELOPMENT.md 依赖健康节）。
+
 ## [0.10.0] - 2026-09-16
 
 主题：**转码质量收口 + 1.0 清障**（开发文档 §8 0.10.0 计划）。
@@ -231,7 +307,13 @@
 
 - 首个版本：纯 Rust 分析引擎（文本/扫描件分类、预估与预设推荐）、选择性压缩管线（JPEG 重编码 + 下采样）、Tauri 桌面壳
 
-[未发布]: https://github.com/cosct/pdf-compressor/compare/v0.5.0...HEAD
+[未发布]: https://github.com/cosct/pdf-compressor/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/cosct/pdf-compressor/compare/v0.9.0...v0.10.0
+[0.9.0]: https://github.com/cosct/pdf-compressor/compare/v0.8.0...v0.9.0
+[0.8.0]: https://github.com/cosct/pdf-compressor/compare/v0.7.1...v0.8.0
+[0.7.1]: https://github.com/cosct/pdf-compressor/compare/v0.7.0...v0.7.1
+[0.7.0]: https://github.com/cosct/pdf-compressor/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/cosct/pdf-compressor/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/cosct/pdf-compressor/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/cosct/pdf-compressor/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/cosct/pdf-compressor/compare/v0.2.0...v0.3.0

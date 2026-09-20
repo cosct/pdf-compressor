@@ -41,9 +41,9 @@ CI（`.github/workflows/ci.yml`）在每次 push/PR 执行以上全部，外加�
 
 | 预设 | 下限 | 实测（校准值） |
 | --- | --- | --- |
-| conservative | ≥ 28 dB | ≈ 30.1 dB |
-| balanced | ≥ 25.5 dB | ≈ 27.4 dB |
-| maximum | ≥ 22.5 dB | ≈ 24.3 dB |
+| conservative | ≥ 25.5 dB | ≈ 27.4 dB |
+| balanced | ≥ 23.0 dB | ≈ 24.7 dB |
+| maximum | ≥ 20.5 dB | ≈ 22.5 dB |
 
 并要求三档单调（conservative ≥ balanced ≥ maximum）。阈值钉在实测下约 2dB——掉过线即说明某次改动让“同一个质量号”变得明显更差。
 
@@ -107,6 +107,6 @@ cd crates/pdf-core && cargo mutants            # 本地全量（数小时）
 1. `pnpm run sync-version` 版本三处对齐（README 已不再携带版本号；**CHANGELOG 新版本段落必须就位**——打 tag 后 release workflow 会用该段落自动生成 release notes，缺失则 `release-notes` job 直接失败，杜绝空 body 发版）
 2. 上面“一键全量”全绿
 3. 真实语料快照跑一轮（若有语料）
-4. AUR PKGBUILD 按_release workflow_ 的 `aur-checksum` job 输出更新 sha256
+4. AUR PKGBUILD 的 pkgver/sha256 由 _aur-publish workflow_ 自动渲染并断言（0.11.0 起含 verifysource 与占位值拦截）
 
 发版前可本地预览生成的 notes：`./scripts/release-notes.sh v<版本>`（打印到 stdout，与 job 产出一致）。

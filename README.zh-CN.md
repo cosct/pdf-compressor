@@ -30,6 +30,11 @@
 | 其他 Linux | 下载 [Releases](https://github.com/cosct/pdf-compressor/releases) 中的 `.AppImage` 或 `.deb` |
 | 源码构建 | `pnpm install && pnpm run tauri build`（需要 Rust 1.93+ 与 Node.js 22+） |
 
+> **签名说明**：发布产物**未做**操作系统级签名（无 Apple 公证、无
+> Authenticode）——macOS Gatekeeper 与 Windows SmartScreen 首次启动会告警，
+> 需手动放行。应用内**更新**产物由 updater 密钥做 minisign 签名。每个
+> Release 附带 `SHA256SUMS` 校验文件，可对照资产逐一核验。
+
 ## 快速上手
 
 **图形界面**——把 PDF 拖进窗口，看一眼分析结果（预计能省多少、推荐用什么档位），点"开始压缩"。结果保存在原文件旁边，原名不变、绝不覆盖。
@@ -52,6 +57,27 @@ curl -s https://例.com/big.pdf | pdf-compressor-cli compress - --stdout > small
 PDF 文件大，通常是因为图片存得比需要的大、嵌入了整套字体、或积累了多次编辑留下的冗余数据。本工具逐个检查这些内容，在**只改体积、不改外观**的前提下重新组织它们：图片重新编码到目标质量、重复数据合并、用不到的字体部分裁掉。文字、书签、链接和页面结构永远原样保留——所以压缩后的文件仍然可以正常搜索、复制和打印。
 
 想了解每种参数的具体含义和背后的取舍？读[用户指南的参数详解](docs/USER-GUIDE.zh-CN.md#3-压缩参数详解)。
+
+## 稳定性
+
+自 1.0 起，以下界面在整个 1.x 系列内向后兼容：
+
+- `pdf-core` 引擎公共 API（入口函数、设置/结果类型、`MAX_INPUT_BYTES`、
+  配置迁移助手）——由四个消费者编译级钉住；
+- 14 个 IPC 命令及其 payload 字段——由再生式 TypeScript 绑定钉住签名；
+- CLI 契约：子命令、旗标、退出码与流纪律（stdout 出 PDF、stderr 出
+  JSON）——由进程级 `cli_e2e` 钉住；
+- 11 个 `error.*` 错误码及其 values 键——双侧钉死（引擎 taxonomy 测试 +
+  前端 locale 镜像）；
+- 磁盘配置格式 v3+（`preset-user-config`、`quick-profile`）——迁移链测试
+  钉住从每一个历史形态的升级。
+
+以上任何一项的破坏性变更只随新的 major 版本发生，且必须先经过弃用窗口
+（旧形态至少保留一个 minor 版本并发出警告）。具体流程见开发指南。
+
+**默认值不冻结**：承诺覆盖的是接口与文件格式，不是行为预设。诚实性修正
+与 bug 修复仍可能改变默认值——一律走配置迁移并在变更日志显著标注
+（0.8 与 0.10 已有先例）。
 
 ## 文档
 

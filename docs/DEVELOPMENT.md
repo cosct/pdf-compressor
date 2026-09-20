@@ -53,7 +53,7 @@ cargo run -p pdf-core --bin pdf-compressor-cli -- quick <dir>/ --no-notify      
 ```
 ┌─────────────────────────────┐       ┌──────────────────────────────┐
 │  前端 (frontend/, Vue 3 + TS) │  IPC  │  桌面壳 (src-tauri, Tauri 2) │
-│  App.vue ─ 主视图/设置视图    │ ◄───► │  commands.rs（13 个命令）     │
+│  App.vue ─ 主视图/设置视图    │ ◄───► │  commands.rs（14 个命令）     │
 │  usePdfCompressor（核心状态）│ typed │  任务注册表 / 输出路径白名单    │
 └─────────────────────────────┘  IPC  └──────────────┬───────────────┘
                                                       │ 直接调用
@@ -242,9 +242,11 @@ cargo run -p pdf-core --bin pdf-compressor-cli -- quick <dir>/ --no-notify      
 - **JPX（JPEG 2000）解码**（`jpx.rs`，feature `jpx` **默认关**，保持默认构建纯
   Rust；桌面 release 与 AUR 包开启，src-tauri 经 `--features jpx` 转发）：走
   `jpeg2k` crate（0.10，MIT/Apache）→ `openjpeg-sys` 1.0.x（BSD-2）——**vendored
-  OpenJPEG 用纯 `cc` crate 编译并静态链接**，无 cmake、无运行时 libopenjp2 需要随
-  安装包分发（2026-09 spike 结论；workspace 的 flate2/zlib-ng 本就依赖 cc，构建
-  前提不变）。三路线评估中的“链接系统库”因此弃用——静态链接彻底消解了
+  OpenJPEG 用 `cc` crate 编译并静态链接**，无运行时 libopenjp2 需要随安装包分发
+  （2026-09 spike 结论）。注意：默认构建并非纯 Rust——workspace 的
+  flate2/zlib-ng 后端（libz-ng-sys）经 **cmake** 构建 C 代码（zng/cmake.rs，
+  无 cc 回退），净环境需安装 cmake（0.11.0 复核修正；PKGBUILD.source 的
+  makedepends 已列）。三路线评估中的“链接系统库”因此弃用——静态链接彻底消解了
   Windows/macOS 打包风险。门禁收口照 CCITT 模式：`jpx_input_shape` 只看流字典
   （尺寸 1..=65535、无 DecodeParms/Decode、单元素过滤链），分析器经
   `stream_filter_info::jpx_decodable` 自动跟随；解码侧再校验码流尺寸与字典一致、
@@ -360,7 +362,9 @@ pnpm run tauri:arch   # 安装包 + Arch zst 包（release/bundle/archlinux/，s
   `pnpm run tauri:arch` 相同的 `scripts/build-arch-bundle.sh` 管线产出该 zst，随后
   自动填 pkgver/sha256、再生成 `.SRCINFO` 推送到 AUR（secret `AUR_SSH_PRIVATE_KEY`，
   详见 `packaging/archlinux/README.md`）。
-- Release 流程见 `.github/workflows/release.yml`；产物命名与标识符见 README「Release metadata」。
+- Release 流程见 `.github/workflows/release.yml`；主二进制与产物命名约定（`app` /
+  `pdf-compressor-cli`、右键菜单指向）见该 workflow 的 NSIS 载荷冒烟注释与
+  `packaging/archlinux/README.md`。
 
 ### 文件管理器右键集成（三平台）
 
@@ -403,6 +407,15 @@ release overlay 而非主配置）。
 
 ## 8. 版本路线（0.10.0 已落地，2026-09-16）
 
+### 0.11.0 计划：审查收口专项（2026-09-18 立项）
+
+双份独立审查 + 逐项核验（41 条论断 38 条属实、6 条亲手复现）的收口
+计划，个人项目单版本落地：输入健壮性（两条可复现崩溃 + 解压/分配
+DoS 面）、target-size 三连、前端取消/密码/预设契约、发布链断言与
+供应链钉扎、文档合规批量。全文见 [PLAN-0.11.0.md](PLAN-0.11.0.md)；
+落地后 1.0 观察期重新计时。1.0 本体的落地工作文档（触发条件状态、走查
+清单、发布 checklist）：[PLAN-1.0.md](PLAN-1.0.md)。
+
 0.10.0 主题：**转码质量收口 + 1.0 清障**——近双级内容默认无损出口，
 兼容性面盘点补钉。依赖现代化已随 0.9.0 发布后落地（2026-09-13）：
 lopdf 0.45（解析加固 + writer xref 修复，全门禁回归无碍；线性化写出
@@ -440,7 +453,7 @@ vue-tsc 3.3.11 无法驱动原生移植版（ERR_PACKAGE_PATH_NOT_EXPORTED），
   - pdf-core 公共 API（6 入口函数 + 设置/结果类型 + `MAX_INPUT_BYTES` +
     迁移助手）：四个消费者（Tauri 壳、CLI、bench、fuzz）编译级钉住，
     破坏即编译失败；e2e 起真进程钉 CLI 二进制。
-  - 15 个 IPC 命令与 payload 字段：specta bindings 再生比对（`cargo
+  - 14 个 IPC 命令与 payload 字段：specta bindings 再生比对（`cargo
     test --workspace` 内建测试）钉签名。
   - 错误码 taxonomy（12 个 `error.*` 码 + values 键集）：**新增双侧钉**
     ——`error.rs` 的 `error_code_taxonomy_is_a_pinned_closed_set`
@@ -568,6 +581,17 @@ README/用户指南通俗化）；**0.9.0（工程深水区 + 诚实性：e2e �
   0.42.0，历版均不受影响）；`save_modern` 加密 PDF 损坏
   bug（上游 #479）不适用——本引擎在写出前已剥离 `/Encrypt`。cargo audit
   在 CI 每次推送执行，保持观察。
+- **vendored OpenJPEG 2.5.3 携带 CVE-2025-54874（0.11.0 复核，追踪中）**：
+  openjpeg-sys 最新版 1.0.12 vendored 2.5.3，处于 CVE 影响区间
+  （2.5.1–2.5.3，`opj_jp2_read_header` 短流 OOB 堆写，CVSS 9.8）；上游
+  OpenJPEG 2.5.4（2025-09-20）已修复，但 openjpeg-sys 尚未发布携带修复的
+  版本（index 最高 1.0.12，无 RUSTSEC 条目，cargo audit 不报警）。现状
+  缓解：暴露面仅在 `jpx` feature 的发布产物，入口有 `jpx_input_shape`
+  字典闸门 + 专用 fuzz target（sanitizer 构建）；修复不可上游化，卸载
+  `jpx` 会静默放弃一类扫描件的压缩（失败模式为保持原样，安全）。**解锁
+  条件**：openjpeg-sys 发布 vendored ≥2.5.4 的版本即升级（例行
+  `cargo update -p openjpeg-sys` + 全门禁回归）；若期间出现利用报告，
+  临时关闭 release/AUR 的 `jpx` feature。
 
 ### 1.0 计划（成熟度声明，2026-09-16 评估；0.10.0 已于当日发布）
 
@@ -584,7 +608,7 @@ README/用户指南通俗化）；**0.9.0（工程深水区 + 诚实性：e2e �
 
 **1.0 内容（全部非功能）**：
 1. **兼容性承诺文档化**：README（双语）新增 Stability 节——1.x 系列
-   向后兼容的面：pdf-core 公共 API、15 个 IPC 命令与 payload 字段、
+   向后兼容的面：pdf-core 公共 API、14 个 IPC 命令与 payload 字段、
    CLI 子命令/旗标/退出码/流纪律（cli_e2e 钉死）、12 个错误码与
    values 键（双侧钉死）、配置文件格式 v3+（迁移链测试钉死）。
    破坏性变更只随 major，经弃用窗口（先双写 + 警告至少一个 minor）。
@@ -598,6 +622,20 @@ README/用户指南通俗化）；**0.9.0（工程深水区 + 诚实性：e2e �
    台账）+ 里程碑回顾（0.5→1.0 时间线）。
 5. **弃用流程**写入本节：面清单中任何一项的变更 = 先在 0.x minor
    双写并发出 `deprecation` 通知/日志，major 才移除。
+
+**弃用流程（1.0 起生效的正式流程）**：兼容面清单（README "Stability" 节）
+中任何一项需要变更时——
+
+1. 在最近的 minor 版本引入新形态并**双写**：旧形态继续工作，同时产生
+   `deprecation` 级通知（GUI toast / CLI stderr JSON 的 `notices` 数组），
+   文案指明替代物与计划移除的 major 版本；
+2. 双写期**至少一个 minor**（建议两个，照顾 AUR/包管理器的滞后）；
+3. 移除只发生在 major（2.0），CHANGELOG 的破坏性变更节显式列出；
+4. 配置文件类的变更额外走既有迁移链模式（v3→v4…），迁移测试覆盖旧
+   形态的双向钉死（保留显式选择 / 重置 then-default）。
+
+1.0 的落地工作文档（触发条件状态、走查清单、发布 checklist）：
+[PLAN-1.0.md](PLAN-1.0.md)。
 
 **明确不进 1.0**：
 - **安卓**（可行性 2026-09-13 评估：引擎零改动——纯 Rust + cc 静态
