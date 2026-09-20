@@ -13,7 +13,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-import { loadPresetProfiles } from '../config/presets'
+import { CONFIG_VERSION, loadPresetProfiles } from '../config/presets'
 import type { QuickProfilePayload } from '../lib/bindings'
 import { getQuickProfile, saveQuickProfile } from '../lib/tauri'
 import type { PresetProfileMap } from '../types/pdf'
@@ -242,9 +242,10 @@ function selectMode(next: QuickMode) {
 function buildPayload(): QuickProfilePayload {
   const preset = mode.value === 'target' ? lastPresetMode.value : mode.value
   return {
-    // v2: cmykConversion opt-outs are genuine from this version on (v1
-    // values get the default-flip migration on load).
-    version: 3,
+    // The stamped version must stay in lockstep with the backend
+    // migrations (CONFIG_VERSION); flag/codec opt-outs are genuine from
+    // their flip version on — older values migrate on load.
+    version: CONFIG_VERSION,
     preset,
     ...presetParams(preset),
     grayscale: colorMode.value !== 'color',
@@ -276,8 +277,8 @@ async function reset() {
   saving.value = true
   try {
     // An all-empty profile makes the CLI fall back to the engine defaults.
-    await saveQuickProfile({ version: 3 })
-    applyProfile({ version: 3 })
+    await saveQuickProfile({ version: CONFIG_VERSION })
+    applyProfile({ version: CONFIG_VERSION })
     emit('saved')
   } catch (error) {
     emit('error', error)

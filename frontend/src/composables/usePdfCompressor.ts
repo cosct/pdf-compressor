@@ -248,6 +248,10 @@ export function usePdfCompressor() {
   const analysisRunning = ref(false)
   const compressionRunning = ref(false)
   const cancellationRequested = ref(false)
+  // True while a cancel is still settling backend tasks: a new run must not
+  // start until the old one's workers have actually stopped, or the shared
+  // cancellation flag gets reset under them.
+  const cancelInFlight = ref(false)
   let compressionRunSerial = 0
   let currentCompressionRunId: number | null = null
   let analysisQueuePromise: Promise<void> | null = null
@@ -368,7 +372,10 @@ export function usePdfCompressor() {
     return getSelectedCompressionTargetIds()
   }
 
-  function addSourcePaths(paths: string[]) {
+  function addSourcePaths(
+    paths: string[],
+    restoredSettingsByPath: Map<string, CompressionSettings> = new Map(),
+  ) {
     if (compressionRunning.value) {
       pushErrorToast(
         createNotice(
@@ -396,9 +403,18 @@ export function usePdfCompressor() {
       }
 
       const job = createJob(path)
-      job.settings = { ...draftSettings.value }
+      const restored = restoredSettingsByPath.get(lowered)
+      if (restored) {
+        // Session-restore seeding: the job keeps its previous settings (the
+        // user's earlier choices, not a fresh draft) and applyRecommendedSettings
+        // respects the one-shot settingsRestored flag after analysis.
+        job.settings = { ...restored }
+        job.settingsRestored = true
+      } else {
+        job.settings = { ...draftSettings.value }
+      }
       job.recommendedSettings = { ...draftSettings.value }
-      job.useRecommendedSettings = draftUsesRecommended.value
+      job.useRecommendedSettings = restored ? false : draftUsesRecommended.value
       jobs.value.push(job)
       existingPaths.add(lowered)
       nextSelectedId ??= job.id
@@ -566,7 +582,7 @@ export function usePdfCompressor() {
       return
     }
 
-    if (cancellationRequested.value) {
+    if (cancellationRequested.value || cancelledCompressionRuns.has(runId)) {
       return
     }
 
@@ -660,12 +676,18 @@ export function usePdfCompressor() {
   }
 
   async function runCompressionTargets(targetIds: string[]) {
-    if (!targetIds.length || compressionRunning.value) {
+    if (!targetIds.length || compressionRunning.value || cancelInFlight.value) {
       return
     }
 
     if (analysisQueuePromise) {
       await analysisQueuePromise
+    }
+
+    // The await above is a scheduling window: a second click or a cancel
+    // that was still settling may have started its own run meanwhile.
+    if (compressionRunning.value || cancelInFlight.value) {
+      return
     }
 
     compressionRunning.value = true
@@ -680,7 +702,7 @@ export function usePdfCompressor() {
       await Promise.all(
         Array.from({ length: Math.min(concurrency, targetIds.length) }, async () => {
           while (cursor < targetIds.length) {
-            if (cancellationRequested.value) {
+            if (cancellationRequested.value || cancelledCompressionRuns.has(runId)) {
               return
             }
 
@@ -711,7 +733,7 @@ export function usePdfCompressor() {
       return
     }
 
-    job.password = password.trim() || null
+    job.password = password || null
     job.error = null
     job.result = null
     job.progress = { phase: 'queued', percent: 0 }
@@ -737,10 +759,11 @@ export function usePdfCompressor() {
   }
 
   async function cancelCompressionRun() {
-    if (!compressionRunning.value) {
+    if (!compressionRunning.value || cancelInFlight.value) {
       return
     }
 
+    cancelInFlight.value = true
     cancellationRequested.value = true
     if (currentCompressionRunId !== null) {
       cancelledCompressionRuns.add(currentCompressionRunId)
@@ -760,6 +783,8 @@ export function usePdfCompressor() {
     if (!activeIds.length) {
       compressionRunning.value = false
       currentCompressionRunId = null
+      cancellationRequested.value = false
+      cancelInFlight.value = false
       return
     }
 
@@ -767,6 +792,11 @@ export function usePdfCompressor() {
     currentCompressionRunId = null
     activeCompressionTaskIds.clear()
     await Promise.allSettled(activeIds.map((taskId) => cancelCompression(taskId)))
+    // Reset only after the backend tasks settled: the old run's workers key
+    // their exit off cancelledCompressionRuns (cleared by its own finally),
+    // so this reset can no longer disarm them mid-flight.
+    cancellationRequested.value = false
+    cancelInFlight.value = false
   }
 
   async function selectOutputDir() {
@@ -899,16 +929,21 @@ export function usePdfCompressor() {
       }
     }
 
-    addSourcePaths(entries.map((entry) => entry.sourcePath))
-    for (const entry of entries) {
-      const job = jobs.value.find(
-        (item) => item.sourcePath.toLowerCase() === entry.sourcePath.toLowerCase(),
-      )
-      if (job) {
-        job.settings = normalizeSettings({ ...entry.settings })
-        job.settingsRestored = true
-      }
-    }
+    // Seed each entry's settings as the jobs are created: addSourcePaths
+    // queues analysis synchronously and the first analysis request captures
+    // job.settings at that moment, so adding first and overwriting afterwards
+    // analyzed the first restored job against the draft baseline (wrong
+    // estimate + a recommended-preset flip).
+    const restoredSettings = new Map(
+      entries.map((entry) => [
+        entry.sourcePath.toLowerCase(),
+        normalizeSettings({ ...entry.settings }),
+      ]),
+    )
+    addSourcePaths(
+      entries.map((entry) => entry.sourcePath),
+      restoredSettings,
+    )
   }
 
   return {

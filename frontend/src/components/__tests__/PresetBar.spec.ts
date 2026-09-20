@@ -192,6 +192,33 @@ describe('PresetBar modes', () => {
     expect(back.bilevelCodec).toBe('jpeg')
   })
 
+  it('a color profile with the 0.10.0 G4 codec default reads back as color', async () => {
+    // Regression (0.11.0): the default queue settings since 0.10.0 are
+    // grayscale=false + bilevelCodec='ccitt-g4' — the read-back must not
+    // mislabel that as 'bw' just because the codec is G4 (the mislabel led
+    // users to "fix" it by writing a real codec change).
+    const wrapper = mountBar({ settings: makeSettings({ bilevelCodec: 'ccitt-g4' }) })
+    const active = wrapper.findAll('.preset-bar__seg-item--active')
+    expect(active).toHaveLength(1)
+    expect(active[0].text()).toContain(i18n.global.t('settings.colorModeColor'))
+  })
+
+  it('grayscale profiles read back as gray with jpeg and bw with G4', async () => {
+    const grayBar = mountBar({
+      settings: makeSettings({ grayscale: true, bilevelCodec: 'jpeg' }),
+    })
+    expect(grayBar.findAll('.preset-bar__seg-item--active')[0].text()).toContain(
+      i18n.global.t('settings.colorModeGray'),
+    )
+
+    const bwBar = mountBar({
+      settings: makeSettings({ grayscale: true, bilevelCodec: 'ccitt-g4' }),
+    })
+    expect(bwBar.findAll('.preset-bar__seg-item--active')[0].text()).toContain(
+      i18n.global.t('settings.colorModeBw'),
+    )
+  })
+
   it('read-only params echo the settings and hide in target mode', async () => {
     const wrapper = mountBar()
     await flushPromises()

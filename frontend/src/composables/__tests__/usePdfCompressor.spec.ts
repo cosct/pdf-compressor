@@ -455,6 +455,77 @@ describe('cancelCompressionRun', () => {
     expect(composable.jobs.value[0].status).toBe('ready')
     expect(composable.jobs.value[0].result).toBeNull()
   })
+
+  it('blocks a new run until the backend cancellation settles', async () => {
+    // Regression (0.11.0): the cancel path used to clear compressionRunning
+    // before the backend tasks settled, so an immediate restart reset the
+    // shared cancellation flag under the old run's still-running workers.
+    const composable = await readyQueue(['/tmp/a.pdf'])
+
+    let releaseCompress!: () => void
+    mockedCompress.mockImplementation(
+      () =>
+        new Promise<CompressionResponse>((resolve) => {
+          releaseCompress = () => resolve(compressionResponse())
+        }),
+    )
+    let releaseCancel!: () => void
+    mockedCancel.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseCancel = () => resolve()
+        }),
+    )
+
+    const run = composable.compressCurrentPdf()
+    await vi.waitFor(() => {
+      expect(composable.jobs.value[0].status).toBe('compressing')
+    })
+
+    const cancelling = composable.cancelCompressionRun()
+    // While the backend cancel is pending, a restart must be refused.
+    await composable.compressCurrentPdf()
+    expect(mockedCompress).toHaveBeenCalledTimes(1)
+
+    releaseCancel()
+    await cancelling
+    releaseCompress()
+    await run
+
+    // Once the cancel settles, the next start goes through normally.
+    mockedCompress.mockClear()
+    mockedCompress.mockResolvedValue(compressionResponse())
+    await composable.compressCurrentPdf()
+    await vi.waitFor(() => {
+      expect(composable.jobs.value[0].status).toBe('success')
+    })
+    expect(mockedCompress).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('run startup races', () => {
+  it('ignores a second start while the analysis queue is still draining', async () => {
+    // Regression (0.11.0): the startup guard ran before awaiting the
+    // analysis queue, so two clicks during the drain window could each
+    // launch a compression run over the same targets.
+    let releaseAnalysis!: () => void
+    mockedAnalyze.mockImplementation(
+      () =>
+        new Promise<AnalysisResponse>((resolve) => {
+          releaseAnalysis = () => resolve(analysisResponse())
+        }),
+    )
+    const composable = usePdfCompressor()
+    composable.addSourcePaths(['/tmp/a.pdf'])
+
+    mockedCompress.mockResolvedValue(compressionResponse())
+    const first = composable.compressCurrentPdf()
+    const second = composable.compressCurrentPdf()
+    releaseAnalysis()
+    await Promise.all([first, second])
+
+    expect(mockedCompress).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('localizeNotices', () => {
@@ -526,6 +597,41 @@ describe('queue restore', () => {
     expect(job.settings.grayscale).toBe(true)
     expect(job.settings.outputDir).toBe('/tmp/custom-out')
     expect(job.useRecommendedSettings).toBe(false)
+  })
+
+  it('analyzes the first restored job against its restored settings, not the draft', async () => {
+    // Regression (0.11.0): addSourcePaths queues analysis synchronously and
+    // the first request captured job.settings before the restore loop wrote
+    // the persisted settings back — the estimate for the first job ran
+    // against the draft baseline. The settings must ride along with the
+    // queue add instead.
+    const first = normalizeSettings(makeSettings({ preset: 'maximum', imageQuality: 45 }))
+    const second = normalizeSettings(makeSettings({ preset: 'conservative', imageQuality: 30 }))
+    window.localStorage.setItem(
+      'pdf-compressor-queue',
+      JSON.stringify([
+        { sourcePath: '/tmp/first.pdf', settings: first },
+        { sourcePath: '/tmp/second.pdf', settings: second },
+      ]),
+    )
+    vi.mocked(existingPaths).mockResolvedValue(['/tmp/first.pdf', '/tmp/second.pdf'])
+    mockedAnalyze.mockResolvedValue(analysisResponse({ recommendedPreset: 'balanced' }))
+
+    const composable = usePdfCompressor()
+    await vi.waitFor(() => {
+      // Exact array match: `every()` on a still-empty queue is vacuously
+      // true and would let the wait pass before the restore lands.
+      expect(composable.jobs.value.map((job) => job.status)).toEqual(['ready', 'ready'])
+    })
+
+    expect(mockedAnalyze).toHaveBeenCalledTimes(2)
+    expect(mockedAnalyze.mock.calls[0][0]).toBe('/tmp/first.pdf')
+    expect(mockedAnalyze.mock.calls[0][3]).toMatchObject({ preset: 'maximum', imageQuality: 45 })
+    expect(mockedAnalyze.mock.calls[1][0]).toBe('/tmp/second.pdf')
+    expect(mockedAnalyze.mock.calls[1][3]).toMatchObject({
+      preset: 'conservative',
+      imageQuality: 30,
+    })
   })
 
   it('still applies recommended settings to newly added files', async () => {
@@ -625,6 +731,31 @@ describe('password retry', () => {
       expect.any(String),
       expect.any(Function),
       'open-secret',
+    )
+  })
+
+  it('keeps whitespace-padded passwords intact — spaces are legal password bytes', async () => {
+    // Regression (0.11.0): the submit path trimmed the password, silently
+    // breaking documents whose open password carries leading/trailing
+    // spaces; only the empty string means "no password".
+    mockedAnalyze.mockRejectedValueOnce(passwordError('error.passwordRequired'))
+    const composable = usePdfCompressor()
+    composable.addSourcePaths(['/tmp/locked.pdf'])
+    await vi.waitFor(() => {
+      expect(composable.jobs.value[0].status).toBe('error')
+    })
+
+    mockedAnalyze.mockResolvedValue(analysisResponse())
+    composable.submitJobPassword(composable.jobs.value[0].id, ' open secret ')
+
+    await vi.waitFor(() => {
+      expect(composable.jobs.value[0].status).toBe('ready')
+    })
+    expect(mockedAnalyze).toHaveBeenLastCalledWith(
+      '/tmp/locked.pdf',
+      ' open secret ',
+      expect.any(Function),
+      expect.anything(),
     )
   })
 

@@ -16,6 +16,7 @@ import type {
   QuickProfilePayload,
   ProgressUpdate as ProgressUpdateWire,
 } from './bindings'
+import { CONFIG_VERSION } from '../config/presets'
 import { commands } from './bindings'
 
 import type { CompressionSettings, PresetUserConfig, ProgressUpdate } from '../types/pdf'
@@ -119,7 +120,7 @@ export async function compressPdf(
         path,
         inputPath: path,
         taskId,
-        password: password?.trim() ? password.trim() : null,
+        password: password || null,
         settings: {
           preset: settings.preset,
           imageQuality: settings.imageQuality,
@@ -176,7 +177,7 @@ export async function compressScannedPdf(
         path,
         inputPath: path,
         taskId,
-        password: password?.trim() ? password.trim() : null,
+        password: password || null,
         settings: {
           preset: settings.preset,
           imageQuality: settings.imageQuality,
@@ -255,7 +256,7 @@ export async function getBuildFeatures(): Promise<EngineBuildFeatures | null> {
 
 function toPresetUserConfig(payload: PresetUserConfigPayload): PresetUserConfig {
   return {
-    version: payload.version ?? 3,
+    version: payload.version ?? CONFIG_VERSION,
     presets: { ...payload.presets },
   }
 }
@@ -263,7 +264,7 @@ function toPresetUserConfig(payload: PresetUserConfigPayload): PresetUserConfig 
 export async function loadPresetUserConfig(): Promise<PresetUserConfig> {
   if (!hasNativeCommands()) {
     return {
-      version: 3,
+      version: CONFIG_VERSION,
       presets: {},
     }
   }
@@ -304,7 +305,7 @@ let browserQuickProfile: QuickProfilePayload | null = null
 
 export async function getQuickProfile(): Promise<QuickProfilePayload> {
   if (!hasNativeCommands()) {
-    return browserQuickProfile ?? { version: 3 }
+    return browserQuickProfile ?? { version: CONFIG_VERSION }
   }
 
   return unwrap(commands.loadQuickProfile())

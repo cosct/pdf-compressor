@@ -98,6 +98,17 @@ impl CompressionTaskRegistry {
 
     fn register(&self, task_id: String) -> Result<Arc<AtomicBool>, AppError> {
         let mut tasks = self.tasks()?;
+        // A duplicate id would silently corrupt cancellation: the overwrite
+        // orphans the first task's cancel flag (it can never be cancelled),
+        // and whichever task finishes first unregisters the other's entry.
+        // The GUI always sends unique per-run ids; the path-fallback id makes
+        // this reachable only for concurrent IPC calls on the same file —
+        // surface the collision instead of racing.
+        if tasks.contains_key(&task_id) {
+            return Err(AppError::Config(format!(
+                "A compression task is already registered for '{task_id}'."
+            )));
+        }
         let cancel_flag = Arc::new(AtomicBool::new(false));
         tasks.insert(task_id, Arc::clone(&cancel_flag));
         Ok(cancel_flag)
@@ -190,7 +201,8 @@ fn write_preset_user_config(config: &PresetUserConfigPayload) -> Result<(), AppE
 }
 
 /// Path-parameterized core of [`write_preset_user_config`]: serialize, write
-/// to a temp file, sync, then atomically rename over the target.
+/// to an exclusive-create temp file, sync, then atomically rename over the
+/// target — the same discipline as the compressor's output writer.
 fn write_preset_config_at(
     config_path: &Path,
     config: &PresetUserConfigPayload,
@@ -201,25 +213,57 @@ fn write_preset_config_at(
             config_path.display()
         ))
     })?;
-    let temp_path = config_path.with_extension("tmp");
     let payload = serde_json::to_vec_pretty(config)
         .map_err(|error| AppError::Config(format!("Failed to serialize preset config: {error}")))?;
 
     fs::create_dir_all(parent_dir)?;
 
-    {
-        let mut temp_file = File::create(&temp_path)?;
-        temp_file.write_all(&payload)?;
-        temp_file.sync_all()?;
+    // create_new (O_EXCL): a predictable `.tmp` name created with truncation
+    // would clobber a same-named file (or a symlink planted in a writable
+    // directory). The pid suffix makes collisions essentially impossible;
+    // the retry loop closes the rest.
+    let mut attempt = 0u32;
+    loop {
+        let suffix = if attempt == 0 {
+            format!("{}.tmp", std::process::id())
+        } else {
+            format!("{}.{}.tmp", std::process::id(), attempt)
+        };
+        let temp_path = config_path.with_extension(suffix);
+        let mut temp = match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+        {
+            Ok(temp) => temp,
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                attempt += 1;
+                if attempt >= 4 {
+                    return Err(AppError::Io(error));
+                }
+                continue;
+            }
+            Err(error) => return Err(AppError::Io(error)),
+        };
+        let result = (|| -> Result<(), std::io::Error> {
+            temp.write_all(&payload)?;
+            temp.sync_all()?;
+            drop(temp);
+            // Atomic on Unix; on Windows, try rename-over first (NTFS
+            // supports it), falling back to remove-then-rename for older
+            // filesystems.
+            if fs::rename(&temp_path, config_path).is_err() {
+                let _ = fs::remove_file(config_path);
+                fs::rename(&temp_path, config_path)?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            let _ = fs::remove_file(&temp_path);
+            return Err(AppError::Io(error));
+        }
+        return Ok(());
     }
-
-    // Atomic on Unix; on Windows, try rename-over first (NTFS supports it),
-    // falling back to remove-then-rename for older filesystems.
-    if fs::rename(&temp_path, config_path).is_err() {
-        let _ = fs::remove_file(config_path);
-        fs::rename(&temp_path, config_path)?;
-    }
-    Ok(())
 }
 
 fn clear_preset_user_config_file() -> Result<(), AppError> {
@@ -599,6 +643,18 @@ pub fn app_ready(app: tauri::AppHandle) -> Result<(), AppErrorPayload> {
         let _ = splash.close();
     }
 
+    // The frontend signals readiness only after its `open-pdf` listener is
+    // registered: flip readiness and replay any PDFs handed over during
+    // launch (cold-start argv, early second instances, macOS Opened events)
+    // under one lock — dispatches racing this call queue instead of being
+    // stranded in a drained queue — then every later delivery emits directly.
+    let dispatch = app.state::<crate::OpenPdfDispatch>();
+    let replayed = dispatch.inner().mark_ready_and_drain();
+    if !replayed.is_empty() {
+        use tauri::Emitter as _;
+        let _ = app.emit("open-pdf", serde_json::json!({ "paths": replayed }));
+    }
+
     Ok(())
 }
 
@@ -619,6 +675,24 @@ mod tests {
         registry.unregister("task-1").expect("unregister");
         // Cancelling an unknown task is a no-op, not an error.
         registry.cancel("task-1").expect("cancel unknown");
+    }
+
+    #[test]
+    fn task_registry_rejects_duplicate_registration() {
+        let registry = CompressionTaskRegistry::default();
+        registry.register("task-1".to_string()).expect("register");
+
+        // Overwriting would orphan the first task's cancel flag and let the
+        // first finisher unregister the other's entry — the collision is an
+        // error so the caller can back off.
+        let duplicate = registry.register("task-1".to_string());
+        assert!(duplicate.is_err());
+
+        // After unregister the id is free again.
+        registry.unregister("task-1").expect("unregister");
+        registry
+            .register("task-1".to_string())
+            .expect("re-register");
     }
 
     #[test]
@@ -673,8 +747,21 @@ mod tests {
             loaded.presets.get("balanced").map(|p| p.image_quality),
             Some(72)
         );
-        // The atomic-write temp file never lingers.
-        assert!(!config_path.with_extension("tmp").exists());
+        // The atomic-write temp files (pid-suffixed) never linger.
+        let leftovers: Vec<_> = fs::read_dir(dir.path())
+            .expect("read dir")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("tmp"))
+            })
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temp files never linger: {leftovers:?}"
+        );
 
         clear_preset_config_at(&config_path).expect("clear");
         assert!(!config_path.exists());

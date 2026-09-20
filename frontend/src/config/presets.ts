@@ -23,9 +23,12 @@ import type {
 } from '../types/pdf'
 import { clampImageQuality, clampMaxImageSizePercent } from '../utils/compressionSettings'
 
-// v2 (0.8.0): cmykConversion default flip — v1 configs get the load-time
-// migration in the backend; configs created here are current-generation.
-const CONFIG_VERSION = 2
+// Must stay in lockstep with the backend's `default_config_version`
+// (crates/pdf-core/src/models.rs): v3 (0.10.0) is the bilevel default flip.
+// A stale value here saves configs the backend considers one migration
+// behind and re-migrates (stripping then-default choices a user made
+// explicitly).
+export const CONFIG_VERSION = 3
 
 const PRESET_KEYS: CompressionPreset[] = ['conservative', 'balanced', 'maximum', 'custom']
 
@@ -55,7 +58,7 @@ const LEGACY_PROFILE_FALLBACK = {
   cmykConversion: true,
 } as const
 
-function sanitizePresetProfile(
+export function sanitizePresetProfile(
   profile: Partial<PresetProfile> | undefined,
   fallback: PresetProfile,
 ): PresetProfile {
@@ -74,8 +77,8 @@ function sanitizePresetProfile(
       profile?.stripMetadata ?? fallback.stripMetadata ?? LEGACY_PROFILE_FALLBACK.stripMetadata,
     grayscale: profile?.grayscale ?? fallback.grayscale ?? LEGACY_PROFILE_FALLBACK.grayscale,
     bilevelCodec:
-      profile?.bilevelCodec === 'ccitt-g4'
-        ? 'ccitt-g4'
+      profile?.bilevelCodec === 'jpeg' || profile?.bilevelCodec === 'ccitt-g4'
+        ? profile.bilevelCodec
         : (fallback.bilevelCodec ?? LEGACY_PROFILE_FALLBACK.bilevelCodec),
     subsetFonts:
       profile?.subsetFonts ?? fallback.subsetFonts ?? LEGACY_PROFILE_FALLBACK.subsetFonts,

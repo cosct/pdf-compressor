@@ -184,15 +184,18 @@ const queueItems = computed(() =>
 
 // The retry prompt keys off the selected job's password error; the selected
 // job object itself may vanish (row deleted) while the dialog is open.
-// Dismissing hides the prompt for the current error only — a new password
-// failure re-opens it.
-const dismissedPasswordJobId = ref<string | null>(null)
+// Dismissing hides the prompt for that specific error instance only — a new
+// password failure produces a fresh error object and re-opens the prompt.
+const dismissedPasswordError = ref<unknown>(null)
 const passwordPromptJob = computed(() => {
   if (!selectedJobNeedsPassword.value) {
     return null
   }
   const job = jobs.value.find((item) => item.id === selectedJobId.value) ?? null
-  return job && job.id !== dismissedPasswordJobId.value ? job : null
+  if (!job || job.error === null) {
+    return job
+  }
+  return dismissedPasswordError.value === job.error ? null : job
 })
 const passwordPromptWrong = computed(() =>
   isWrongPasswordError(passwordPromptJob.value?.error ?? null),
@@ -201,14 +204,15 @@ const passwordPromptWrong = computed(() =>
 function handleSubmitPassword(password: string) {
   const job = passwordPromptJob.value
   if (job) {
-    dismissedPasswordJobId.value = null
+    dismissedPasswordError.value = null
     submitJobPassword(job.id, password)
   }
 }
 
 function handleDismissPasswordPrompt() {
-  if (passwordPromptJob.value) {
-    dismissedPasswordJobId.value = passwordPromptJob.value.id
+  const job = passwordPromptJob.value
+  if (job?.error) {
+    dismissedPasswordError.value = job.error
   }
 }
 

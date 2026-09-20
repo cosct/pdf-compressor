@@ -166,10 +166,14 @@ type ColorMode = 'color' | 'gray' | 'bw'
 
 /** The grayscale/bilevel pair expressed as one UI choice. */
 const colorMode = computed<ColorMode>(() => {
-  if (props.settings.bilevelCodec === 'ccitt-g4') {
-    return 'bw'
+  // bw requires the grayscale request AND the G4 codec: since 0.10.0 the
+  // default codec is G4, so a color profile (grayscale=false) must read
+  // back as 'color' even though its codec is the G4 default (same rule as
+  // QuickCompressPanel's colorModeOf).
+  if (!props.settings.grayscale) {
+    return 'color'
   }
-  return props.settings.grayscale ? 'gray' : 'color'
+  return props.settings.bilevelCodec === 'jpeg' ? 'gray' : 'bw'
 })
 
 const colorModeOptions = computed<Array<{ value: ColorMode; title: string }>>(() => [
