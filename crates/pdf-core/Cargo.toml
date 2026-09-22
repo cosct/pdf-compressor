@@ -17,7 +17,14 @@ name = "pdf-compressor-cli"
 path = "src/bin/pdf-compressor-cli.rs"
 
 [features]
-default = ["ccitt", "subset-fonts"]
+default = ["ccitt", "subset-fonts", "flate2-zlib-ng"]
+# Force lopdf's flate2 (stream compression, object streams) onto the zlib-ng
+# C backend — libz-ng-sys builds its C code through cmake (zng/cmake.rs, no
+# cc fallback; see DEVELOPMENT.md "JPX 接入" and PKGBUILD.source makedepends).
+# Default-on for desktop/CLI builds. Mobile/ffi builds leave this off: flate2
+# then resolves to lopdf's own default backend (pure-Rust miniz_oxide), so
+# `cargo ndk` cross-compiles with zero cmake/NDK toolchain configuration.
+flate2-zlib-ng = ["dep:flate2"]
 # Derives `specta::Type` on the wire models for TypeScript binding generation
 # in the Tauri app. Off by default to keep the engine dependency-light.
 specta = ["dep:specta"]
@@ -85,12 +92,12 @@ dirs-next = "2.0"
 # workspace by tauri-specta enabling the derive feature itself).
 specta = { version = "=2.0.0-rc.25", optional = true, features = ["derive"] }
 jpeg-encoder = { version = "0.7", features = ["simd"] }
-# Not referenced in code: declared so feature unification switches lopdf's
-# flate2 (stream compression, object streams) to the zlib-ng C backend. This
-# takes the default build out of pure-Rust territory: libz-ng-sys builds its
-# C code through cmake (zng/cmake.rs, no cc fallback) — see DEVELOPMENT.md
-# "JPX 接入" and PKGBUILD.source makedepends.
-flate2 = { version = "1", default-features = false, features = ["zlib-ng"] }
+# Optional backend switch, not referenced in code: when the `flate2-zlib-ng`
+# feature is on, feature unification switches lopdf's flate2 (stream
+# compression, object streams) to the zlib-ng C backend. This takes the
+# default build out of pure-Rust territory. Off (ffi/mobile builds), flate2
+# keeps lopdf's own default rust_backend (miniz_oxide).
+flate2 = { version = "1", default-features = false, features = ["zlib-ng"], optional = true }
 rustc-hash = "2"
 fast_image_resize = { version = "6", features = ["image"] }
 

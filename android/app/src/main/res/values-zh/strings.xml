@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 与 frontend/src/locales/zh-CN.ts 对齐；键集与 values/strings.xml
+         由 crates/pdf-core-ffi/tests/strings_parity.rs 钉死。 -->
+    <string name="error_missingInput">所选文件不存在。</string>
+    <string name="error_invalidPdfPath">所选文件不是 PDF。</string>
+    <string name="error_inputTooLarge">文件大小为 {size}，超过了本设备可安全处理的 {limit} 上限。</string>
+    <string name="error_encryptedPdf">该 PDF 使用了不受支持的安全处理器（DRM 加密），无法处理。</string>
+    <string name="error_passwordRequired">该 PDF 需要输入打开密码才能处理。</string>
+    <string name="error_wrongPassword">输入的密码未能解锁该 PDF。</string>
+    <string name="error_io">文件系统操作失败：{detail}</string>
+    <string name="error_cancelled">当前压缩任务已取消。</string>
+    <string name="error_config">配置操作失败：{detail}</string>
+    <string name="error_opener">调用系统程序打开路径失败：{detail}</string>
+    <string name="error_pdfBuild">生成输出 PDF 失败：{detail}</string>
+
+    <string name="app_name">PDF 压缩器</string>
+    <string name="engine_status_ready">引擎就绪</string>
+    <string name="pick_pdf">选择 PDF 文件</string>
+    <string name="analyzing">分析中…</string>
+    <string name="compressing">压缩中…</string>
+    <string name="cancel">取消</string>
+    <string name="save_output">保存优化副本</string>
+    <string name="share_output">分享</string>
+    <string name="result_summary">%1$s → %2$s（节省 %3$s）</string>
+    <string name="result_not_smaller">压缩未能小于原文件，已保持原样。</string>
+    <string name="retry_password">该 PDF 需要密码，请重试。</string>
+</resources>

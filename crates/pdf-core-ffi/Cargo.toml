@@ -1,0 +1,37 @@
+[package]
+name = "pdf-core-ffi"
+version = "0.11.0"
+description = "UniFFI mobile wrapper over pdf-core — DTOs, cancel handle, progress callback, error mapping"
+authors = ["cosct"]
+license = "MIT"
+edition = "2021"
+
+[lib]
+name = "pdf_core_ffi"
+# cdylib: the Android .so cargo-ndk ships in the APK; lib: host tests and
+# the uniffi-bindgen library-mode host build.
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+# default-features = false: keeps the flate2-zlib-ng backend (cmake/C) out of
+# this dependency graph — in an ffi-only build (cargo ndk / cargo test -p)
+# flate2 falls back to lopdf's pure-Rust miniz_oxide backend, so the NDK
+# cross-build needs zero cmake configuration. Workspace-wide builds still see
+# zlib-ng via src-tauri's default-feature request; behavior there is unchanged.
+pdf-core = { path = "../pdf-core", default-features = false, features = [
+    "ccitt",
+    "subset-fonts",
+] }
+# Pinned exact (plan risk register): UniFFI's 0.3x line has had breaking
+# upgrades; the generated Kotlin bindings are committed, and a version bump
+# must regenerate them in the same change.
+uniffi = "=0.32.1"
+thiserror = "2"
+
+[dev-dependencies]
+# Fixture builders for host-side pins (same self-dev-dependency trick as the
+# engine). Resolver "2" keeps testutil out of normal builds.
+pdf-core = { path = "../pdf-core", features = ["testutil"] }
+
+[lints]
+workspace = true

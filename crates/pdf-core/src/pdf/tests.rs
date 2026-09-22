@@ -13,7 +13,7 @@ use std::{
 use image::{codecs::jpeg::JpegEncoder, DynamicImage, GenericImageView};
 use lopdf::{dictionary, Document, Object, Stream, StringFormat};
 
-use super::analyzer::analyze_pdf_with_progress;
+use super::analyzer::{analyze_pdf_bytes_with_progress, analyze_pdf_with_progress};
 use super::compressor::compress_pdf_with_progress;
 use super::settings::{BilevelCodec, CompressionSettings, CompressionSettingsOverrides};
 use super::target_size::compress_pdf_to_target_size;
@@ -7623,5 +7623,62 @@ fn rereview_cmyk_jpeg_decode_array_keeps_rendered_colors() {
     assert!(
         psnr >= 25.0,
         "CMYK /Decode must be applied to four samples before RGB conversion (PSNR {psnr:.2} dB)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Bytes-twin parity (0.11.x analyze_pdf_bytes_with_progress)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn analyze_bytes_twin_matches_path_entry() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = fresh_fixture(dir.path());
+    let bytes = fs::read(&path).expect("fixture bytes");
+
+    let via_path = analyze_pdf_with_progress(
+        path.to_str().unwrap(),
+        None,
+        None,
+        &noop_cancel_flag(),
+        |_| {},
+    )
+    .expect("path analysis must succeed");
+    let via_bytes =
+        analyze_pdf_bytes_with_progress(&bytes, None, None, &noop_cancel_flag(), |_| {})
+            .expect("bytes analysis must succeed");
+
+    // Serialize both responses: a field-by-field pin without PartialEq on
+    // the wire model — any drift between the twins shows up as a JSON diff.
+    assert_eq!(
+        serde_json::to_string(&via_path).expect("serialize path response"),
+        serde_json::to_string(&via_bytes).expect("serialize bytes response"),
+        "the bytes twin must classify and estimate identically to the path entry"
+    );
+}
+
+#[test]
+fn analyze_bytes_twin_honors_cancel_before_work() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let bytes = fs::read(fresh_fixture(dir.path())).expect("fixture bytes");
+    let cancelled = Arc::new(AtomicBool::new(true));
+    let error = analyze_pdf_bytes_with_progress(&bytes, None, None, &cancelled, |_| {})
+        .expect_err("pre-cancelled analyze must fail");
+    assert!(matches!(error, AppError::Cancelled(_)));
+}
+
+#[test]
+fn analyze_bytes_twin_rejects_garbage_as_pdf_build() {
+    let error = analyze_pdf_bytes_with_progress(
+        b"definitely not a pdf",
+        None,
+        None,
+        &noop_cancel_flag(),
+        |_| {},
+    )
+    .expect_err("garbage bytes must fail analysis");
+    assert!(
+        matches!(error, AppError::PdfBuild(_)),
+        "unparseable bytes map to PdfBuild, got {error:?}"
     );
 }

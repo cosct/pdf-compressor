@@ -129,11 +129,77 @@ where
     let decrypted_with_empty_password =
         super::ensure_not_encrypted(&mut document, password_attempted)?;
 
+    analyze_loaded_document(
+        &document,
+        file_size_bytes,
+        decrypted_with_empty_password,
+        settings,
+        cancel_flag,
+        report_progress,
+    )
+}
+
+/// In-memory twin of [`analyze_pdf_with_progress`] (0.11.x, for the mobile
+/// FFI layer): bytes in, no filesystem, same classification and estimate,
+/// same password/encrypted-input semantics. A borrowed slice is enough —
+/// analysis never rewrites the document.
+/// 内存管道版分析入口 — 字节进、零文件系统，分类/预估/密码语义与路径版一致。
+pub fn analyze_pdf_bytes_with_progress<F>(
+    input: &[u8],
+    password: Option<&str>,
+    settings: Option<&CompressionSettings>,
+    cancel_flag: &Arc<AtomicBool>,
+    mut report_progress: F,
+) -> Result<AnalysisResponse, AppError>
+where
+    F: FnMut(ProgressUpdate),
+{
+    report_progress(ProgressUpdate::new("analyzing", 5.0));
+    ensure_not_cancelled(cancel_flag, "analyze")?;
+
+    ensure_input_size_supported(input.len() as u64)?;
+    let password_attempted = password.is_some_and(|value| !value.is_empty());
+    let mut document = super::load_document_mem(input, password).map_err(|error| {
+        // Same passthrough matrix as the path entry minus the path-only
+        // codes (MissingInput/InvalidPdfPath cannot arise from a byte slice).
+        match error {
+            AppError::WrongPassword | AppError::PasswordRequired | AppError::Encrypted => error,
+            other => AppError::PdfBuild(format!("Failed to inspect PDF structure: {other}")),
+        }
+    })?;
+    let decrypted_with_empty_password =
+        super::ensure_not_encrypted(&mut document, password_attempted)?;
+
+    analyze_loaded_document(
+        &document,
+        input.len() as u64,
+        decrypted_with_empty_password,
+        settings,
+        cancel_flag,
+        report_progress,
+    )
+}
+
+/// Shared analysis core behind both public entries: everything from the
+/// loaded document to the response (classification signals, estimates,
+/// notices). Mirrors the 0.9.0 dual-entry merge of the compressor.
+#[allow(clippy::too_many_arguments)]
+fn analyze_loaded_document<F>(
+    document: &Document,
+    file_size_bytes: u64,
+    decrypted_with_empty_password: bool,
+    settings: Option<&CompressionSettings>,
+    cancel_flag: &Arc<AtomicBool>,
+    mut report_progress: F,
+) -> Result<AnalysisResponse, AppError>
+where
+    F: FnMut(ProgressUpdate),
+{
     report_progress(ProgressUpdate::new("analyzing", 20.0));
 
     let page_map = document.get_pages();
     let page_count = page_map.len();
-    let image_records = collect_image_stream_records(&document, cancel_flag)?;
+    let image_records = collect_image_stream_records(document, cancel_flag)?;
     let image_object_count = image_records.len();
     let longest_edges: Vec<u32> = image_records
         .iter()
@@ -142,7 +208,7 @@ where
 
     report_progress(ProgressUpdate::new("analyzing", 45.0));
 
-    let signals = collect_analysis_signals(&document, &page_map, cancel_flag)?;
+    let signals = collect_analysis_signals(document, &page_map, cancel_flag)?;
     let inspected_page_count = signals.inspected_pages.max(1);
 
     report_progress(ProgressUpdate::new("analyzing", 80.0));

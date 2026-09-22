@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Error strings mirror frontend/src/locales/en.ts (error.* keys with
+         dots mapped to underscores for Android resource names). The Rust
+         parity test in crates/pdf-core-ffi/tests/strings_parity.rs pins the
+         key set against the engine's closed error taxonomy. Mobile keeps
+         the {path}-free phrasing where SAF bytes carry no path. -->
+    <string name="error_missingInput">The selected file does not exist.</string>
+    <string name="error_invalidPdfPath">The selected file is not a PDF.</string>
+    <string name="error_inputTooLarge">This file is {size}, which exceeds the {limit} limit for safe processing on this device.</string>
+    <string name="error_encryptedPdf">This PDF uses DRM encryption with an unsupported security handler; it cannot be processed.</string>
+    <string name="error_passwordRequired">This PDF needs an open password before it can be processed.</string>
+    <string name="error_wrongPassword">The supplied password did not unlock this PDF.</string>
+    <string name="error_io">Filesystem operation failed: {detail}</string>
+    <string name="error_cancelled">The active compression task was cancelled.</string>
+    <string name="error_config">Configuration operation failed: {detail}</string>
+    <string name="error_opener">Failed to open the path with the system handler: {detail}</string>
+    <string name="error_pdfBuild">Failed to build the output PDF: {detail}</string>
+
+    <!-- First-version UI subset (Phase 2 skeleton). -->
+    <string name="app_name">PDF Compressor</string>
+    <string name="engine_status_ready">Engine ready</string>
+    <string name="pick_pdf">Choose a PDF</string>
+    <string name="analyzing">Analyzing…</string>
+    <string name="compressing">Compressing…</string>
+    <string name="cancel">Cancel</string>
+    <string name="save_output">Save optimized copy</string>
+    <string name="share_output">Share</string>
+    <string name="result_summary">%1$s → %2$s (%3$s saved)</string>
+    <string name="result_not_smaller">Compression could not beat the original; the file was left untouched.</string>
+    <string name="retry_password">This PDF needs a password. Try again.</string>
+</resources>

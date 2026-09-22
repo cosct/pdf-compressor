@@ -22,12 +22,14 @@ mod workers;
 #[cfg(test)]
 mod tests;
 
-pub use analyzer::analyze_pdf_with_progress;
+pub use analyzer::{analyze_pdf_bytes_with_progress, analyze_pdf_with_progress};
 pub use compressor::{
     compress_pdf_bytes_with_progress, compress_pdf_with_progress, BytesCompressionOutcome,
     MAX_INPUT_BYTES,
 };
-pub use settings::{BilevelCodec, CompressionSettings, CompressionSettingsOverrides};
+pub use settings::{
+    BilevelCodec, CompressionPreset, CompressionSettings, CompressionSettingsOverrides,
+};
 pub use target_size::{compress_pdf_bytes_to_target_size, compress_pdf_to_target_size};
 
 use std::sync::{

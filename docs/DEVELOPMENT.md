@@ -15,6 +15,7 @@ For contributors: setup, architecture, testing, conventions, and packaging.
 | Tauri 系统依赖 | Linux 需要 `webkit2gtk-4.1`、`gtk3`、`librsvg`、`patchelf`；其他平台见 Tauri 官方文档 |
 | cargo-fuzz（可选） | 模糊测试，需要 nightly 工具链 |
 | cargo-mutants（可选） | 变异测试 |
+| 安卓工具链（可选） | JDK 17 + Android SDK/NDK + `rustup target add aarch64-linux-android x86_64-linux-android` + `cargo install cargo-ndk`（仅构建 `android/` 需要） |
 
 ```bash
 # 安装 JS 依赖
@@ -43,6 +44,11 @@ cargo run -p pdf-core --bin pdf-compressor-cli -- compress <file.pdf> --target-s
 cargo run -p pdf-core --bin pdf-compressor-cli -- compress - --stdout < in.pdf > out.pdf  # 管道模式
 cargo run -p pdf-core --bin pdf-compressor-cli -- quick <file.pdf> --grayscale   # 后台模式（右键集成用）
 cargo run -p pdf-core --bin pdf-compressor-cli -- quick <dir>/ --no-notify       # 目录递归批量
+
+cargo test -p pdf-core-ffi                     # ffi 层宿主钉子（parity/错误映射/取消/预检/strings）
+scripts/gen-android-bindings.sh --check        # Kotlin 绑定 freshness 门禁（CI 同款）
+scripts/build-android-libs.sh [--release]      # cargo-ndk 交叉编译 cdylib → android jniLibs
+cd android && ./gradlew assembleDebug          # 安卓 APK（preBuild 自动跑上一行）
 ```
 
 > 前端代码在 `frontend/` 子目录（`index.html` / `src` / `public` / `vite.config.ts` / `tsconfig*`）。
@@ -61,17 +67,52 @@ cargo run -p pdf-core --bin pdf-compressor-cli -- quick <dir>/ --no-notify      
                                         │ 引擎 (crates/pdf-core)      │
                                         │ analyzer / compressor /     │
                                         │ target_size / settings      │
+                                        └──────────────┬──────────────┘
+                                                       │ 字节入口（含 0.11.x 的
+                                                       │ analyze 字节孪生）
+                                        ┌─────────────▼──────────────┐
+                                        │ FFI (crates/pdf-core-ffi)  │
+                                        │ UniFFI DTO/取消/进度/错误   │
+                                        └──────────────┬──────────────┘
+                                                       │ uniffi-bindgen（入库）
+                                        ┌─────────────▼──────────────┐
+                                        │ 安卓 (android/, Kotlin +    │
+                                        │ Compose；PdfEngine 协程壳)  │
                                         └────────────────────────────┘
 ```
+
+### 移动层（安卓，2026-09-22 起接入）
+
+- **`crates/pdf-core-ffi`**：UniFFI 包装 crate（`uniffi` 钉 `=0.32.1`）。暴露
+  `analyze`/`compress`/`compress_to_target`（全部阻塞式 + `FfiCancelHandle` +
+  `FfiProgress` 回调）、`preset_defaults()`（直读 Rust 预设表事实源）、
+  `build_features()` 与 `ping()`；512 MiB 移动输入预检与 `%PDF-` 头嗅探在 ffi
+  层前置。错误经 `From<AppError>` 折叠为 8 变体的 `FfiError`（Io/Opener/Config
+  壳层码并入 `Engine{detail}`）。依赖 pdf-core 时关默认特性——flate2 因而回落到
+  lopdf 的 miniz_oxide 纯 Rust 后端，`cargo ndk` 交叉构建零 cmake 配置；
+  桌面构建走 pdf-core 默认特性（`flate2-zlib-ng`），行为不变。
+- **绑定纪律**：`scripts/gen-android-bindings.sh` 用库模式（宿主 cdylib +
+  uniffi-bindgen）生成 Kotlin 到 `android/app/src/main/uniffi/`（入库）；
+  `--check` 供 CI 做 freshness diff（同 `bindings.ts` 的纪律）。ffi crate 的
+  宿主测试含 strings.xml 闭集 parity 钉子。
+- **`android/`**：Gradle KTS + Compose 单模块。`preBuild` 挂
+  `scripts/build-android-libs.sh`（cargo-ndk → jniLibs，gitignore 产物）；
+  UniFFI Kotlin 经 JNA 加载 `libpdf_core_ffi.so`。构建前置：
+  JDK 17 + Android SDK/NDK + `rustup target add aarch64-linux-android
+  x86_64-linux-android` + `cargo install cargo-ndk`，然后
+  `cd android && ./gradlew assembleDebug`。
 
 ### 分层规则
 
 - **`crates/pdf-core`**：纯 PDF 引擎，不依赖 Tauri/UI。公共 API 只有
-  `analyze_pdf_with_progress`、`compress_pdf_with_progress`、
+  `analyze_pdf_with_progress`、`analyze_pdf_bytes_with_progress`（0.11.x 字节
+  孪生，供 ffi 层）、`compress_pdf_with_progress`、
   `compress_pdf_bytes_with_progress`（+`BytesCompressionOutcome`，管道字节入口）、
-  `compress_pdf_to_target_size`、`CompressionSettings(Overrides)`、
+  `compress_pdf_to_target_size`、`compress_pdf_bytes_to_target_size`、
+  `CompressionSettings(Overrides)`、`CompressionPreset`（预设表事实源）、
   `MAX_INPUT_BYTES`、`migrate_cmyk_default_flip` 与错误/模型类型，
-  在 `src/lib.rs` 统一导出。四个前端共享它：Tauri 应用、`pdf-compressor-cli`、criterion 基准、cargo-fuzz。
+  在 `src/lib.rs` 统一导出。四个前端共享它：Tauri 应用、`pdf-compressor-cli`、criterion 基准、cargo-fuzz
+  （+安卓经 pdf-core-ffi，第五个）。
   引擎内部分层：`pdf/compressor.rs`（文档编排与批量调度）、`pdf/encode.rs`（单图
   编解码：跳过启发式/解码/缩放/JPEG 重编码/软蒙版）、`pdf/search.rs`（目标大小搜索
   状态：逐图缓存与探测/物化）、`pdf/target_size.rs`（搜索调度与入口）、

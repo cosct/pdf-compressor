@@ -26,7 +26,11 @@ if (tauriConf.version !== version) {
 }
 
 // --- Cargo.toml of every workspace crate (only the [package] version line) ---
-for (const cargoPath of ['src-tauri/Cargo.toml', 'crates/pdf-core/Cargo.toml']) {
+for (const cargoPath of [
+  'src-tauri/Cargo.toml',
+  'crates/pdf-core/Cargo.toml',
+  'crates/pdf-core-ffi/Cargo.toml',
+]) {
   const cargo = readFileSync(cargoPath, 'utf8')
   const cargoPattern = /^version = ".*"$/m
   if (!cargoPattern.test(cargo)) {
@@ -47,7 +51,7 @@ for (const cargoPath of ['src-tauri/Cargo.toml', 'crates/pdf-core/Cargo.toml']) 
 const lockPath = 'Cargo.lock'
 const lock = readFileSync(lockPath, 'utf8')
 let updatedLock = lock
-for (const crate of ['pdf-core', 'app']) {
+for (const crate of ['pdf-core', 'pdf-core-ffi', 'app']) {
   const blockPattern = new RegExp(
     `(\\[\\[package\\]\\]\\nname = "${crate}"\\nversion = ")[^"]+(")`,
   )
@@ -58,7 +62,23 @@ for (const crate of ['pdf-core', 'app']) {
 }
 if (updatedLock !== lock) {
   writeFileSync(lockPath, updatedLock)
-  console.log(`${lockPath}: pdf-core, app -> ${version}`)
+  console.log(`${lockPath}: pdf-core, pdf-core-ffi, app -> ${version}`)
 } else {
   console.log(`${lockPath}: already at ${version}`)
+}
+
+// --- android/app/build.gradle.kts (versionName tracks the repo version;
+// versionCode stays manually bumped per release) ---
+const gradlePath = 'android/app/build.gradle.kts'
+const gradle = readFileSync(gradlePath, 'utf8')
+const gradlePattern = /^(\s*)versionName = ".*"$/m
+if (!gradlePattern.test(gradle)) {
+  throw new Error(`No versionName line found in ${gradlePath}`)
+}
+const updatedGradle = gradle.replace(gradlePattern, `$1versionName = "${version}"`)
+if (updatedGradle !== gradle) {
+  writeFileSync(gradlePath, updatedGradle)
+  console.log(`${gradlePath}: versionName -> ${version}`)
+} else {
+  console.log(`${gradlePath}: versionName already at ${version}`)
 }

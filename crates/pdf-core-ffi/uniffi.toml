@@ -1,0 +1,7 @@
+# UniFFI global config (0.3x new-style format: [defaults]/[crates.<name>]).
+# The namespace itself comes from `uniffi::setup_scaffolding!("pdfcompressor")`
+# in src/lib.rs; this pins the generated Kotlin package explicitly so a
+# regeneration cannot silently move the committed bindings
+# (scripts/gen-android-bindings.sh passes --config).
+[crates."pdf-core-ffi".kotlin]
+package_name = "uniffi.pdfcompressor"

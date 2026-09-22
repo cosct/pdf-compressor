@@ -2,6 +2,42 @@
 
 本项目的所有显著变更都记录在此文件中。格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。日期为提交日期。
 
+## [未发布]
+
+安卓原生版起步（docs/PLAN-android.md 的 P0-P2 首刀批次；引擎正确性资产
+零损耗平移，桌面行为不变）。
+
+### 新增
+
+- **`crates/pdf-core-ffi`**：UniFFI 移动包装 crate（`uniffi =0.32.1` 钉版）。
+  `analyze`/`compress`/`compress_to_target` 阻塞入口 + `FfiCancelHandle` +
+  `FfiProgress` 回调 + 512 MiB 移动输入预检 + `%PDF-` 头嗅探；
+  `preset_defaults()` 直读 Rust 预设表；错误 11 码折叠为 8 变体
+  `FfiError`（Io/Opener/Config 壳层码并入 `Engine{detail}`）。宿主钉子
+  19 条：DTO parity、错误映射全覆盖、进度顺序、取消（前置/中途）、
+  直通语义、预设表镜像、strings.xml 闭集 parity（en/zh 键集一致）。
+- **引擎字节分析入口 `analyze_pdf_bytes_with_progress`**：路径版的分析
+  孪生（0.9.0 压缩双入口合并的对称补全，供 ffi/管道场景）；行为 parity
+  由引擎测试钉死。`CompressionPreset`（预设表事实源）转为公共导出。
+- **flate2 后端可选化**：pdf-core 的 zlib-ng 声明移入默认特性
+  `flate2-zlib-ng`。桌面/CLI/工作区构建特性解析与此前逐位一致；ffi-only
+  构建图（`cargo ndk`、`cargo test -p pdf-core-ffi`）回落到 lopdf 自带的
+  miniz_oxide 纯 Rust 后端——安卓交叉编译零 cmake/NDK toolchain 配置。
+- **绑定纪律**：`scripts/gen-android-bindings.sh`（库模式生成 Kotlin，
+  入库至 `android/app/src/main/uniffi/`；`--check` 为 CI freshness 门禁）
+  与 `scripts/build-android-libs.sh`（cargo-ndk → jniLibs，产物 gitignore）。
+- **`android/` 工程骨架**：Gradle KTS + Compose BOM + Material3，
+  minSdk 26 / targetSdk 36；SAF 选档 → 分析 → 压缩（进度/取消/密码重试）
+  → 保存/分享的单文件链路；中英 strings.xml；`preBuild` 挂 Rust 交叉
+  构建（无 NDK 且已有 jniLibs 时跳过）；`sync-version` 纳入 ffi crate 与
+  `versionName`。
+
+### 待验收（本机无 Android SDK/NDK/真机）
+
+- `cargo ndk` 双 ABI 交叉构建、`./gradlew assembleDebug` 端到端、真机
+  SAF 往返（S3 验收钉子）与 Compose 版本对齐需在具备工具链的环境首次
+  构建时确认（DEVELOPMENT.md §1 列前置）。
+
 ## [0.11.0] - 2026-09-20
 
 审查收口专项（docs/PLAN-0.11.0.md）+ 1.0 前置清单（docs/PLAN-1.0.md §3）：

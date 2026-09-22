@@ -1,0 +1,10 @@
+# Gradle / Android build state — never committed.
+.gradle/
+build/
+app/build/
+local.properties
+*.iml
+.kotlin/
+
+# Rust cdylib output of scripts/build-android-libs.sh (built at package time).
+app/src/main/jniLibs/
