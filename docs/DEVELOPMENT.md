@@ -648,14 +648,14 @@ README/用户指南通俗化）；**0.9.0（工程深水区 + 诚实性：e2e �
 [PLAN-1.0.md](PLAN-1.0.md)。
 
 **明确不进 1.0**：
-- **安卓**（可行性 2026-09-13 评估：引擎零改动——纯 Rust + cc 静态
-  C 均可 NDK 交叉编译、字节入口天然对接 SAF、无 OS 特定代码；工作
-  量在桌面壳移动变体 + UI 响应式改造，MVP 估 2-4 周）——**1.x 首
-  项**，独立立项，spike 先行 1-2 天（tauri android init + jpx/cmyk-cms
-  NDK 编译 + 字节入口跑夹具）。
+- **安卓**——**1.x 首项**，已立项：走**原生路线**（Kotlin + Compose UI，
+  Rust 引擎经 UniFFI 零改动复用；2026-09-20 决策，替代先前的 tauri
+  mobile 变体评估）。分阶段计划、接口设计与风险清单见
+  [PLAN-android.md](PLAN-android.md)；与桌面 1.0 观察期互不阻塞。
 - **TypeScript 7**：vue-tsc 适配前不可达（#10 保持开放）。
 - **暂缓项全部维持**（理由见上节，上游/许可解锁前不动）。
 
-**1.x 路线草案**：安卓 spike → 立项决策 → MVP；TS7 跟踪 vue-tsc；
-其余 issue 驱动。
+**1.x 路线**：安卓原生版（[PLAN-android.md](PLAN-android.md)：spike →
+ffi crate → 骨架 → MVP → 队列 → 对齐桌面 → 发布）；TS7 跟踪 vue-tsc；
+壳层集成测试债（mutation-log.md）随 1.x 补；其余 issue 驱动。
 

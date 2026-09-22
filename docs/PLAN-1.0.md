@@ -90,7 +90,8 @@ panic 已随 `9968325` 修复；其余各项如下）。1.0 冻结的是「现�
 
 ## 6. 1.0 之后的路标（已在 §8 定调，此处仅索引）
 
-- **安卓**：1.x 首项，独立立项，spike 先行（tauri android init +
-  jpx/cmyk-cms NDK 编译 + 字节入口跑夹具，1-2 天）。
+- **安卓**：1.x 首项，已立项走原生路线（Kotlin + Compose + UniFFI 复用
+  引擎，2026-09-20 决策）——详见 [PLAN-android.md](PLAN-android.md)；
+  与本计划观察期互不阻塞。
 - **TypeScript 7**：跟踪 vue-tsc 适配（依赖 issue 保持开放）。
 - 其余 issue 驱动。
