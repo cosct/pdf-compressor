@@ -21,5 +21,28 @@
                  desktop-parity batch; enable the filter together with the
                  handling code. -->
         </activity>
+
+        <!-- Share sheet: grants the receiver a read on the cached optimized
+             copy (res/xml/file_paths.xml). -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+        <!-- Persists AppCompatDelegate.setApplicationLocales across restarts
+             on pre-API-33 devices (on 33+ the system stores per-app locales). -->
+        <service
+            android:name="androidx.appcompat.app.AppLocalesMetadataHolderService"
+            android:enabled="false"
+            android:exported="false">
+            <meta-data
+                android:name="autoStoreLocales"
+                android:value="true" />
+        </service>
     </application>
 </manifest>

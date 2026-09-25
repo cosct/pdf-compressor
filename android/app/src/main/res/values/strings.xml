@@ -29,4 +29,24 @@
     <string name="result_summary">%1$s → %2$s (%3$s saved)</string>
     <string name="result_not_smaller">Compression could not beat the original; the file was left untouched.</string>
     <string name="retry_password">This PDF needs a password. Try again.</string>
+
+    <!-- Phase 3 MVP: preset picker, custom panel, settings. Preset names
+         mirror frontend locales (compress.preset.*). -->
+    <string name="start_compress">Compress</string>
+    <string name="preset_group_label">Compression preset</string>
+    <string name="preset_auto">Auto</string>
+    <string name="preset_conservative">Conservative</string>
+    <string name="preset_balanced">Balanced</string>
+    <string name="preset_maximum">Maximum</string>
+    <string name="preset_recommended_badge">Recommended</string>
+    <string name="custom_quality_label">Image quality: %1$d</string>
+    <string name="custom_max_edge_label">Max image edge</string>
+    <string name="max_edge_follow_preset">Preset default</string>
+    <string name="settings_title">Settings</string>
+    <string name="settings_theme">Theme</string>
+    <string name="theme_system">Follow system</string>
+    <string name="theme_light">Light</string>
+    <string name="theme_dark">Dark</string>
+    <string name="settings_language">Language</string>
+    <string name="lang_system">Follow system</string>
 </resources>

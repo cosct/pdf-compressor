@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FileProvider roots: the share sheet writes the optimized copy into
+     cache/shared/ and hands a content:// grant to the receiving app. -->
+<paths>
+    <cache-path name="shared" path="shared/" />
+</paths>

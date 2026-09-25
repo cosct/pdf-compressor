@@ -101,6 +101,15 @@ cd android && ./gradlew assembleDebug          # 安卓 APK（preBuild 自动跑
   JDK 17 + Android SDK/NDK + `rustup target add aarch64-linux-android
   x86_64-linux-android` + `cargo install cargo-ndk`，然后
   `cd android && ./gradlew assembleDebug`。
+- **MVP 单文件流（Phase 3）**：SAF 选档 → 分析 → 预设面板（`Auto` 跟随引擎
+  推荐 + 三预设 chip，附图片质量滑杆与边长上限简化面板）→ 压缩（进度 +
+  取消）→ SAF 保存 / FileProvider 分享（`cache/shared/` + content:// 授权）。
+  密码重试只存会话内存。设置持久化走 DataStore（预设选择、主题、语言），
+  主题经 `Theme.AppCompat.DayNight` + appcompat 夜间模式、语言经
+  `AppCompatDelegate.setApplicationLocales`（pre-33 由
+  `AppLocalesMetadataHolderService` 自动存回）落地。流程状态收进
+  `CompressViewModel`，旋转与主题/语言切换触发的 Activity 重建不丢
+  选档/进度/结果。
 
 ### 分层规则
 

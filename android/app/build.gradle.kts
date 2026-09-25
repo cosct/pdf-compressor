@@ -55,10 +55,17 @@ dependencies {
     implementation("androidx.core:core-ktx:1.16.0")
     implementation("androidx.activity:activity-compose:1.10.1")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.1")
+    // Flow state survives recreation (rotation, theme/locale switches).
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.9.1")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+    // Settings persistence (preset choice, theme, language).
+    implementation("androidx.datastore:datastore-preferences:1.1.7")
+    // Per-app language switching (AppCompatDelegate.setApplicationLocales)
+    // back-ported below API 33; theme is DayNight-aware through appcompat.
+    implementation("androidx.appcompat:appcompat:1.7.1")
     // UniFFI's generated Kotlin talks to the cdylib through JNA.
     implementation("net.java.dev.jna:jna:5.17.0@aar")
     debugImplementation("androidx.compose.ui:ui-tooling")

@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- DayNight parent (appcompat) so forced light/dark from settings and the
+     per-app locale back-port both work on the window level; Compose paints
+     everything inside. -->
 <resources>
-    <style name="Theme.PDFCompressor" parent="android:Theme.Material.Light.NoActionBar">
+    <style name="Theme.PDFCompressor" parent="Theme.AppCompat.DayNight.NoActionBar">
         <item name="android:statusBarColor">@android:color/transparent</item>
     </style>
 </resources>

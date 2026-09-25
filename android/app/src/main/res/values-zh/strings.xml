@@ -25,4 +25,22 @@
     <string name="result_summary">%1$s → %2$s（节省 %3$s）</string>
     <string name="result_not_smaller">压缩未能小于原文件，已保持原样。</string>
     <string name="retry_password">该 PDF 需要密码，请重试。</string>
+
+    <string name="start_compress">开始压缩</string>
+    <string name="preset_group_label">压缩预设</string>
+    <string name="preset_auto">自动</string>
+    <string name="preset_conservative">保守</string>
+    <string name="preset_balanced">均衡</string>
+    <string name="preset_maximum">最大化</string>
+    <string name="preset_recommended_badge">推荐</string>
+    <string name="custom_quality_label">图片质量：%1$d</string>
+    <string name="custom_max_edge_label">图片边长上限</string>
+    <string name="max_edge_follow_preset">跟随预设</string>
+    <string name="settings_title">设置</string>
+    <string name="settings_theme">主题</string>
+    <string name="theme_system">跟随系统</string>
+    <string name="theme_light">浅色</string>
+    <string name="theme_dark">深色</string>
+    <string name="settings_language">语言</string>
+    <string name="lang_system">跟随系统</string>
 </resources>

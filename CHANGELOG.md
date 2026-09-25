@@ -4,8 +4,8 @@
 
 ## [未发布]
 
-安卓原生版起步（docs/PLAN-android.md 的 P0-P2 首刀批次；引擎正确性资产
-零损耗平移，桌面行为不变）。
+安卓原生版起步（docs/PLAN-android.md 的 P0-P2 首刀 + P3 MVP 单文件流；
+引擎正确性资产零损耗平移，桌面行为不变）。
 
 ### 新增
 
@@ -31,12 +31,22 @@
   → 保存/分享的单文件链路；中英 strings.xml；`preBuild` 挂 Rust 交叉
   构建（无 NDK 且已有 jniLibs 时跳过）；`sync-version` 纳入 ffi crate 与
   `versionName`。
+- **MVP 单文件流（Phase 3）**：预设面板（Auto 跟随引擎推荐 + 三预设
+  chip + 图片质量滑杆与边长上限简化面板，参数直读 `preset_defaults()`）；
+  分享走 FileProvider（`cache/shared/` + content:// 授权）；设置持久化
+  （预设选择、主题、语言）经 DataStore，主题经 appcompat DayNight、语言
+  经 `AppCompatDelegate.setApplicationLocales` 落地，密码仍只存会话内存；
+  流程状态收进 `CompressViewModel`——旋转与主题/语言切换的 Activity
+  重建不再丢失选档/进度/结果。
 
-### 待验收（本机无 Android SDK/NDK/真机）
+### 验收状态
 
-- `cargo ndk` 双 ABI 交叉构建、`./gradlew assembleDebug` 端到端、真机
-  SAF 往返（S3 验收钉子）与 Compose 版本对齐需在具备工具链的环境首次
-  构建时确认（DEVELOPMENT.md §1 列前置）。
+- 已验证（x86_64 模拟器，API 33）：`cargo ndk` 双 ABI 交叉构建、
+  `./gradlew assembleDebug` 端到端、SAF 选档 → 分析 → 压缩 → SAF 保存
+  （文件落盘核对）与分享 sheet 带载荷、深浅色/中英文切换与冷启动持久化、
+  旋转/重建状态保留。
+- 仍待：arm64 真机走查（S3 的另一半）与 30 MB 级扫描件内存峰值记录
+  （Phase 3 验收钉子）。
 
 ## [0.11.0] - 2026-09-20
 

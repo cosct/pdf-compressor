@@ -1,17 +1,23 @@
 package com.cosct.pdfcompressor
 
+import android.content.ClipData
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.app.AppCompatDelegate
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.LinearProgressIndicator
@@ -22,161 +28,111 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.Job
+import androidx.core.content.FileProvider
+import androidx.core.os.LocaleListCompat
+import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import uniffi.pdfcompressor.FfiAnalysis
 import uniffi.pdfcompressor.FfiCompressResult
-import uniffi.pdfcompressor.FfiException
+import java.io.File
 import java.io.IOException
 
 /**
- * Skeleton single-file flow (spike S3 scope): SAF pick → analyze → compress
- * with live progress + cancel → SAF save of the optimized copy. Password
- * retry keeps the password in memory only — never persisted (desktop
- * discipline). The MVP queue/presets/settings screens grow from here.
+ * MVP single-file flow (Phase 3): SAF pick → analyze → preset picker (Auto
+ * plus the engine's three rows, with the simplified custom quality/edge
+ * panel) → compress with live progress + cancel → SAF save / FileProvider
+ * share of the optimized copy. Flow state lives in [CompressViewModel] so
+ * rotation and theme/locale recreations do not lose a run. Password retry
+ * keeps the password in memory only — never persisted (desktop discipline).
+ * Theme and language persist via DataStore; the queue/background batch grows
+ * from here (Phase 4).
  */
-class MainActivity : ComponentActivity() {
+class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val settingsRepository = SettingsRepository(applicationContext)
         setContent {
-            AppTheme {
+            // Null until DataStore's first real emission. The side effects
+            // below must never fire for this placeholder: applying DEFAULT
+            // (system theme/locale) before the persisted value arrives
+            // bounces night mode / locales and recreates the activity in a
+            // loop on cold start. Rendering with DEFAULT meanwhile is fine.
+            val settings by settingsRepository.data.collectAsState(initial = null)
+            val snapshot = settings ?: SettingsSnapshot.DEFAULT
+            // Persisted theme → appcompat night mode (keeps the window in
+            // step with the Compose scheme) and → the Material scheme.
+            LaunchedEffect(settings?.themeMode) {
+                val themeMode = settings?.themeMode ?: return@LaunchedEffect
+                AppCompatDelegate.setDefaultNightMode(
+                    when (themeMode) {
+                        ThemeMode.SYSTEM -> AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM
+                        ThemeMode.LIGHT -> AppCompatDelegate.MODE_NIGHT_NO
+                        ThemeMode.DARK -> AppCompatDelegate.MODE_NIGHT_YES
+                    },
+                )
+            }
+            // Persisted language → per-app locales (no-op when unchanged, so
+            // cold starts with appcompat's autoStoreLocales do not loop).
+            LaunchedEffect(settings?.language) {
+                val language = settings?.language ?: return@LaunchedEffect
+                AppCompatDelegate.setApplicationLocales(
+                    if (language == "system") {
+                        LocaleListCompat.getEmptyLocaleList()
+                    } else {
+                        LocaleListCompat.forLanguageTags(language)
+                    },
+                )
+            }
+            AppTheme(themeMode = snapshot.themeMode) {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    CompressScreen()
+                    CompressScreen(settingsRepository, snapshot)
                 }
             }
         }
     }
-}
-
-private sealed interface Stage {
-    data object Idle : Stage
-
-    data class Analyzing(val uri: Uri, val bytes: ByteArray, val displayName: String) : Stage
-
-    data class Ready(
-        val uri: Uri,
-        val bytes: ByteArray,
-        val displayName: String,
-        val analysis: FfiAnalysis,
-        val password: String?,
-    ) : Stage
-
-    data class Compressing(
-        val uri: Uri,
-        val bytes: ByteArray,
-        val displayName: String,
-        val analysis: FfiAnalysis,
-        val password: String?,
-        val progress: Float,
-    ) : Stage
-
-    data class Done(
-        val result: FfiCompressResult,
-        val displayName: String,
-    ) : Stage
 }
 
 @Composable
-private fun CompressScreen() {
+private fun CompressScreen(
+    settingsRepository: SettingsRepository,
+    settings: SettingsSnapshot,
+    viewModel: CompressViewModel = viewModel(),
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var stage by remember { mutableStateOf<Stage>(Stage.Idle) }
-    // S2: engine liveness on first composition.
-    val enginePing = remember { PdfEngine.probe() }
-    var error by remember { mutableStateOf<String?>(null) }
-    var pendingPassword by remember { mutableStateOf<Pair<Stage.Ready, Boolean>?>(null) }
-    var compressJob by remember { mutableStateOf<Job?>(null) }
-
-    fun runCompress(ready: Stage.Ready, password: String?) {
-        val progress = PdfEngine.Progress()
-        stage = Stage.Compressing(
-            ready.uri, ready.bytes, ready.displayName, ready.analysis, password, 0f,
-        )
-        compressJob = scope.launch {
-            val collector = launch {
-                progress.latest.collect { update ->
-                    if (update != null) {
-                        stage = (stage as? Stage.Compressing)
-                            ?.copy(progress = update.percent / 100f)
-                            ?: stage
-                    }
-                }
-            }
-            try {
-                val result = PdfEngine.compress(
-                    bytes = ready.bytes,
-                    password = password,
-                    settings = PdfEngine.presetSettings(ready.analysis.recommendedPreset),
-                    progress = progress,
-                )
-                stage = Stage.Done(result, ready.displayName)
-            } catch (cancelled: FfiException.Cancelled) {
-                stage = Stage.Idle
-            } catch (failure: FfiException) {
-                when (failure) {
-                    is FfiException.PasswordRequired, is FfiException.WrongPassword -> {
-                        pendingPassword = ready to (failure is FfiException.WrongPassword)
-                        stage = Stage.Ready(
-                            ready.uri, ready.bytes, ready.displayName, ready.analysis, password,
-                        )
-                    }
-
-                    else -> {
-                        val mapped = engineErrorMessage(failure, context)
-                        error = context.getString(
-                            mapped.messageRes,
-                            *mapped.formatArgs.toTypedArray(),
-                        )
-                        stage = Stage.Ready(
-                            ready.uri, ready.bytes, ready.displayName, ready.analysis, password,
-                        )
-                    }
-                }
-            } finally {
-                collector.cancel()
-            }
-        }
-    }
+    var showSettings by rememberSaveable { mutableStateOf(false) }
+    val stage = viewModel.stage
 
     val pickPdf = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument(),
     ) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        scope.launch {
-            try {
-                val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                    ?: throw IOException("empty stream")
-                val displayName = queryDisplayName(context, uri) ?: "document.pdf"
-                stage = Stage.Analyzing(uri, bytes, displayName)
-                val analysis = PdfEngine.analyze(bytes)
-                stage = Stage.Ready(uri, bytes, displayName, analysis, null)
-            } catch (failure: Exception) {
-                error = failure.message ?: failure.toString()
-                stage = Stage.Idle
-            }
-        }
+        if (uri != null) viewModel.onPdfPicked(context, uri)
     }
 
     val saveOutput = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/pdf"),
     ) { uri ->
-        val done = stage as? Stage.Done ?: return@rememberLauncherForActivityResult
+        val done = viewModel.stage as? Stage.Done ?: return@rememberLauncherForActivityResult
         if (uri != null) {
             scope.launch {
                 try {
                     context.contentResolver.openOutputStream(uri)?.use { it.write(done.result.bytes) }
                 } catch (failure: IOException) {
-                    error = failure.message
+                    viewModel.reportError(failure.message)
                 }
             }
         }
@@ -185,16 +141,25 @@ private fun CompressScreen() {
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .verticalScroll(rememberScrollState())
             .padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Text(stringResource(R.string.app_name), style = MaterialTheme.typography.headlineMedium)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(stringResource(R.string.app_name), style = MaterialTheme.typography.headlineMedium)
+            TextButton(onClick = { showSettings = true }) {
+                Text(stringResource(R.string.settings_title))
+            }
+        }
         Text(
-            stringResource(R.string.engine_status_ready) + " · " + enginePing,
+            stringResource(R.string.engine_status_ready) + " · " + viewModel.enginePing,
             style = MaterialTheme.typography.bodySmall,
         )
 
-        error?.let { message ->
+        viewModel.error?.let { message ->
             Text(message, color = MaterialTheme.colorScheme.error)
         }
 
@@ -214,12 +179,28 @@ private fun CompressScreen() {
             }
 
             is Stage.Ready -> {
-                AnalysisCard(analysis = current.analysis, fileSizeBytes = current.bytes.size.toULong())
+                AnalysisCard(analysis = current.analysis)
+                PresetPanel(
+                    table = viewModel.presetTable,
+                    recommended = current.analysis.recommendedPreset,
+                    choice = settings.presetChoice,
+                    onChoice = { choice ->
+                        viewModel.qualityOverride = null
+                        viewModel.maxEdgeOverride = null
+                        scope.launch { settingsRepository.setPresetChoice(choice) }
+                    },
+                    quality = viewModel.effectiveQuality(current.analysis, settings.presetChoice),
+                    onQuality = { viewModel.qualityOverride = it },
+                    maxEdgePx = viewModel.maxEdgeOverride,
+                    onMaxEdge = { viewModel.maxEdgeOverride = it },
+                )
                 Button(
-                    onClick = { runCompress(current, current.password) },
+                    onClick = {
+                        viewModel.runCompress(context, current, current.password, settings.presetChoice)
+                    },
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Text(stringResource(R.string.compressing))
+                    Text(stringResource(R.string.start_compress))
                 }
             }
 
@@ -230,7 +211,7 @@ private fun CompressScreen() {
                     modifier = Modifier.fillMaxWidth(),
                 )
                 OutlinedButton(
-                    onClick = { compressJob?.cancel() },
+                    onClick = { viewModel.cancelCompress() },
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text(stringResource(R.string.cancel))
@@ -247,7 +228,7 @@ private fun CompressScreen() {
                         Text(stringResource(R.string.save_output))
                     }
                     OutlinedButton(
-                        onClick = { shareResult(context, current) },
+                        onClick = { scope.launch { shareResult(context, current) } },
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Text(stringResource(R.string.share_output))
@@ -259,10 +240,10 @@ private fun CompressScreen() {
         }
     }
 
-    pendingPassword?.let { (ready, wasWrong) ->
-        var password by remember { mutableStateOf("") }
+    viewModel.pendingPassword?.let { (ready, wasWrong) ->
+        var password by rememberSaveable { mutableStateOf("") }
         AlertDialog(
-            onDismissRequest = { pendingPassword = null },
+            onDismissRequest = { viewModel.dismissPasswordDialog() },
             title = {
                 Text(
                     stringResource(
@@ -279,21 +260,32 @@ private fun CompressScreen() {
             },
             confirmButton = {
                 TextButton(onClick = {
-                    pendingPassword = null
-                    runCompress(ready, password.ifBlank { null })
+                    viewModel.dismissPasswordDialog()
+                    viewModel.runCompress(
+                        context, ready, password.ifBlank { null }, settings.presetChoice,
+                    )
                 }) { Text("OK") }
             },
             dismissButton = {
-                TextButton(onClick = { pendingPassword = null }) {
+                TextButton(onClick = { viewModel.dismissPasswordDialog() }) {
                     Text(stringResource(R.string.cancel))
                 }
             },
         )
     }
+
+    if (showSettings) {
+        SettingsDialog(
+            snapshot = settings,
+            onTheme = { scope.launch { settingsRepository.setThemeMode(it) } },
+            onLanguage = { scope.launch { settingsRepository.setLanguage(it) } },
+            onDismiss = { showSettings = false },
+        )
+    }
 }
 
 @Composable
-private fun AnalysisCard(analysis: FfiAnalysis, fileSizeBytes: ULong) {
+private fun AnalysisCard(analysis: FfiAnalysis) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(
             "${analysis.pageCount} pages · ${analysis.documentKind}",
@@ -301,7 +293,7 @@ private fun AnalysisCard(analysis: FfiAnalysis, fileSizeBytes: ULong) {
         )
         Text("images: ${analysis.imageObjectCount} · edge ${analysis.maxImageEdgePx}px")
         Text("estimated savings: ${analysis.estimatedSavingsPercent.toInt()}%")
-        Text("recommended preset: ${analysis.recommendedPreset}")
+        Text("recommended preset: ${presetDisplayName(analysis.recommendedPreset)}")
     }
 }
 
@@ -324,7 +316,7 @@ private fun ResultCard(result: FfiCompressResult, displayName: String) {
     }
 }
 
-private fun queryDisplayName(context: android.content.Context, uri: Uri): String? =
+fun queryDisplayName(context: Context, uri: Uri): String? =
     runCatching {
         context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
             val index = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
@@ -335,13 +327,24 @@ private fun queryDisplayName(context: android.content.Context, uri: Uri): String
 private fun suggestedOutputName(displayName: String): String =
     displayName.removeSuffix(".pdf") + "_optimized.pdf"
 
-private fun shareResult(context: android.content.Context, done: Stage.Done) {
-    // Placeholder intent until FileProvider-backed cache sharing lands with
-    // the MVP batch; the chooser opens without the payload attached.
+/** Share the optimized copy through the system sheet. The bytes land in the
+ *  FileProvider-backed cache first so the receiver gets a revocable
+ *  content:// grant instead of our raw storage. */
+private suspend fun shareResult(context: Context, done: Stage.Done) {
     runCatching {
+        val name = suggestedOutputName(done.displayName)
+        val uri = withContext(Dispatchers.IO) {
+            val dir = File(context.cacheDir, "shared").apply { mkdirs() }
+            val file = File(dir, name)
+            file.writeBytes(done.result.bytes)
+            FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+        }
         val send = Intent(Intent.ACTION_SEND).apply {
             type = "application/pdf"
-            putExtra(Intent.EXTRA_SUBJECT, suggestedOutputName(done.displayName))
+            putExtra(Intent.EXTRA_STREAM, uri)
+            putExtra(Intent.EXTRA_SUBJECT, name)
+            clipData = ClipData.newRawUri(null, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
         context.startActivity(Intent.createChooser(send, null))
     }

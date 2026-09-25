@@ -7,12 +7,16 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 
 /**
- * Follow-system light/dark Material3 scheme. Brand colors align with the
- * desktop build once the palette is extracted from the Tauri theme; the
- * skeleton ships the baseline purple-free defaults.
+ * Material3 scheme honoring the persisted theme mode (follow-system by
+ * default). Brand colors align with the desktop build once the palette is
+ * extracted from the Tauri theme.
  */
 @Composable
-fun AppTheme(content: @Composable () -> Unit) {
-    val scheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()
-    MaterialTheme(colorScheme = scheme, content = content)
+fun AppTheme(themeMode: ThemeMode = ThemeMode.SYSTEM, content: @Composable () -> Unit) {
+    val dark = when (themeMode) {
+        ThemeMode.SYSTEM -> isSystemInDarkTheme()
+        ThemeMode.LIGHT -> false
+        ThemeMode.DARK -> true
+    }
+    MaterialTheme(colorScheme = if (dark) darkColorScheme() else lightColorScheme(), content = content)
 }

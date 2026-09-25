@@ -8,6 +8,7 @@ import kotlinx.coroutines.isActive
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import uniffi.pdfcompressor.FfiAnalysis
 import uniffi.pdfcompressor.FfiCancelHandle
 import uniffi.pdfcompressor.FfiCompressResult
