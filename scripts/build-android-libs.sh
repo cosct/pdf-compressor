@@ -51,14 +51,17 @@ if [[ -z "${ANDROID_NDK_HOME:-}" && -z "${ANDROID_NDK_LATEST_HOME:-}" ]]; then
 fi
 
 NDK_ARGS=()
+BUILD_ARGS=()
 if [[ "$MODE" == "release" ]]; then
-  NDK_ARGS+=(--release)
+  # cargo-ndk 4.x: --release belongs to the cargo build invocation, not the
+  # ndk wrapper (putting it before `build` errors out).
+  BUILD_ARGS+=(--release)
 fi
 for target in "${TARGETS[@]}"; do
   NDK_ARGS+=(-t "$target")
 done
 
-echo "==> cargo ndk ${NDK_ARGS[*]} build -p pdf-core-ffi"
-cargo ndk "${NDK_ARGS[@]}" -o android/app/src/main/jniLibs build -p pdf-core-ffi
+echo "==> cargo ndk ${NDK_ARGS[*]} build ${BUILD_ARGS[*]} -p pdf-core-ffi"
+cargo ndk "${NDK_ARGS[@]}" -o android/app/src/main/jniLibs build "${BUILD_ARGS[@]}" -p pdf-core-ffi
 
 find android/app/src/main/jniLibs -name 'libpdf_core_ffi.so' -exec ls -lh {} \;

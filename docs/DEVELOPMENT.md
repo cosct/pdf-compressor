@@ -120,6 +120,27 @@ cd android && ./gradlew assembleDebug          # 安卓 APK（preBuild 自动跑
   详情展开（置信度/覆盖率/推荐参数/notices，量纲 0–100）；最近文件
   （persistable URI，cap 10）；`ACTION_SEND` 收分享（singleTask，
   瞬时授权即读即弃）；结果页有回 Idle 的「选择其他 PDF」。
+- **发布工程（Phase 6）**：CI `android.yml`——ffi 宿主测试、绑定
+  freshness（`gen-android-bindings.sh --check`）、双 ABI
+  `assembleDebug` + `lintDebug`。release.yml 的 verify-version 纳入
+  ffi crate、`versionName` 与 Cargo.lock；`build-android-artifacts`
+  产**未签名** release APK（workflow 工件，签名留本地，Play 之前
+  不建 CI 签名）。本地签名直发与校验和刷新：
+
+  ```bash
+  apksigner sign --ks <keystore> --out pdf-compressor_<ver>_android.apk \
+    android/app/build/outputs/apk/release/app-release-unsigned.apk
+  gh release upload v<ver> pdf-compressor_<ver>_android.apk --clobber
+  gh release download v<ver> --dir release-assets --clobber
+  rm -f release-assets/SHA256SUMS
+  (cd release-assets && for f in *; do sha256sum "$f"; done) > ../SHA256SUMS
+  gh release upload v<ver> SHA256SUMS --clobber
+  ```
+
+  release 构建的两处坑已钉住：`proguard-rules.pro` 保 JNA/UniFFI
+  不被 R8 移除；`lint.xml` 豁免生成绑定的 NewApi（`Class.forName`
+  运行时探测 + JNA 回退，API 26–32 无崩溃路径）。F-Droid 元数据
+  草稿在 `packaging/fdroid/`（未过 fdroidserver 验证）。
 
 ### 分层规则
 

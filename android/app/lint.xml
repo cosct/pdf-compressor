@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<lint>
+    <!-- The generated UniFFI bindings probe java.lang.ref.Cleaner reflectively
+         (Class.forName) and fall back to JNA's internal cleaner below API 33,
+         so the NewApi findings in the generated tree are false positives. -->
+    <issue id="NewApi">
+        <ignore path="src/main/uniffi" />
+    </issue>
+</lint>

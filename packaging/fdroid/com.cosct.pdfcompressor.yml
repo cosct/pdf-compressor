@@ -1,0 +1,50 @@
+# DRAFT — F-Droid inclusion metadata for PDF Compressor (docs/PLAN-android.md
+# P6). NOT validated by fdroidserver yet; submission requires a local
+# `fdroid readmeta && fdroid build` pass first. Kept in-repo so the recipe
+# evolves with the build it describes.
+#
+# The app is Gradle + a Rust engine (crates/pdf-core-ffi via UniFFI), built
+# reproducibly: cargo-ndk cross-compiles the cdylib inside gradle's preBuild
+# (scripts/build-android-libs.sh), so the recipe needs Rust stable +
+# cargo-ndk + the two Android targets.
+
+Categories:
+  - Utilities
+License: MIT
+AuthorName: cosct
+SourceCode: https://github.com/cosct/pdf-compressor
+IssueTracker: https://github.com/cosct/pdf-compressor/issues
+Changelog: https://github.com/cosct/pdf-compressor/blob/main/CHANGELOG.md
+
+AutoName: PDF Compressor
+Summary: Recompress scanned/image-heavy PDFs smaller, on-device
+Description: |-
+    PDF Compressor shrinks image-heavy and scanned PDFs entirely on-device:
+    a Rust engine (shared with the desktop app) re-encodes embedded images,
+    compresses streams and subsets fonts — no uploads, no accounts. Single
+    file or batch queue, target-size search, encrypted PDFs (password kept
+    in memory only).
+
+RepoType: git
+Repo: https://github.com/cosct/pdf-compressor.git
+
+Builds:
+  - versionName: 0.11.0
+    versionCode: 1
+    commit: v0.11.0
+    subdir: android
+    gradle:
+      - yes
+    output: app/build/outputs/apk/release/app-release-unsigned.apk
+    srclibs:
+      # Provides a rustup-managed Rust toolchain for the engine build.
+      - rustup@1.28.2
+    prebuild: |
+      rustup default stable
+      rustup target add aarch64-linux-android x86_64-linux-android
+      cargo install cargo-ndk --locked
+
+AutoUpdateMode: Version
+UpdateCheckMode: Tags ^v.*$
+CurrentVersion: 0.11.0
+CurrentVersionCode: 1

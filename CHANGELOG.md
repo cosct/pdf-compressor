@@ -56,6 +56,20 @@
   条目首开即删）；`ACTION_SEND` 收 PDF 分享（singleTask + `onNewIntent`，
   瞬时授权即读即弃、不入最近列表）；结果页补「选择其他 PDF」回 Idle
   的回路。
+- **发布工程（Phase 6）**：CI `android.yml`（ffi 宿主测试、UniFFI 绑定
+  freshness、双 ABI `assembleDebug` + `lintDebug`）；release.yml 的
+  verify-version 纳入 ffi crate、`versionName` 与 Cargo.lock，新增
+  `build-android-artifacts` 产未签名 release APK（签名留本地，直发
+  命令见 DEVELOPMENT.md）；R8 keep 规则钉住 JNA/UniFFI 桥（minified
+  release 经模拟器全链路压缩验证）；lint 豁免生成码 NewApi（运行时
+  `Class.forName` 探测 + JNA 回退）；F-Droid 元数据草稿入库；用户
+  指南补安卓节。
+
+### 修复
+
+- **`build-android-libs.sh --release`**：cargo-ndk 4.x 的 `--release`
+  必须放在 `build` 子命令之后——此前 release 交叉构建路径从未实际
+  运行（只有 debug 被验证），P6 首次跑 `assembleRelease` 时暴露。
 
 ### 验收状态
 

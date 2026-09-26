@@ -1,0 +1,82 @@
+name: Android
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'android/**'
+      - 'crates/pdf-core/**'
+      - 'crates/pdf-core-ffi/**'
+      - 'scripts/*android*'
+      - '.github/workflows/android.yml'
+
+# Least privilege by default, same as ci.yml.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The ffi crate's host-side nails: DTO parity, error mapping, progress
+  # order, cancellation, the 512 MiB precheck, and the strings.xml closed
+  # set parity against the engine taxonomy (en/zh key sets).
+  ffi-tests:
+    name: pdf-core-ffi host tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      - name: Host tests
+        run: cargo test -p pdf-core-ffi --locked
+
+  # Generated Kotlin bindings are committed; this leg fails when they drift
+  # from the Rust interface (same discipline as frontend bindings.ts).
+  bindings-freshness:
+    name: UniFFI bindings freshness
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      - name: Freshness gate
+        run: scripts/gen-android-bindings.sh --check
+
+  # End-to-end assembly: cargo-ndk cross-compiles both ABIs inside gradle's
+  # preBuild, then a full debug APK plus the lint baseline. ubuntu-latest
+  # ships the Android SDK/NDK (ANDROID_HOME) and JDK 17 already.
+  assemble:
+    name: assembleDebug + lint (arm64-v8a & x86_64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: aarch64-linux-android, x86_64-linux-android
+
+      # Caches ~/.cargo/bin as well, so cargo-ndk installs once per lockfile.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Assemble debug APK
+        working-directory: android
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: Android lint
+        working-directory: android
+        run: ./gradlew lintDebug --no-daemon
