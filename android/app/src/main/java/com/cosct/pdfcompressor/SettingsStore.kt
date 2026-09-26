@@ -37,6 +37,7 @@ class SettingsRepository(private val context: Context) {
         val THEME_MODE = stringPreferencesKey("theme_mode")
         val LANGUAGE = stringPreferencesKey("language")
         val OUTPUT_TREE = stringPreferencesKey("output_tree")
+        val RECENTS = stringPreferencesKey("recents")
     }
 
     val data: Flow<SettingsSnapshot> = context.settingsDataStore.data.map { prefs ->
@@ -65,4 +66,39 @@ class SettingsRepository(private val context: Context) {
     suspend fun setOutputTree(tree: String) {
         context.settingsDataStore.edit { it[Keys.OUTPUT_TREE] = tree }
     }
+
+    /** Recently picked documents (Phase 5), newest first, capped at 10.
+     *  Entries carry a persistable read grant where the provider allows it;
+     *  a stale entry is dropped on first failed open. */
+    val recents: Flow<List<RecentFile>> = context.settingsDataStore.data.map { prefs ->
+        decodeRecents(prefs[Keys.RECENTS] ?: "")
+    }
+
+    suspend fun addRecent(uri: String, name: String) {
+        context.settingsDataStore.edit { prefs ->
+            val entry = RecentFile(uri, name)
+            val merged = (listOf(entry) + decodeRecents(prefs[Keys.RECENTS] ?: "")
+                .filter { it.uri != uri }).take(10)
+            prefs[Keys.RECENTS] = encodeRecents(merged)
+        }
+    }
+
+    suspend fun removeRecent(uri: String) {
+        context.settingsDataStore.edit { prefs ->
+            prefs[Keys.RECENTS] = encodeRecents(
+                decodeRecents(prefs[Keys.RECENTS] ?: "").filter { it.uri != uri },
+            )
+        }
+    }
+
+    private fun encodeRecents(list: List<RecentFile>): String =
+        list.joinToString("\n") { "${it.uri}|${it.name.replace("|", "/")}" }
+
+    private fun decodeRecents(raw: String): List<RecentFile> =
+        raw.lines().mapNotNull { line ->
+            val parts = line.split("|", limit = 2)
+            if (parts.size == 2 && parts[0].isNotEmpty()) RecentFile(parts[0], parts[1]) else null
+        }
 }
+
+data class RecentFile(val uri: String, val name: String)

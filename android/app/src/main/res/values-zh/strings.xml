@@ -60,4 +60,24 @@
     <string name="queue_item_cancelled">已取消</string>
     <string name="queue_notification_channel">后台压缩</string>
     <string name="queue_notification_title">正在压缩队列</string>
+
+    <string name="target_size_label">目标大小</string>
+    <string name="target_off">不限制</string>
+    <string name="analysis_summary">%1$d 页 · %2$s</string>
+    <string name="analysis_images">图片 %1$d 张 · 最大边长 %2$dpx</string>
+    <string name="analysis_estimated">预估节省 %1$d%%</string>
+    <string name="analysis_recommended">推荐预设：%1$s</string>
+    <string name="details_expand">分析详情</string>
+    <string name="detail_file_size">文件大小：%1$s</string>
+    <string name="detail_confidence">扫描置信度：%1$d%%</string>
+    <string name="detail_coverage">图片覆盖率：%1$d%%</string>
+    <string name="detail_recommended_params">推荐参数：Q%1$d · ≤%2$dpx</string>
+    <string name="detail_notices">提示：</string>
+    <string name="kind_text_native">文本型</string>
+    <string name="kind_mixed">混合型</string>
+    <string name="kind_scan_heavy">扫描件</string>
+    <string name="result_saved_line">节省 %1$d%% · %2$d ms</string>
+    <string name="recent_files">最近文件</string>
+    <string name="recent_open_failed">无法打开该文件，已从最近列表移除。</string>
+    <string name="pick_another">选择其他 PDF</string>
 </resources>

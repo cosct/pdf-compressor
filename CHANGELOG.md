@@ -48,6 +48,14 @@
   单文件流）；条目名称/顺序存 `QueueMetaStore`（WorkInfo 不暴露
   inputData），随 WorkManager DB 同步清理；`CompressViewModel` 时代
   的主界面分单文件/批量两 tab。
+- **桌面对齐（Phase 5）**：目标大小搜索（不限制/2/5/10 MB chip →
+  `compress_to_target`，预设参数作搜索起点，未达预算经 notices 如实
+  展示）；分析详情展开（文件大小、扫描置信度、图片覆盖率、推荐参数、
+  notices——顺带钉死引擎 0–100 量纲，并本地化此前硬编码英文的分析行）；
+  最近文件（persistable URI + DataStore，cap 10，冷启动可直开，失效
+  条目首开即删）；`ACTION_SEND` 收 PDF 分享（singleTask + `onNewIntent`，
+  瞬时授权即读即弃、不入最近列表）；结果页补「选择其他 PDF」回 Idle
+  的回路。
 
 ### 验收状态
 
@@ -56,7 +64,9 @@
   （文件落盘核对）与分享 sheet 带载荷、深浅色/中英文切换与冷启动持久化、
   旋转/重建状态保留；批量队列 3 文件顺序压缩落盘、入队后 force-stop
   冷启动由 WorkManager 重试续跑完成（P4 的进程恢复钉子）、输出重名
-  `(1)` 去重、清空已完成与元数据同步。
+  `(1)` 去重、清空已完成与元数据同步；目标 2 MB 搜索 13 MB → 2.0 MB
+  达标（Q39，notices 展示）、分析详情数值、ACTION_SEND 冷/热启动
+  收分享、最近文件记录与直开。
 - 仍待：arm64 真机走查（S3 的另一半）与 30 MB 级扫描件内存峰值记录
   （Phase 3 验收钉子）；Doze 退避走查（P4 电耗钉子）。
 

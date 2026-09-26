@@ -116,6 +116,10 @@ cd android && ./gradlew assembleDebug          # 安卓 APK（preBuild 自动跑
   存 `QueueMetaStore`（DataStore，WorkInfo 不暴露 inputData），随
   WorkManager DB 同步清理。加密 PDF 在队列里标错——密码交互只走
   单文件流。
+- **桌面对齐（Phase 5）**：目标大小 chip 走 `compressToTarget`；分析
+  详情展开（置信度/覆盖率/推荐参数/notices，量纲 0–100）；最近文件
+  （persistable URI，cap 10）；`ACTION_SEND` 收分享（singleTask，
+  瞬时授权即读即弃）；结果页有回 Idle 的「选择其他 PDF」。
 
 ### 分层规则
 

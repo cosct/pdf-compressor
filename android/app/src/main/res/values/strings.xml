@@ -67,4 +67,25 @@
     <string name="queue_item_cancelled">Cancelled</string>
     <string name="queue_notification_channel">Background compression</string>
     <string name="queue_notification_title">Compressing queue</string>
+
+    <!-- Phase 5: target-size search, analysis details, recents, share-in. -->
+    <string name="target_size_label">Target size</string>
+    <string name="target_off">No limit</string>
+    <string name="analysis_summary">%1$d pages · %2$s</string>
+    <string name="analysis_images">images: %1$d · edge %2$dpx</string>
+    <string name="analysis_estimated">estimated savings: %1$d%%</string>
+    <string name="analysis_recommended">recommended preset: %1$s</string>
+    <string name="details_expand">Analysis details</string>
+    <string name="detail_file_size">file size: %1$s</string>
+    <string name="detail_confidence">scan confidence: %1$d%%</string>
+    <string name="detail_coverage">image coverage: %1$d%%</string>
+    <string name="detail_recommended_params">recommended params: Q%1$d · ≤%2$dpx</string>
+    <string name="detail_notices">notices:</string>
+    <string name="kind_text_native">text-native</string>
+    <string name="kind_mixed">mixed</string>
+    <string name="kind_scan_heavy">scan-heavy</string>
+    <string name="result_saved_line">saved %1$d%% · %2$d ms</string>
+    <string name="recent_files">Recent files</string>
+    <string name="recent_open_failed">Couldn\'t open this file; removed from recents.</string>
+    <string name="pick_another">Choose another PDF</string>
 </resources>

@@ -4,6 +4,7 @@ import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -17,6 +18,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -40,11 +42,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
+import androidx.core.net.toUri
 import androidx.core.os.LocaleListCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uniffi.pdfcompressor.FfiAnalysis
@@ -64,8 +69,14 @@ import java.io.IOException
  */
 class MainActivity : AppCompatActivity() {
 
+    /** PDF handed in via ACTION_SEND (share-into-app); consumed once by the
+     *  single-file flow. The grant is transient, so these URIs are read
+     *  immediately and never recorded in recents. */
+    private val sharedPdf = MutableStateFlow<Uri?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        handleSendIntent(intent)
         val settingsRepository = SettingsRepository(applicationContext)
         setContent {
             // Null until DataStore's first real emission. The side effects
@@ -101,10 +112,26 @@ class MainActivity : AppCompatActivity() {
             }
             AppTheme(themeMode = snapshot.themeMode) {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    CompressScreen(settingsRepository, snapshot)
+                    CompressScreen(settingsRepository, snapshot, sharedPdf)
                 }
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleSendIntent(intent)
+    }
+
+    private fun handleSendIntent(intent: Intent?) {
+        if (intent?.action != Intent.ACTION_SEND) return
+        val uri = if (Build.VERSION.SDK_INT >= 33) {
+            intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra(Intent.EXTRA_STREAM)
+        }
+        if (uri != null) sharedPdf.value = uri
     }
 }
 
@@ -112,6 +139,7 @@ class MainActivity : AppCompatActivity() {
 private fun CompressScreen(
     settingsRepository: SettingsRepository,
     settings: SettingsSnapshot,
+    sharedPdf: MutableStateFlow<Uri?>,
     viewModel: CompressViewModel = viewModel(),
 ) {
     val context = LocalContext.current
@@ -120,10 +148,27 @@ private fun CompressScreen(
     var showQueue by rememberSaveable { mutableStateOf(false) }
     val stage = viewModel.stage
 
+    // Share-into-app intake: analyze straight away, then consume so a
+    // recreation does not re-trigger.
+    val shared by sharedPdf.collectAsState()
+    LaunchedEffect(shared) {
+        val uri = shared ?: return@LaunchedEffect
+        viewModel.onPdfPicked(context, uri, persistable = false)
+        sharedPdf.value = null
+    }
+
     val pickPdf = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument(),
     ) { uri ->
-        if (uri != null) viewModel.onPdfPicked(context, uri)
+        if (uri != null) {
+            viewModel.onPdfPicked(context, uri)
+            scope.launch {
+                settingsRepository.addRecent(
+                    uri.toString(),
+                    queryDisplayName(context, uri) ?: "document.pdf",
+                )
+            }
+        }
     }
 
     val saveOutput = rememberLauncherForActivityResult(
@@ -260,6 +305,34 @@ private fun SingleFileFlow(
             ) {
                 Text(stringResource(R.string.pick_pdf))
             }
+            val recents by settingsRepository.recents.collectAsState(initial = emptyList())
+            if (recents.isNotEmpty()) {
+                Text(
+                    stringResource(R.string.recent_files),
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                recents.forEach { recent ->
+                    TextButton(
+                        onClick = {
+                            val uri = recent.uri.toUri()
+                            viewModel.onPdfPicked(context, uri, recent.name) {
+                                scope.launch { settingsRepository.removeRecent(recent.uri) }
+                                viewModel.reportError(
+                                    context.getString(R.string.recent_open_failed),
+                                )
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            recent.name,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                }
+            }
         }
 
         is Stage.Analyzing -> {
@@ -283,6 +356,27 @@ private fun SingleFileFlow(
                 maxEdgePx = viewModel.maxEdgeOverride,
                 onMaxEdge = { viewModel.maxEdgeOverride = it },
             )
+            Text(
+                stringResource(R.string.target_size_label),
+                style = MaterialTheme.typography.titleSmall,
+            )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.horizontalScroll(rememberScrollState()),
+            ) {
+                FilterChip(
+                    selected = viewModel.targetSizeMb == null,
+                    onClick = { viewModel.targetSizeMb = null },
+                    label = { Text(stringResource(R.string.target_off)) },
+                )
+                listOf(2, 5, 10).forEach { mb ->
+                    FilterChip(
+                        selected = viewModel.targetSizeMb == mb,
+                        onClick = { viewModel.targetSizeMb = mb },
+                        label = { Text("$mb MB") },
+                    )
+                }
+            }
             Button(
                 onClick = {
                     viewModel.runCompress(context, current, current.password, settings.presetChoice)
@@ -325,21 +419,96 @@ private fun SingleFileFlow(
             } else {
                 Text(stringResource(R.string.result_not_smaller))
             }
+            TextButton(
+                onClick = { viewModel.resetToIdle() },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(stringResource(R.string.pick_another))
+            }
         }
     }
 }
 
 @Composable
 private fun AnalysisCard(analysis: FfiAnalysis) {
+    val context = LocalContext.current
+    var showDetails by rememberSaveable { mutableStateOf(false) }
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(
-            "${analysis.pageCount} pages · ${analysis.documentKind}",
+            stringResource(
+                R.string.analysis_summary,
+                analysis.pageCount.toInt(),
+                documentKindName(analysis.documentKind),
+            ),
             style = MaterialTheme.typography.titleMedium,
         )
-        Text("images: ${analysis.imageObjectCount} · edge ${analysis.maxImageEdgePx}px")
-        Text("estimated savings: ${analysis.estimatedSavingsPercent.toInt()}%")
-        Text("recommended preset: ${presetDisplayName(analysis.recommendedPreset)}")
+        Text(
+            stringResource(
+                R.string.analysis_images,
+                analysis.imageObjectCount.toInt(),
+                analysis.maxImageEdgePx.toInt(),
+            ),
+        )
+        Text(
+            stringResource(
+                R.string.analysis_estimated,
+                analysis.estimatedSavingsPercent.toInt(),
+            ),
+        )
+        Text(
+            stringResource(
+                R.string.analysis_recommended,
+                presetDisplayName(analysis.recommendedPreset),
+            ),
+        )
+        TextButton(onClick = { showDetails = !showDetails }) {
+            Text(stringResource(R.string.details_expand) + if (showDetails) " ▴" else " ▾")
+        }
+        if (showDetails) {
+            Text(
+                stringResource(
+                    R.string.detail_file_size,
+                    android.text.format.Formatter.formatShortFileSize(
+                        context,
+                        analysis.fileSizeBytes.toLong(),
+                    ),
+                ),
+            )
+            Text(
+                stringResource(
+                    R.string.detail_confidence,
+                    analysis.scannedConfidence.toInt(),
+                ),
+            )
+            Text(
+                stringResource(R.string.detail_coverage, analysis.imageCoverage.toInt()),
+            )
+            Text(
+                stringResource(
+                    R.string.detail_recommended_params,
+                    analysis.recommendedImageQuality.toInt(),
+                    analysis.recommendedMaxImageSizePx.toInt(),
+                ),
+            )
+            if (analysis.notices.isNotEmpty()) {
+                Text(stringResource(R.string.detail_notices))
+                analysis.notices.forEach { notice ->
+                    Text(
+                        "· ${notice.fallback}",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+        }
     }
+}
+
+@Composable
+fun documentKindName(kind: String): String = when (kind) {
+    "text-native" -> stringResource(R.string.kind_text_native)
+    "mixed" -> stringResource(R.string.kind_mixed)
+    "scan-heavy" -> stringResource(R.string.kind_scan_heavy)
+    else -> kind
 }
 
 @Composable
@@ -357,7 +526,20 @@ private fun ResultCard(result: FfiCompressResult, displayName: String) {
                 human(result.savedBytes),
             ),
         )
-        Text("saved ${result.savingsPercent.toInt()}% · ${result.elapsedMs} ms")
+        Text(
+            stringResource(
+                R.string.result_saved_line,
+                result.savingsPercent.toInt(),
+                result.elapsedMs.toInt(),
+            ),
+        )
+        // e.g. an unmet target-size budget surfaces as an engine notice.
+        result.notices.forEach { notice ->
+            Text(
+                "· ${notice.fallback}",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
     }
 }
 
