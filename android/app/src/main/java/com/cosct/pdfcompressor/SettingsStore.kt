@@ -19,9 +19,12 @@ data class SettingsSnapshot(
     val themeMode: ThemeMode,
     /** "system" or a BCP-47 tag ("en", "zh-CN"). */
     val language: String,
+    /** Persisted SAF tree the queue writes optimized copies into; null until
+     *  the user picks one (Phase 4). */
+    val outputTree: String?,
 ) {
     companion object {
-        val DEFAULT = SettingsSnapshot("auto", ThemeMode.SYSTEM, "system")
+        val DEFAULT = SettingsSnapshot("auto", ThemeMode.SYSTEM, "system", null)
     }
 }
 
@@ -33,6 +36,7 @@ class SettingsRepository(private val context: Context) {
         val PRESET_CHOICE = stringPreferencesKey("preset_choice")
         val THEME_MODE = stringPreferencesKey("theme_mode")
         val LANGUAGE = stringPreferencesKey("language")
+        val OUTPUT_TREE = stringPreferencesKey("output_tree")
     }
 
     val data: Flow<SettingsSnapshot> = context.settingsDataStore.data.map { prefs ->
@@ -42,6 +46,7 @@ class SettingsRepository(private val context: Context) {
                 ?.let { runCatching { ThemeMode.valueOf(it) }.getOrNull() }
                 ?: ThemeMode.SYSTEM,
             language = prefs[Keys.LANGUAGE] ?: "system",
+            outputTree = prefs[Keys.OUTPUT_TREE],
         )
     }
 
@@ -55,5 +60,9 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setLanguage(language: String) {
         context.settingsDataStore.edit { it[Keys.LANGUAGE] = language }
+    }
+
+    suspend fun setOutputTree(tree: String) {
+        context.settingsDataStore.edit { it[Keys.OUTPUT_TREE] = tree }
     }
 }

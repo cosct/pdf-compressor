@@ -63,6 +63,10 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     // Settings persistence (preset choice, theme, language).
     implementation("androidx.datastore:datastore-preferences:1.1.7")
+    // Background queue (Phase 4): process-death-proof work chain.
+    implementation("androidx.work:work-runtime-ktx:2.10.3")
+    // Writes queue outputs into the user-picked document tree.
+    implementation("androidx.documentfile:documentfile:1.1.0")
     // Per-app language switching (AppCompatDelegate.setApplicationLocales)
     // back-ported below API 33; theme is DayNight-aware through appcompat.
     implementation("androidx.appcompat:appcompat:1.7.1")

@@ -7,6 +7,7 @@ import android.net.Uri
 import android.os.Bundle
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.app.AppCompatDelegate
@@ -20,6 +21,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -115,6 +117,7 @@ private fun CompressScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var showSettings by rememberSaveable { mutableStateOf(false) }
+    var showQueue by rememberSaveable { mutableStateOf(false) }
     val stage = viewModel.stage
 
     val pickPdf = rememberLauncherForActivityResult(
@@ -159,84 +162,30 @@ private fun CompressScreen(
             style = MaterialTheme.typography.bodySmall,
         )
 
-        viewModel.error?.let { message ->
-            Text(message, color = MaterialTheme.colorScheme.error)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(
+                selected = !showQueue,
+                onClick = { showQueue = false },
+                label = { Text(stringResource(R.string.tab_single)) },
+            )
+            FilterChip(
+                selected = showQueue,
+                onClick = { showQueue = true },
+                label = { Text(stringResource(R.string.tab_queue)) },
+            )
         }
 
-        when (val current = stage) {
-            is Stage.Idle -> {
-                Button(
-                    onClick = { pickPdf.launch(arrayOf("application/pdf")) },
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(stringResource(R.string.pick_pdf))
-                }
-            }
-
-            is Stage.Analyzing -> {
-                Text(stringResource(R.string.analyzing))
-                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-            }
-
-            is Stage.Ready -> {
-                AnalysisCard(analysis = current.analysis)
-                PresetPanel(
-                    table = viewModel.presetTable,
-                    recommended = current.analysis.recommendedPreset,
-                    choice = settings.presetChoice,
-                    onChoice = { choice ->
-                        viewModel.qualityOverride = null
-                        viewModel.maxEdgeOverride = null
-                        scope.launch { settingsRepository.setPresetChoice(choice) }
-                    },
-                    quality = viewModel.effectiveQuality(current.analysis, settings.presetChoice),
-                    onQuality = { viewModel.qualityOverride = it },
-                    maxEdgePx = viewModel.maxEdgeOverride,
-                    onMaxEdge = { viewModel.maxEdgeOverride = it },
-                )
-                Button(
-                    onClick = {
-                        viewModel.runCompress(context, current, current.password, settings.presetChoice)
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(stringResource(R.string.start_compress))
-                }
-            }
-
-            is Stage.Compressing -> {
-                Text(stringResource(R.string.compressing))
-                LinearProgressIndicator(
-                    progress = { current.progress.coerceIn(0f, 1f) },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                OutlinedButton(
-                    onClick = { viewModel.cancelCompress() },
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(stringResource(R.string.cancel))
-                }
-            }
-
-            is Stage.Done -> {
-                ResultCard(result = current.result, displayName = current.displayName)
-                if (current.result.outputWasSmaller) {
-                    Button(
-                        onClick = { saveOutput.launch(suggestedOutputName(current.displayName)) },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text(stringResource(R.string.save_output))
-                    }
-                    OutlinedButton(
-                        onClick = { scope.launch { shareResult(context, current) } },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text(stringResource(R.string.share_output))
-                    }
-                } else {
-                    Text(stringResource(R.string.result_not_smaller))
-                }
-            }
+        if (showQueue) {
+            QueueScreen(settings = settings, settingsRepository = settingsRepository)
+        } else {
+            SingleFileFlow(
+                viewModel = viewModel,
+                settings = settings,
+                settingsRepository = settingsRepository,
+                stage = stage,
+                pickPdf = { pickPdf.launch(arrayOf("application/pdf")) },
+                saveOutput = saveOutput,
+            )
         }
     }
 
@@ -281,6 +230,102 @@ private fun CompressScreen(
             onLanguage = { scope.launch { settingsRepository.setLanguage(it) } },
             onDismiss = { showSettings = false },
         )
+    }
+}
+
+/** The interactive single-document flow (idle → analyzing → ready →
+ *  compressing → done), extracted so the batch queue can take over the
+ *  screen without unmounting the shared header. */
+@Composable
+private fun SingleFileFlow(
+    viewModel: CompressViewModel,
+    settings: SettingsSnapshot,
+    settingsRepository: SettingsRepository,
+    stage: Stage,
+    pickPdf: () -> Unit,
+    saveOutput: ActivityResultLauncher<String>,
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    viewModel.error?.let { message ->
+        Text(message, color = MaterialTheme.colorScheme.error)
+    }
+
+    when (val current = stage) {
+        is Stage.Idle -> {
+            Button(
+                onClick = { pickPdf() },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(stringResource(R.string.pick_pdf))
+            }
+        }
+
+        is Stage.Analyzing -> {
+            Text(stringResource(R.string.analyzing))
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        }
+
+        is Stage.Ready -> {
+            AnalysisCard(analysis = current.analysis)
+            PresetPanel(
+                table = viewModel.presetTable,
+                recommended = current.analysis.recommendedPreset,
+                choice = settings.presetChoice,
+                onChoice = { choice ->
+                    viewModel.qualityOverride = null
+                    viewModel.maxEdgeOverride = null
+                    scope.launch { settingsRepository.setPresetChoice(choice) }
+                },
+                quality = viewModel.effectiveQuality(current.analysis, settings.presetChoice),
+                onQuality = { viewModel.qualityOverride = it },
+                maxEdgePx = viewModel.maxEdgeOverride,
+                onMaxEdge = { viewModel.maxEdgeOverride = it },
+            )
+            Button(
+                onClick = {
+                    viewModel.runCompress(context, current, current.password, settings.presetChoice)
+                },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(stringResource(R.string.start_compress))
+            }
+        }
+
+        is Stage.Compressing -> {
+            Text(stringResource(R.string.compressing))
+            LinearProgressIndicator(
+                progress = { current.progress.coerceIn(0f, 1f) },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedButton(
+                onClick = { viewModel.cancelCompress() },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(stringResource(R.string.cancel))
+            }
+        }
+
+        is Stage.Done -> {
+            ResultCard(result = current.result, displayName = current.displayName)
+            if (current.result.outputWasSmaller) {
+                Button(
+                    onClick = { saveOutput.launch(suggestedOutputName(current.displayName)) },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(stringResource(R.string.save_output))
+                }
+                OutlinedButton(
+                    onClick = { scope.launch { shareResult(context, current) } },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(stringResource(R.string.share_output))
+                }
+            } else {
+                Text(stringResource(R.string.result_not_smaller))
+            }
+        }
     }
 }
 

@@ -110,6 +110,12 @@ cd android && ./gradlew assembleDebug          # 安卓 APK（preBuild 自动跑
   `AppLocalesMetadataHolderService` 自动存回）落地。流程状态收进
   `CompressViewModel`，旋转与主题/语言切换触发的 Activity 重建不丢
   选档/进度/结果。
+- **批量队列（Phase 4）**：WorkManager 唯一工作链（一文件一 request，
+  顺序执行），前台服务通知进度；输出目录 `ACTION_OPEN_DOCUMENT_TREE`
+  持久化授权，单项失败不连坐（success 载荷带错误文案）；条目名称/顺序
+  存 `QueueMetaStore`（DataStore，WorkInfo 不暴露 inputData），随
+  WorkManager DB 同步清理。加密 PDF 在队列里标错——密码交互只走
+  单文件流。
 
 ### 分层规则
 

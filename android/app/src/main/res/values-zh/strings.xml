@@ -43,4 +43,21 @@
     <string name="theme_dark">深色</string>
     <string name="settings_language">语言</string>
     <string name="lang_system">跟随系统</string>
+
+    <string name="tab_single">单文件</string>
+    <string name="tab_queue">批量</string>
+    <string name="queue_pick_output">选择输出目录</string>
+    <string name="queue_output_set">输出到：%1$s</string>
+    <string name="queue_enqueue">添加 PDF</string>
+    <string name="queue_empty">队列为空</string>
+    <string name="queue_cancel_all">全部取消</string>
+    <string name="queue_clear_finished">清空已完成</string>
+    <string name="queue_item_waiting">排队中</string>
+    <string name="queue_item_running">压缩中 %1$d%%</string>
+    <string name="queue_item_done">已保存 · 节省 %1$s</string>
+    <string name="queue_item_not_smaller">压不过原件，未写入</string>
+    <string name="queue_item_failed">失败：%1$s</string>
+    <string name="queue_item_cancelled">已取消</string>
+    <string name="queue_notification_channel">后台压缩</string>
+    <string name="queue_notification_title">正在压缩队列</string>
 </resources>

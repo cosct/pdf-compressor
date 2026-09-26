@@ -38,15 +38,27 @@
   经 `AppCompatDelegate.setApplicationLocales` 落地，密码仍只存会话内存；
   流程状态收进 `CompressViewModel`——旋转与主题/语言切换的 Activity
   重建不再丢失选档/进度/结果。
+- **批量队列与后台压缩（Phase 4）**：SAF 多选入队，一文件一
+  `OneTimeWorkRequest`，`beginUniqueWork + APPEND_OR_REPLACE` 串成顺序链，
+  前台服务通知进度（API 33+ 运行时权限，拒绝仅不显示）；输出目录经
+  `ACTION_OPEN_DOCUMENT_TREE` 选一次并持久化授权，重名由
+  DocumentsProvider 去重（`(1)` 后缀）、写一半无临时文件残留（与桌面
+  原子写同纪律）；单项失败折叠为 success 载荷带错误文案——不连坐
+  取消后续项；加密 PDF 在队列里标错（密码绝不落盘，交互重试留给
+  单文件流）；条目名称/顺序存 `QueueMetaStore`（WorkInfo 不暴露
+  inputData），随 WorkManager DB 同步清理；`CompressViewModel` 时代
+  的主界面分单文件/批量两 tab。
 
 ### 验收状态
 
 - 已验证（x86_64 模拟器，API 33）：`cargo ndk` 双 ABI 交叉构建、
   `./gradlew assembleDebug` 端到端、SAF 选档 → 分析 → 压缩 → SAF 保存
   （文件落盘核对）与分享 sheet 带载荷、深浅色/中英文切换与冷启动持久化、
-  旋转/重建状态保留。
+  旋转/重建状态保留；批量队列 3 文件顺序压缩落盘、入队后 force-stop
+  冷启动由 WorkManager 重试续跑完成（P4 的进程恢复钉子）、输出重名
+  `(1)` 去重、清空已完成与元数据同步。
 - 仍待：arm64 真机走查（S3 的另一半）与 30 MB 级扫描件内存峰值记录
-  （Phase 3 验收钉子）。
+  （Phase 3 验收钉子）；Doze 退避走查（P4 电耗钉子）。
 
 ## [0.11.0] - 2026-09-20
 

@@ -49,4 +49,22 @@
     <string name="theme_dark">Dark</string>
     <string name="settings_language">Language</string>
     <string name="lang_system">Follow system</string>
+
+    <!-- Phase 4: batch queue under a foreground-service notification. -->
+    <string name="tab_single">Single file</string>
+    <string name="tab_queue">Batch</string>
+    <string name="queue_pick_output">Choose output folder</string>
+    <string name="queue_output_set">Output: %1$s</string>
+    <string name="queue_enqueue">Add PDFs</string>
+    <string name="queue_empty">Queue is empty</string>
+    <string name="queue_cancel_all">Cancel all</string>
+    <string name="queue_clear_finished">Clear finished</string>
+    <string name="queue_item_waiting">Queued</string>
+    <string name="queue_item_running">Compressing %1$d%%</string>
+    <string name="queue_item_done">Saved · %1$s saved</string>
+    <string name="queue_item_not_smaller">Not smaller; skipped</string>
+    <string name="queue_item_failed">Failed: %1$s</string>
+    <string name="queue_item_cancelled">Cancelled</string>
+    <string name="queue_notification_channel">Background compression</string>
+    <string name="queue_notification_title">Compressing queue</string>
 </resources>
