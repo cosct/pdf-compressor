@@ -95,8 +95,9 @@ cd android && ./gradlew assembleDebug          # 安卓 APK（preBuild 自动跑
   uniffi-bindgen）生成 Kotlin 到 `android/app/src/main/uniffi/`（入库）；
   `--check` 供 CI 做 freshness diff（同 `bindings.ts` 的纪律）。ffi crate 的
   宿主测试含 strings.xml 闭集 parity 钉子。
-- **`android/`**：Gradle KTS + Compose 单模块。`preBuild` 挂
-  `scripts/build-android-libs.sh`（cargo-ndk → jniLibs，gitignore 产物）；
+- **`android/`**：Gradle KTS + Compose 单模块。每个 variant 注册独立 Rust 任务，
+  由 AGP generated jniLibs source 接入 `scripts/build-android-libs.sh --out-dir ...`；
+  debug/release 输出分离，缺少 NDK 或任何 ABI 库立即失败；
   UniFFI Kotlin 经 JNA 加载 `libpdf_core_ffi.so`。构建前置：
   JDK 17 + Android SDK/NDK + `rustup target add aarch64-linux-android
   x86_64-linux-android` + `cargo install cargo-ndk`，然后
@@ -486,7 +487,11 @@ release overlay 而非主配置）。
   `compress.warning.targetSizeMissed` 提示；前端以警告 toast + 状态卡 notes 呈现。
 - **`cargo bench` 名字冲突**：基准每轮使用独立临时目录，避免 100 次重名上限。
 
-## 8. 版本路线（0.10.0 已落地，2026-09-16）
+## 8. 版本路线
+
+> 2026-10-02 更新：1.0 当前范围以 [开发与验收计划](PLAN-1.0.md) 为准，
+> 包含桌面、CLI、Android 的 R01–R15 可靠性修复。下方 2026-09 的路线与
+> “全部非功能/Android 后置”论述是历史决策，已由新计划替代；兼容性和弃用原则继续有效。
 
 ### 0.11.0 计划：审查收口专项（2026-09-18 立项）
 

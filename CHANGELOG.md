@@ -4,8 +4,17 @@
 
 ## [未发布]
 
+### 1.0 可靠性收口（2026-10-02）
+
+- 共用临时文件所有权与原子替换；移除目录前缀清理和删除旧文件后重命名回退。压缩在提交前检查取消，目标大小探测阶段不写最终文件。
+- 工作线程有界返回结果并同步消费；图片搜索逐项裁剪保留缓存，Android 图片处理串行、保留缓存预算 64 MiB。此预算不等同于进程 RSS 上限。
+- 桌面取消等待实际任务结束，取消分析不会继续处理后续项；保留大小写不同的路径；队列存储增加版本和字段规范化，继续读取旧数组格式；预设读改写按调用顺序串行执行。
+- Android 修复分析阶段密码重试、协程取消和旧任务覆盖新状态；密码输入不进入 saved state。SAF 读写放到 IO 线程、按设备堆限制输入、写入失败清理本次 URI；批量工作逐项依赖，补齐 dataSync 前台服务权限。
+- Android 原生库按 variant 构建并验证双 ABI，缺少 NDK/库构建失败；新增 Kotlin 回归测试和 APK 原生载荷检查。Release 校验和任务显式指定 GitHub 仓库。
+- 1.0 开发与发布验收分别跟踪于 `docs/PLAN-1.0.md`；版本号将在发布门槛满足后提升。
+
 安卓原生版起步（docs/PLAN-android.md 的 P0-P2 首刀 + P3 MVP 单文件流；
-引擎正确性资产零损耗平移，桌面行为不变）。
+引擎复用与移动端能力已接入，后续可靠性修复见上节）。
 
 ### 新增
 
@@ -28,8 +37,8 @@
   与 `scripts/build-android-libs.sh`（cargo-ndk → jniLibs，产物 gitignore）。
 - **`android/` 工程骨架**：Gradle KTS + Compose BOM + Material3，
   minSdk 26 / targetSdk 36；SAF 选档 → 分析 → 压缩（进度/取消/密码重试）
-  → 保存/分享的单文件链路；中英 strings.xml；`preBuild` 挂 Rust 交叉
-  构建（无 NDK 且已有 jniLibs 时跳过）；`sync-version` 纳入 ffi crate 与
+  → 保存/分享的单文件链路；中英 strings.xml；按 variant 挂 Rust 交叉
+  构建（缺少工具链/原生库明确失败）；`sync-version` 纳入 ffi crate 与
   `versionName`。
 - **MVP 单文件流（Phase 3）**：预设面板（Auto 跟随引擎推荐 + 三预设
   chip + 图片质量滑杆与边长上限简化面板，参数直读 `preset_defaults()`）；

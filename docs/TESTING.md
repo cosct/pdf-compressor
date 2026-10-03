@@ -118,3 +118,12 @@ cd crates/pdf-core && cargo mutants            # 本地全量（数小时）
   产出字节恒定——唯一例外是 `jpx-indexed.jp2`：原始字节来源无记录，
   2026-09-20 起以确定性 LCG 噪声配方再生并替换资产（同形状单分量码流；
   消费它的测试只断言结构不依赖字节），此后同样字节可复现。
+
+
+## 1.0 新增可靠性回归
+
+- 原子文件：提交前取消、替换失败保留旧目标、同前缀文件保留。
+- 线程池：有界返回、消费者失败和取消释放阻塞线程；搜索逐图缓存淘汰与重新编码一致。
+- 桌面：cancel ACK 与任务结束分离、取消停止后续分析、大小写路径与坏字段恢复、串行预设保存。
+- Android：`cd android && ./gradlew testDebugUnitTest assembleDebug lintDebug`。覆盖密码分析重试、协程取消、旧任务隔离、限量流读取、SAF 输出失败清理和工作依赖链；APK 用 `python3 scripts/check-android-apk.py android/app/build/outputs/apk/debug/app-debug.apk` 校验双 ABI。
+- 构建测试不能替代 API 34+ 服务启动、低内存 arm64 真机、后台恢复与升级验签；状态见 PLAN-1.0.md。
