@@ -54,7 +54,7 @@ jobs:
         run: scripts/gen-android-bindings.sh --check
 
   # End-to-end assembly: cargo-ndk cross-compiles both ABIs inside gradle's
-  # preBuild, then a full debug APK plus the lint baseline. ubuntu-latest
+  # generated jniLibs tasks, then a full debug APK plus the lint baseline. ubuntu-latest
   # ships the Android SDK/NDK (ANDROID_HOME) and JDK 17 already.
   assemble:
     name: assembleDebug + lint (arm64-v8a & x86_64)
@@ -76,6 +76,13 @@ jobs:
       - name: Assemble debug APK
         working-directory: android
         run: ./gradlew assembleDebug --no-daemon
+
+      - name: Kotlin regression tests
+        working-directory: android
+        run: ./gradlew testDebugUnitTest --no-daemon
+
+      - name: Verify APK native payload
+        run: python3 scripts/check-android-apk.py android/app/build/outputs/apk/debug/app-debug.apk
 
       - name: Android lint
         working-directory: android

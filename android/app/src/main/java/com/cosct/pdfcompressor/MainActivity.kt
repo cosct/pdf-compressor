@@ -36,6 +36,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -178,8 +179,10 @@ private fun CompressScreen(
         if (uri != null) {
             scope.launch {
                 try {
-                    context.contentResolver.openOutputStream(uri)?.use { it.write(done.result.bytes) }
-                } catch (failure: IOException) {
+                    writeNewPdf(context, uri, done.result.bytes)
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (failure: Exception) {
                     viewModel.reportError(failure.message)
                 }
             }
@@ -235,7 +238,7 @@ private fun CompressScreen(
     }
 
     viewModel.pendingPassword?.let { (ready, wasWrong) ->
-        var password by rememberSaveable { mutableStateOf("") }
+        var password by remember(ready) { mutableStateOf("") }
         AlertDialog(
             onDismissRequest = { viewModel.dismissPasswordDialog() },
             title = {
@@ -249,15 +252,14 @@ private fun CompressScreen(
                 OutlinedTextField(
                     value = password,
                     onValueChange = { password = it },
+                    visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
                     singleLine = true,
                 )
             },
             confirmButton = {
                 TextButton(onClick = {
                     viewModel.dismissPasswordDialog()
-                    viewModel.runCompress(
-                        context, ready, password.ifBlank { null }, settings.presetChoice,
-                    )
+                    viewModel.retryAnalysis(context, ready, password.ifBlank { null })
                 }) { Text("OK") }
             },
             dismissButton = {
@@ -335,9 +337,10 @@ private fun SingleFileFlow(
             }
         }
 
-        is Stage.Analyzing -> {
+        is Stage.Reading, is Stage.Analyzing -> {
             Text(stringResource(R.string.analyzing))
             LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            TextButton(onClick = { viewModel.cancelCompress() }) { Text(stringResource(R.string.cancel)) }
         }
 
         is Stage.Ready -> {

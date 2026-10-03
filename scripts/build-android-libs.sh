@@ -22,9 +22,11 @@ cd "$(dirname "$0")/.."
 
 MODE="debug"
 TARGETS=("arm64-v8a" "x86_64")
+OUT_DIR="android/app/src/main/jniLibs"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --release) MODE="release";;
+    --out-dir) shift; OUT_DIR="${1:?--out-dir requires a path}";;
     --targets) shift; IFS=',' read -ra TARGETS <<< "$1";;
     *) echo "unknown flag: $1" >&2; exit 1;;
   esac
@@ -62,6 +64,6 @@ for target in "${TARGETS[@]}"; do
 done
 
 echo "==> cargo ndk ${NDK_ARGS[*]} build ${BUILD_ARGS[*]} -p pdf-core-ffi"
-cargo ndk "${NDK_ARGS[@]}" -o android/app/src/main/jniLibs build "${BUILD_ARGS[@]}" -p pdf-core-ffi
+cargo ndk "${NDK_ARGS[@]}" -o "$OUT_DIR" build --locked "${BUILD_ARGS[@]}" -p pdf-core-ffi
 
-find android/app/src/main/jniLibs -name 'libpdf_core_ffi.so' -exec ls -lh {} \;
+find "$OUT_DIR" -name 'libpdf_core_ffi.so' -exec ls -lh {} \;

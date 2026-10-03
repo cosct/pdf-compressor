@@ -3,6 +3,7 @@
 
     <!-- Queue progress notification (Phase 4); requested at enqueue time. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <application
         android:allowBackup="true"

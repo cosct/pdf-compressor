@@ -22,6 +22,9 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -85,9 +88,7 @@ class QueueWorker(
                     )
                 },
             )
-            WorkManager.getInstance(context)
-                .beginUniqueWork(QUEUE_CHAIN, ExistingWorkPolicy.APPEND_OR_REPLACE, requests)
-                .enqueue()
+            enqueueSequential(WorkManager.getInstance(context), requests)
         }
     }
 
@@ -102,9 +103,7 @@ class QueueWorker(
         setForeground(foregroundInfo(displayName, 0))
 
         try {
-            val bytes = applicationContext.contentResolver
-                .openInputStream(uri)?.use { it.readBytes() }
-                ?: throw IOException("empty stream")
+            val bytes = readPdf(applicationContext, uri)
 
             // Auto resolves through the document's own analysis, same as the
             // single-file flow; an explicit preset skips the analysis pass.
@@ -145,6 +144,8 @@ class QueueWorker(
                 output.putLong(OUT_SAVED, result.savedBytes.toLong())
             }
             return Result.success(output.build())
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (cancelled: FfiException.Cancelled) {
             return Result.success(
                 workDataOf(OUT_PERCENT to 100, OUT_ERROR to "cancelled"),
@@ -158,27 +159,22 @@ class QueueWorker(
             return Result.success(
                 workDataOf(OUT_PERCENT to 100, OUT_ERROR to message),
             )
-        } catch (io: IOException) {
+        } catch (io: Exception) {
             return Result.success(
                 workDataOf(OUT_PERCENT to 100, OUT_ERROR to (io.message ?: "I/O error")),
             )
         }
     }
 
-    /** Write the optimized copy next to the user's chosen output tree. The
-     *  DocumentsProvider dedupes name conflicts itself (`name (1).pdf`), so
-     *  a half-written temp file can never linger — the write is atomic at
-     *  the provider level, matching the desktop's atomic-output discipline. */
-    private fun writeToTree(tree: Uri, displayName: String, bytes: ByteArray): Uri {
+    /** Each item owns its output URI; failed writes are removed best-effort. */
+    private suspend fun writeToTree(tree: Uri, displayName: String, bytes: ByteArray): Uri = withContext(Dispatchers.IO) {
         val dir = DocumentFile.fromTreeUri(applicationContext, tree)
             ?: throw IOException("output tree not accessible")
-        val base = displayName.removeSuffix(".pdf") + "_optimized"
+        val base = displayName.replace(Regex("(?i)\\.pdf$"), "") + "_optimized"
         val doc = dir.createFile("application/pdf", base)
             ?: throw IOException("cannot create output document")
-        applicationContext.contentResolver.openOutputStream(doc.uri, "wt")?.use {
-            it.write(bytes)
-        } ?: throw IOException("cannot open output stream")
-        return doc.uri
+        writeNewPdf(applicationContext, doc.uri, bytes)
+        doc.uri
     }
 
     private fun foregroundInfo(displayName: String, percent: Int): ForegroundInfo {
@@ -265,4 +261,12 @@ object QueueMetaStore {
             prefs[KEY] = encode(decode(prefs[KEY] ?: "").filter { it.id in liveIds })
         }
     }
+}
+
+
+internal fun enqueueSequential(manager: WorkManager, requests: List<OneTimeWorkRequest>) {
+    if (requests.isEmpty()) return
+    var chain = manager.beginUniqueWork(QueueWorker.QUEUE_CHAIN, ExistingWorkPolicy.APPEND_OR_REPLACE, requests.first())
+    requests.drop(1).forEach { chain = chain.then(it) }
+    chain.enqueue()
 }

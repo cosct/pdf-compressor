@@ -8,19 +8,22 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import uniffi.pdfcompressor.FfiAnalysis
 import uniffi.pdfcompressor.FfiCompressResult
 import uniffi.pdfcompressor.FfiException
 import uniffi.pdfcompressor.FfiSettings
-import java.io.IOException
 
 /** UI flow stages. Held by [CompressViewModel] so configuration changes
  *  (rotation, theme/locale recreation) do not drop a picked document or a
  *  finished result; the raw bytes stay in memory either way. */
 sealed interface Stage {
     data object Idle : Stage
+    data object Reading : Stage
 
     data class Analyzing(val uri: Uri, val bytes: ByteArray, val displayName: String) : Stage
 
@@ -52,13 +55,13 @@ sealed interface Stage {
  * so an in-flight compression and its result survive rotation and the
  * theme/locale switch recreations. Passwords stay session-memory only.
  */
-class CompressViewModel : ViewModel() {
+class CompressViewModel(private val engine: PdfEngineApi = PdfEngine) : ViewModel() {
 
     var stage by mutableStateOf<Stage>(Stage.Idle)
         private set
     var error by mutableStateOf<String?>(null)
         private set
-    var pendingPassword by mutableStateOf<Pair<Stage.Ready, Boolean>?>(null)
+    var pendingPassword by mutableStateOf<Pair<Stage.Analyzing, Boolean>?>(null)
     // Custom panel overrides; null follows the effective preset's defaults.
     var qualityOverride by mutableStateOf<Int?>(null)
     var maxEdgeOverride by mutableStateOf<Int?>(null)
@@ -68,10 +71,19 @@ class CompressViewModel : ViewModel() {
 
     // S2: engine liveness probe, plus the preset table straight from the
     // engine's single source of truth.
-    val enginePing = PdfEngine.probe()
-    val presetTable = PdfEngine.presetTable()
+    val enginePing = engine.probe()
+    val presetTable = engine.presetTable()
 
     private var compressJob: Job? = null
+    private var generation = 0
+
+    private fun beginTask(): Int {
+        generation += 1
+        compressJob?.cancel()
+        pendingPassword = null
+        error = null
+        return generation
+    }
 
     fun effectivePreset(analysis: FfiAnalysis, presetChoice: String): String =
         if (presetChoice == "auto" || presetChoice !in presetTable) {
@@ -98,38 +110,63 @@ class CompressViewModel : ViewModel() {
         persistable: Boolean = true,
         onFailure: (() -> Unit)? = null,
     ) {
-        viewModelScope.launch {
+        val run = beginTask()
+        stage = Stage.Reading
+        compressJob = viewModelScope.launch {
             try {
-                if (persistable) {
-                    runCatching {
-                        context.contentResolver.takePersistableUriPermission(
-                            uri,
-                            Intent.FLAG_GRANT_READ_URI_PERMISSION,
-                        )
+                val input = withContext(Dispatchers.IO) {
+                    if (persistable) {
+                        runCatching { context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
                     }
+                    val bytes = readPdf(context, uri)
+                    val displayName = name ?: queryDisplayName(context, uri) ?: "document.pdf"
+                    Stage.Analyzing(uri, bytes, displayName)
                 }
-                val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                    ?: throw IOException("empty stream")
-                val displayName = name
-                    ?: queryDisplayName(context, uri)
-                    ?: uri.path?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
-                    ?: "document.pdf"
-                // Fresh document: the custom panel follows its own analysis.
+                if (run != generation) return@launch
                 qualityOverride = null
                 maxEdgeOverride = null
                 targetSizeMb = null
-                stage = Stage.Analyzing(uri, bytes, displayName)
-                val analysis = PdfEngine.analyze(bytes)
-                stage = Stage.Ready(uri, bytes, displayName, analysis, null)
+                analyzeInput(context, input, null, run)
+            } catch (cancelled: CancellationException) {
+                if (run == generation) stage = Stage.Idle
+                throw cancelled
             } catch (failure: Exception) {
-                error = failure.message ?: failure.toString()
-                stage = Stage.Idle
-                onFailure?.invoke()
+                if (run == generation) {
+                    error = failure.message ?: failure.toString()
+                    stage = Stage.Idle
+                    onFailure?.invoke()
+                }
+            }
+        }
+    }
+
+    fun retryAnalysis(context: Context, input: Stage.Analyzing, password: String?) {
+        val run = beginTask()
+        compressJob = viewModelScope.launch { analyzeInput(context, input, password, run) }
+    }
+
+    private suspend fun analyzeInput(context: Context, input: Stage.Analyzing, password: String?, run: Int) {
+        stage = input
+        try {
+            val analysis = engine.analyze(input.bytes, password)
+            if (run == generation) stage = Stage.Ready(input.uri, input.bytes, input.displayName, analysis, password)
+        } catch (cancelled: CancellationException) {
+            if (run == generation) stage = Stage.Idle
+            throw cancelled
+        } catch (failure: FfiException) {
+            if (run != generation) return
+            stage = Stage.Idle
+            if (failure is FfiException.PasswordRequired || failure is FfiException.WrongPassword) {
+                pendingPassword = input to (failure is FfiException.WrongPassword)
+            } else {
+                val mapped = engineErrorMessage(failure, context)
+                error = context.getString(mapped.messageRes, *mapped.formatArgs.toTypedArray())
             }
         }
     }
 
     fun runCompress(context: Context, ready: Stage.Ready, password: String?, presetChoice: String) {
+        val run = beginTask()
         val progress = PdfEngine.Progress()
         stage = Stage.Compressing(
             ready.uri, ready.bytes, ready.displayName, ready.analysis, password, 0f,
@@ -137,7 +174,7 @@ class CompressViewModel : ViewModel() {
         compressJob = viewModelScope.launch {
             val collector = launch {
                 progress.latest.collect { update ->
-                    if (update != null) {
+                    if (update != null && run == generation) {
                         stage = (stage as? Stage.Compressing)
                             ?.copy(progress = update.percent / 100f)
                             ?: stage
@@ -148,7 +185,7 @@ class CompressViewModel : ViewModel() {
                 val settings = currentSettings(ready.analysis, presetChoice)
                 val target = targetSizeMb
                 val result = if (target != null) {
-                    PdfEngine.compressToTarget(
+                    engine.compressToTarget(
                         bytes = ready.bytes,
                         targetBytes = (target.toLong() shl 20).toULong(),
                         password = password,
@@ -156,20 +193,24 @@ class CompressViewModel : ViewModel() {
                         progress = progress,
                     )
                 } else {
-                    PdfEngine.compress(
+                    engine.compress(
                         bytes = ready.bytes,
                         password = password,
                         settings = settings,
                         progress = progress,
                     )
                 }
-                stage = Stage.Done(result, ready.displayName)
+                if (run == generation) stage = Stage.Done(result, ready.displayName)
+            } catch (cancelled: CancellationException) {
+                if (run == generation) stage = ready
+                throw cancelled
             } catch (cancelled: FfiException.Cancelled) {
-                stage = Stage.Idle
+                if (run == generation) stage = ready
             } catch (failure: FfiException) {
+                if (run != generation) return@launch
                 when (failure) {
                     is FfiException.PasswordRequired, is FfiException.WrongPassword -> {
-                        pendingPassword = ready to (failure is FfiException.WrongPassword)
+                        pendingPassword = Stage.Analyzing(ready.uri, ready.bytes, ready.displayName) to (failure is FfiException.WrongPassword)
                         stage = Stage.Ready(
                             ready.uri, ready.bytes, ready.displayName, ready.analysis, password,
                         )
@@ -198,6 +239,7 @@ class CompressViewModel : ViewModel() {
 
     /** Back from a finished run to the idle screen (recents live there). */
     fun resetToIdle() {
+        beginTask()
         stage = Stage.Idle
     }
 

@@ -1,3 +1,9 @@
+import org.gradle.api.tasks.Input
+import org.gradle.api.tasks.OutputDirectory
+import org.gradle.api.tasks.TaskAction
+import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.provider.Property
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -41,6 +47,9 @@ android {
         // UniFFI-generated Kotlin (committed; freshness gated by
         // scripts/gen-android-bindings.sh --check). Package root: uniffi.pdfcompressor.
         getByName("main").java.srcDir("src/main/uniffi")
+        // Native libraries are generated separately per variant; never package
+        // the old shared src/main/jniLibs directory by accident.
+        getByName("main").jniLibs.setSrcDirs(emptyList<String>())
     }
 
     packaging {
@@ -50,6 +59,9 @@ android {
 }
 
 dependencies {
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
+    testImplementation("org.mockito:mockito-core:5.18.0")
     val composeBom = platform("androidx.compose:compose-bom:2025.06.00")
     implementation(composeBom)
     implementation("androidx.core:core-ktx:1.16.0")
@@ -75,37 +87,37 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
 
-// --- Rust integration -------------------------------------------------------
-// Cross-compile the engine cdylib before merging resources. Skips with a
-// warning when no NDK is configured AND libs are already present, so pure
-// Kotlin iteration does not require the Rust toolchain.
-val rustRelease = gradle.startParameter.taskNames.any { it.contains("Release") }
-val ndkConfigured = providers.environmentVariable("ANDROID_NDK_HOME").isPresent ||
-    providers.environmentVariable("ANDROID_NDK_LATEST_HOME").isPresent ||
-    providers.environmentVariable("ANDROID_SDK_ROOT").isPresent ||
-    providers.environmentVariable("ANDROID_HOME").isPresent
-val jniLibsPresent = layout.projectDirectory
-    .dir("src/main/jniLibs")
-    .asFile.listFiles()?.isNotEmpty() == true
+// Each variant gets its own task and output directory. Missing toolchains
+// or ABIs fail the build, including when invoked via generic assemble/build.
+abstract class RustJniTask : DefaultTask() {
+    @get:Input abstract val releaseBuild: Property<Boolean>
+    @get:OutputDirectory abstract val outputDirectory: DirectoryProperty
 
-tasks.register("buildRustLibs") {
-    group = "rust"
-    description = "Cross-compile pdf-core-ffi into src/main/jniLibs (cargo-ndk)."
-    onlyIf { ndkConfigured || !jniLibsPresent }
-    doLast {
-        if (!ndkConfigured) {
-            logger.warn("ANDROID_NDK_HOME not set; reusing existing jniLibs (stale risk).")
-            return@doLast
-        }
-        val script = rootProject.projectDir.parentFile.resolve("scripts/build-android-libs.sh")
-        exec {
-            workingDir(rootProject.projectDir.parentFile)
-            commandLine(mutableListOf<String>().apply {
-                add(script.absolutePath)
-                if (rustRelease) add("--release")
+    @TaskAction fun buildLibraries() {
+        val repo = project.rootProject.projectDir.parentFile
+        project.exec {
+            workingDir(repo)
+            commandLine(buildList {
+                add(repo.resolve("scripts/build-android-libs.sh").absolutePath)
+                if (releaseBuild.get()) add("--release")
+                add("--out-dir")
+                add(outputDirectory.get().asFile.absolutePath)
             })
+        }
+        listOf("arm64-v8a", "x86_64").forEach { abi ->
+            check(outputDirectory.file("$abi/libpdf_core_ffi.so").get().asFile.length() > 0) {
+                "Missing native engine for $abi"
+            }
         }
     }
 }
 
-tasks.named("preBuild") { dependsOn("buildRustLibs") }
+androidComponents.onVariants { variant ->
+    val rust = tasks.register<RustJniTask>("buildRust${variant.name.replaceFirstChar { it.uppercase() }}") {
+        releaseBuild.set(variant.buildType == "release")
+        outputDirectory.set(layout.buildDirectory.dir("generated/rust/${variant.name}"))
+        // Always let cargo validate its own dependency graph/toolchain.
+        outputs.upToDateWhen { false }
+    }
+    variant.sources.jniLibs?.addGeneratedSourceDirectory(rust, RustJniTask::outputDirectory)
+}

@@ -4,7 +4,6 @@ import android.content.Context
 import androidx.annotation.StringRes
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.isActive
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import kotlin.coroutines.resume
@@ -32,7 +31,15 @@ import uniffi.pdfcompressor.uniffiEnsureInitialized
  * [kotlinx.coroutines.suspendCancellableCoroutine.invokeOnCancellation],
  * so cancelling the scope aborts the run at the engine's next check.
  */
-object PdfEngine {
+interface PdfEngineApi {
+    fun probe(): String
+    fun presetTable(): Map<String, uniffi.pdfcompressor.FfiPresetProfile>
+    suspend fun analyze(bytes: ByteArray, password: String? = null, progress: PdfEngine.Progress = PdfEngine.Progress()): FfiAnalysis
+    suspend fun compress(bytes: ByteArray, password: String? = null, settings: FfiSettings, progress: PdfEngine.Progress = PdfEngine.Progress()): FfiCompressResult
+    suspend fun compressToTarget(bytes: ByteArray, targetBytes: ULong, password: String? = null, settings: FfiSettings, progress: PdfEngine.Progress = PdfEngine.Progress()): FfiCompressResult
+}
+
+object PdfEngine : PdfEngineApi {
 
     /** Progress sink handed to the engine; thread-safe via StateFlow. */
     class Progress : FfiProgress {
@@ -48,13 +55,13 @@ object PdfEngine {
         }
 
     /** Liveness probe (spike S2): shows on the skeleton screen. */
-    fun probe(): String {
+    override fun probe(): String {
         ensureLoaded()
         return nativePing()
     }
 
     /** Preset table read from the engine's single source of truth. */
-    fun presetTable() = nativePresetDefaults().associateBy { it.name }
+    override fun presetTable() = nativePresetDefaults().associateBy { it.name }
 
     /** A settings payload selecting a preset and nothing else (the
      *  generated FfiSettings constructor has no default arguments). */
@@ -72,29 +79,29 @@ object PdfEngine {
         cmykConversion = null,
     )
 
-    suspend fun analyze(
+    override suspend fun analyze(
         bytes: ByteArray,
-        password: String? = null,
-        progress: Progress = Progress(),
+        password: String?,
+        progress: Progress,
     ): FfiAnalysis = native(progress) { cancel, cb ->
         nativeAnalyze(bytes, password, null, cancel, cb)
     }
 
-    suspend fun compress(
+    override suspend fun compress(
         bytes: ByteArray,
-        password: String? = null,
+        password: String?,
         settings: FfiSettings,
-        progress: Progress = Progress(),
+        progress: Progress,
     ): FfiCompressResult = native(progress) { cancel, cb ->
         nativeCompress(bytes, password, settings, cancel, cb)
     }
 
-    suspend fun compressToTarget(
+    override suspend fun compressToTarget(
         bytes: ByteArray,
         targetBytes: ULong,
-        password: String? = null,
+        password: String?,
         settings: FfiSettings,
-        progress: Progress = Progress(),
+        progress: Progress,
     ): FfiCompressResult = native(progress) { cancel, cb ->
         nativeCompressToTarget(bytes, password, targetBytes, settings, cancel, cb)
     }
@@ -113,6 +120,7 @@ object PdfEngine {
         val handle = FfiCancelHandle()
         executor.execute {
             try {
+                if (!continuation.isActive) return@execute
                 val result = block(handle, progress)
                 if (continuation.isActive) continuation.resume(result)
             } catch (throwable: Throwable) {
@@ -125,7 +133,7 @@ object PdfEngine {
 
 /** A resolved strings.xml entry for an engine failure. */
 data class EngineError(
-    @StringRes val messageRes: Int,
+    @param:StringRes val messageRes: Int,
     val formatArgs: List<String> = emptyList(),
 )
 
