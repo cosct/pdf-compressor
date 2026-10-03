@@ -16,7 +16,11 @@ use crate::error::AppError;
 /// color planes, alpha planes, and memoized alpha/G4 products. Above it,
 /// caches are evicted (color planes first, products second) and re-derived
 /// next round; the re-decode cost is the price of a bounded memory ceiling.
-const BITMAP_CACHE_TOTAL_BUDGET_BYTES: u64 = 768 * 1024 * 1024;
+const BITMAP_CACHE_TOTAL_BUDGET_BYTES: u64 = if cfg!(target_os = "android") {
+    64 * 1024 * 1024
+} else {
+    768 * 1024 * 1024
+};
 
 /// One image object tracked across probe rounds: the moved-out original
 /// streams plus the caches and the latest completed encoding.
@@ -33,6 +37,7 @@ pub(crate) struct ImageSearchEntry {
     pub jbig2_globals: Option<Arc<Vec<u8>>>,
     pub cache: ImageSearchCache,
     last: Option<LastEncoding>,
+    cache_budget: u64,
 }
 
 struct LastEncoding {
@@ -65,6 +70,7 @@ pub(crate) fn take_image_search_entries(
     color_spaces: &HashMap<ObjectId, super::colorspace::ImageColorSpaceInfo>,
     jbig2_globals: &HashMap<ObjectId, Arc<Vec<u8>>>,
 ) -> Vec<ImageSearchEntry> {
+    let cache_budget = BITMAP_CACHE_TOTAL_BUDGET_BYTES / image_object_ids.len().max(1) as u64;
     take_image_tasks(
         document,
         image_object_ids,
@@ -81,6 +87,7 @@ pub(crate) fn take_image_search_entries(
         jbig2_globals: task.jbig2_globals,
         cache: ImageSearchCache::default(),
         last: None,
+        cache_budget,
     })
     .collect()
 }
@@ -110,6 +117,16 @@ pub(crate) fn probe_image_at(
         entry.color_space.as_ref(),
         entry.jbig2_globals.as_deref().map(Vec::as_slice),
     )?;
+    // Every entry owns a fixed share of the retained-cache budget. Trim
+    // before sending a worker result, not at the end of the document round.
+    // Transient decoding still costs at most one bounded image per worker;
+    // this is a retained-cache limit, not a process RSS guarantee.
+    if entry.cache.cached_bytes() > entry.cache_budget {
+        entry.cache.drop_bitmap();
+    }
+    if entry.cache.cached_bytes() > entry.cache_budget {
+        entry.cache.drop_products();
+    }
     let contribution = image_contribution(entry, &optimization);
     entry.last = Some(LastEncoding {
         params,
@@ -242,5 +259,65 @@ pub(crate) fn enforce_bitmap_cache_budget(entries: &mut [ImageSearchEntry]) {
         entries[index].cache.drop_products();
         let after = entries[index].cache.cached_bytes();
         total = total.saturating_sub(before - after);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn probe_evicts_before_return_and_reencoding_preserves_size() {
+        let bytes = crate::testutil::jpeg_page_pdf_bytes(640, 480, 95);
+        let mut document = Document::load_mem(&bytes).unwrap();
+        let ids: Vec<_> = document
+            .objects
+            .iter()
+            .filter_map(|(id, object)| {
+                object
+                    .as_stream()
+                    .ok()
+                    .filter(|stream| {
+                        stream
+                            .dict
+                            .get(b"Subtype")
+                            .and_then(Object::as_name)
+                            .is_ok_and(|name| name == b"Image")
+                    })
+                    .map(|_| *id)
+            })
+            .collect();
+        let mut entries = take_image_search_entries(
+            &mut document,
+            &ids,
+            &HashSet::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert!(!entries.is_empty());
+        let settings = CompressionSettings::from_sources(None, Default::default());
+        let cancel = Arc::new(AtomicBool::new(false));
+        let context = SearchContext {
+            settings: &settings,
+            skip_policy: SkipPolicy::for_document(entries.len(), false),
+            cancel_flag: &cancel,
+            task_id: "cache-test",
+        };
+        let params = RoundParams {
+            quality: 55,
+            edge: 400,
+        };
+        for entry in &mut entries {
+            // Force eviction on a small fixture instead of allocating hundreds of MB.
+            entry.cache_budget = 1;
+            let first = probe_image_at(entry, params, &context).unwrap();
+            assert!(
+                entry.cache.cached_bytes() <= 1,
+                "evict before the worker can enqueue this entry"
+            );
+            let second = probe_image_at(entry, params, &context).unwrap();
+            assert_eq!(first, second);
+            assert!(entry.cache.cached_bytes() <= 1);
+        }
     }
 }

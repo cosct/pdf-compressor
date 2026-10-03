@@ -12,9 +12,8 @@
 //! 3. Each probe round only re-encodes images — decoded planes are cached
 //!    across rounds because JPEG decode results do not depend on quality —
 //!    and sums the encoded bytes in memory. No disk writes until the end.
-//! 4. The winning parameters are materialized once next to the source file
-//!    and verified against the budget; if the estimate was optimistic, the
-//!    search tightens and continues, keeping the written file as best effort.
+//! 4. Fitting candidates are serialized in memory to verify the estimate.
+//!    Only the final winning parameters are committed to the destination.
 
 use std::{
     fs,
@@ -411,9 +410,8 @@ where
                 best = Some((params, run));
                 // The budget has headroom: try to spend it on quality.
             }
-            // An optimistic estimate (fits == false) leaves the round's
-            // output in place for now; the finish step restores the best
-            // round if one exists.
+            // An optimistic estimate (fits == false) remains only in memory;
+            // the finish step materializes the best verified round.
         }
         // Quality-blind round detection: a round whose encoded contribution
         // ignores quality (G4 products are the big one) yields
@@ -443,9 +441,13 @@ where
     // --- Finish: keep the best verified fit, else best effort at the floor ---
     let met = best.as_ref().map(|(params, _)| *params);
     let mut run = match best {
-        Some((params, run)) if last_materialized == Some(params) => run,
+        Some((params, run))
+            if last_materialized == Some(params) && matches!(sink, TargetSink::Bytes) =>
+        {
+            run
+        }
         Some((params, _)) => {
-            // A later optimistic round clobbered the best output — restore it.
+            // Rebuild the winning round and commit it only now.
             report_progress(ProgressUpdate::new("writing", 92.0));
             materialize_round(
                 &mut document,
@@ -476,6 +478,7 @@ where
             )?
         }
     };
+    let met = met.filter(|_| run.response.compressed_size_bytes <= target_bytes as f64);
     run.response = with_target_notice(run.response, target_bytes, met);
 
     // --- Pipe sink: never hand downstream more than the input ---
@@ -610,7 +613,7 @@ fn materialize_round(
         ..context.search.settings.clone()
     };
     match context.sink {
-        TargetSink::File { output_path } => {
+        TargetSink::File { output_path } if final_write => {
             let response = super::compressor::save_and_build_response_with_renumber(
                 document,
                 output_path,
@@ -627,7 +630,8 @@ fn materialize_round(
                 bytes: None,
             })
         }
-        TargetSink::Bytes => {
+        TargetSink::Bytes | TargetSink::File { .. } => {
+            // Probe rounds never commit files; only the final round writes.
             // Serialize in memory: the same measurement the file write
             // would produce, without a probe file ever touching the disk.
             let (serialized, mut response) = super::compressor::serialize_and_count(
@@ -638,10 +642,11 @@ fn materialize_round(
                 stats,
                 final_write,
             )?;
+            ensure_not_cancelled(context.search.cancel_flag, context.search.task_id)?;
             response.output_path = "<stdout>".to_string();
             Ok(TargetRunOutput {
                 response,
-                bytes: Some(serialized),
+                bytes: matches!(context.sink, TargetSink::Bytes).then_some(serialized),
             })
         }
     }

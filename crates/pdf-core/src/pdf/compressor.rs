@@ -40,7 +40,7 @@ const IMAGE_OPTIMIZATION_PROGRESS_END: f32 = 88.0;
 
 /// Maximum number of worker threads for parallel image recompression.
 /// Capped to avoid excessive memory consumption from concurrent large-image decodes.
-const MAX_IMAGE_WORKERS: usize = 8;
+const MAX_IMAGE_WORKERS: usize = if cfg!(target_os = "android") { 1 } else { 8 };
 
 /// Minimum image objects before enabling parallel processing.
 /// Below this count, thread pool overhead outweighs the gains.
@@ -403,6 +403,7 @@ where
                 &mut stats,
                 true,
             )?;
+            ensure_not_cancelled(cancel_flag, task_id)?;
             response.output_path = "<stdout>".to_string();
             if serialized.len() as u64 >= original_size_bytes {
                 response.notices.insert(
@@ -520,7 +521,10 @@ pub(crate) fn save_and_build_response_with_renumber(
         return Ok(response);
     }
 
-    write_output_atomically(output_path, &serialized)?;
+    ensure_not_cancelled(cancel_flag, task_id)?;
+    crate::atomic_file::write_checked(output_path, &serialized, || {
+        ensure_not_cancelled(cancel_flag, task_id)
+    })?;
 
     let saved_bytes = original_size_bytes.saturating_sub(compressed_size_bytes);
     let savings_percent = if original_size_bytes == 0 {
@@ -543,54 +547,9 @@ pub(crate) fn save_and_build_response_with_renumber(
 /// already established. A mid-write ENOSPC/EIO/kill can never leave a
 /// truncated file under the final name: the claim placeholder is replaced
 /// only by a fully synced result, and a failed attempt cleans its temp.
+#[cfg(test)]
 fn write_output_atomically(output_path: &Path, bytes: &[u8]) -> Result<(), AppError> {
-    use std::io::Write as _;
-
-    // create_new (O_EXCL): a predictable `.tmp` name created with truncation
-    // would let a same-named file (or a symlink an attacker planted in a
-    // writable output directory) be clobbered. The pid suffix makes
-    // collisions essentially impossible; the retry loop closes the rest.
-    let mut attempt = 0u32;
-    loop {
-        let suffix = if attempt == 0 {
-            format!("{}.tmp", std::process::id())
-        } else {
-            format!("{}.{}.tmp", std::process::id(), attempt)
-        };
-        let temp_path = output_path.with_extension(suffix);
-        let mut temp = match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp_path)
-        {
-            Ok(temp) => temp,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                attempt += 1;
-                if attempt >= 4 {
-                    return Err(AppError::from(error));
-                }
-                continue;
-            }
-            Err(error) => return Err(AppError::from(error)),
-        };
-        let result = (|| -> Result<(), std::io::Error> {
-            temp.write_all(bytes)?;
-            temp.sync_all()?;
-            drop(temp);
-            // Atomic on Unix; Windows cannot always rename over an existing
-            // file, so fall back to remove-then-rename there.
-            if fs::rename(&temp_path, output_path).is_err() {
-                let _ = fs::remove_file(output_path);
-                fs::rename(&temp_path, output_path)?;
-            }
-            Ok(())
-        })();
-        if let Err(error) = result {
-            let _ = fs::remove_file(&temp_path);
-            return Err(AppError::from(error));
-        }
-        return Ok(());
-    }
+    crate::atomic_file::write(output_path, bytes)
 }
 
 /// Serialize the optimized document and assemble the notice stack and
@@ -1847,22 +1806,6 @@ impl Drop for OutputClaimGuard {
                 let _ = fs::remove_file(&self.0);
             }
         }
-        // A hard kill between temp creation and rename can strand a
-        // `<output>.<pid>.tmp` sibling; nothing else owns that name.
-        if let Some(residue) = self.0.file_name().and_then(|name| name.to_str()) {
-            if let Ok(entries) = fs::read_dir(self.0.parent().unwrap_or(Path::new("."))) {
-                let prefix = format!("{residue}.");
-                for entry in entries.flatten() {
-                    let file_name = entry.file_name();
-                    let Some(file_name) = file_name.to_str() else {
-                        continue;
-                    };
-                    if file_name.starts_with(&prefix) && file_name.ends_with(".tmp") {
-                        let _ = fs::remove_file(entry.path());
-                    }
-                }
-            }
-        }
     }
 }
 
@@ -1961,33 +1904,15 @@ mod tests {
     }
 
     #[test]
-    fn claim_guard_sweeps_stranded_temp_siblings() {
-        // A hard kill between temp creation and rename strands
-        // `<output>.<pid>.tmp` files; the guard's Drop must sweep exactly
-        // those and leave unrelated files (and a non-empty output) alone.
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn claim_guard_preserves_all_sibling_files() {
+        let dir = tempfile::tempdir().unwrap();
         let output = dir.path().join("out.pdf");
-        std::fs::write(&output, b"real output").expect("seed output");
-        let mine = format!("out.pdf.{}", std::process::id());
-        std::fs::write(dir.path().join(format!("{mine}.tmp")), b"x").expect("residue 1");
-        std::fs::write(dir.path().join(format!("{mine}.2.tmp")), b"x").expect("residue 2");
-        let unrelated_tmp = dir.path().join("other.pdf.999.tmp");
-        std::fs::write(&unrelated_tmp, b"x").expect("unrelated");
-        let lookalike = dir.path().join("out.pdf.txt");
-        std::fs::write(&lookalike, b"x").expect("lookalike");
-
+        let sibling = dir.path().join("out.pdf.user-backup.tmp");
+        fs::write(&output, b"output").unwrap();
+        fs::write(&sibling, b"backup").unwrap();
         drop(OutputClaimGuard(output.clone()));
-
-        assert!(output.exists(), "a non-empty output must survive");
-        assert!(
-            !dir.path().join(format!("{mine}.tmp")).exists()
-                && !dir.path().join(format!("{mine}.2.tmp")).exists(),
-            "this output's stranded temps must be swept"
-        );
-        assert!(
-            unrelated_tmp.exists() && lookalike.exists(),
-            "unrelated and non-.tmp files must not be touched"
-        );
+        assert_eq!(fs::read(output).unwrap(), b"output");
+        assert_eq!(fs::read(sibling).unwrap(), b"backup");
     }
 
     #[test]

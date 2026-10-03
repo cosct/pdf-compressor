@@ -12,6 +12,7 @@
 //! app can generate TypeScript IPC bindings.
 //! specta 特性：为线上传输模型派生 specta::Type，供桌面应用生成 TS IPC 绑定。
 
+pub mod atomic_file;
 pub mod error;
 pub mod models;
 pub mod pdf;

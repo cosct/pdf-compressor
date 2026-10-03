@@ -10,7 +10,7 @@
 use std::{
     collections::{HashMap, HashSet},
     fs::{self, File},
-    io::{ErrorKind, Write},
+    io::ErrorKind,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -218,52 +218,7 @@ fn write_preset_config_at(
 
     fs::create_dir_all(parent_dir)?;
 
-    // create_new (O_EXCL): a predictable `.tmp` name created with truncation
-    // would clobber a same-named file (or a symlink planted in a writable
-    // directory). The pid suffix makes collisions essentially impossible;
-    // the retry loop closes the rest.
-    let mut attempt = 0u32;
-    loop {
-        let suffix = if attempt == 0 {
-            format!("{}.tmp", std::process::id())
-        } else {
-            format!("{}.{}.tmp", std::process::id(), attempt)
-        };
-        let temp_path = config_path.with_extension(suffix);
-        let mut temp = match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp_path)
-        {
-            Ok(temp) => temp,
-            Err(error) if error.kind() == ErrorKind::AlreadyExists => {
-                attempt += 1;
-                if attempt >= 4 {
-                    return Err(AppError::Io(error));
-                }
-                continue;
-            }
-            Err(error) => return Err(AppError::Io(error)),
-        };
-        let result = (|| -> Result<(), std::io::Error> {
-            temp.write_all(&payload)?;
-            temp.sync_all()?;
-            drop(temp);
-            // Atomic on Unix; on Windows, try rename-over first (NTFS
-            // supports it), falling back to remove-then-rename for older
-            // filesystems.
-            if fs::rename(&temp_path, config_path).is_err() {
-                let _ = fs::remove_file(config_path);
-                fs::rename(&temp_path, config_path)?;
-            }
-            Ok(())
-        })();
-        if let Err(error) = result {
-            let _ = fs::remove_file(&temp_path);
-            return Err(AppError::Io(error));
-        }
-        return Ok(());
-    }
+    pdf_core::atomic_file::write(config_path, &payload)
 }
 
 fn clear_preset_user_config_file() -> Result<(), AppError> {

@@ -15,13 +15,13 @@ use super::ensure_not_cancelled;
 use crate::error::AppError;
 
 /// Worker channel buffer multiplier relative to worker count.
-/// Each queued task carries its full stream bytes, so a small multiplier keeps
-/// the in-flight backlog bounded without blocking the producer.
+/// Each queued result may retain stream bytes and caches; keep the backlog
+/// bounded while the caller consumes results concurrently.
 pub(crate) const CHANNEL_BUFFER_MULTIPLIER: usize = 2;
 
 /// Distribute `tasks` over `worker_count` scoped threads.
 ///
-/// Tasks move into a bounded channel (`buffer` slots); workers apply `work`
+/// Workers pull owned tasks and apply `work`; a bounded result channel (`buffer` slots)
 /// and send results back in completion order; `on_result` runs on the calling
 /// thread, which stays the only thread touching shared state such as the
 /// document. The pool owns cancellation: workers exit when the flag flips,
@@ -47,107 +47,98 @@ where
     if expected == 0 {
         return Ok(());
     }
-
+    let tasks = Mutex::new(tasks.into_iter());
     thread::scope(|scope| -> Result<(), AppError> {
-        let (task_tx, task_rx) = mpsc::sync_channel::<T>(buffer.max(1));
-        let task_rx = Arc::new(Mutex::new(task_rx));
-        let (result_tx, result_rx) = mpsc::channel::<R>();
-        // Panicked task counter: without a catch here, a panicking `work`
-        // would kill its thread, silently swallow the collection error, and
-        // re-panic the whole scope at join (discarding the AppError the
-        // closure already built). Counted so the collection failure can say
-        // which of the two it was.
-        let panicked_tasks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-
-        // Spawn worker threads. `work` is shared by reference: every capture
-        // it holds (settings, cancel flag, task id) is Sync by construction.
+        // Workers pull tasks directly. The caller drains results while they
+        // run, so bounded results cannot deadlock behind a blocked producer.
+        let (tx, rx) = mpsc::sync_channel(buffer.max(1));
         for _ in 0..worker_count.max(1) {
-            let rx = Arc::clone(&task_rx);
-            let tx = result_tx.clone();
+            let tx = tx.clone();
+            let tasks = &tasks;
             let work = &work;
-            let panicked_tasks = Arc::clone(&panicked_tasks);
             scope.spawn(move || loop {
                 if cancel_flag.load(Ordering::Relaxed) {
                     return;
                 }
-                let task = match rx.lock() {
-                    Ok(guard) => guard.recv(),
-                    Err(_) => return,
+                let task = tasks.lock().unwrap_or_else(|e| e.into_inner()).next();
+                let Some(task) = task else {
+                    return;
                 };
-                let Ok(task) = task else { return };
-                // The default panic hook still prints the location; catching
-                // here keeps the worker alive for the remaining tasks.
-                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(task)));
-                match outcome {
-                    Ok(result) => {
-                        if tx.send(result).is_err() {
-                            return;
-                        }
-                    }
-                    Err(_) => {
-                        panicked_tasks.fetch_add(1, Ordering::Relaxed);
-                    }
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(task)))
+                    .map_err(|_| {
+                        AppError::PdfBuild("A worker task panicked; the run was aborted.".into())
+                    });
+                if tx.send(result).is_err() {
+                    return;
                 }
             });
         }
-
-        // Drop the spare sender so result_rx closes when all workers finish.
-        drop(result_tx);
-
-        // Feed tasks into the channel. A blocking `send` could never return
-        // under cancellation (the scope keeps a receiver alive, so the
-        // channel never disconnects while we wait), so the feed polls with
-        // `try_send` and re-checks the flag — cancellation unblocks the
-        // producer, whose early return drops the sender and releases the
-        // workers.
-        for task in tasks {
-            let mut task = task;
+        drop(tx);
+        for _ in 0..expected {
             loop {
                 ensure_not_cancelled(cancel_flag, task_id)?;
-                match task_tx.try_send(task) {
-                    Ok(()) => break,
-                    Err(mpsc::TrySendError::Full(returned)) => {
-                        task = returned;
-                        // Workers are saturating the channel; a short park
-                        // keeps the poll cheap while progress is being made.
-                        thread::park_timeout(Duration::from_millis(2));
+                match rx.recv_timeout(Duration::from_millis(20)) {
+                    Ok(result) => {
+                        on_result(result?)?;
+                        break;
                     }
-                    Err(mpsc::TrySendError::Disconnected(_)) => {
+                    Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
                         return Err(AppError::PdfBuild(
-                            "A worker exited before its tasks were scheduled.".to_string(),
-                        ));
+                            "A worker exited before returning its result.".into(),
+                        ))
                     }
                 }
             }
         }
-        drop(task_tx);
-
-        // Collect results; shared state is only touched on this thread.
-        for _ in 0..expected {
-            ensure_not_cancelled(cancel_flag, task_id)?;
-            let result = result_rx.recv().map_err(|_| {
-                if panicked_tasks.load(Ordering::Relaxed) > 0 {
-                    AppError::PdfBuild(
-                        "A worker task panicked (hostile input or a bug); the run was aborted \
-                         without a process crash."
-                            .to_string(),
-                    )
-                } else {
-                    AppError::PdfBuild("A worker exited before returning its result.".to_string())
-                }
-            })?;
-            on_result(result)?;
-        }
-
         Ok(())
-    })?;
-
-    Ok(())
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_results_stop_production_when_consumer_fails() {
+        use std::sync::atomic::AtomicUsize;
+        let cancel = Arc::new(AtomicBool::new(false));
+        let started = AtomicUsize::new(0);
+        let result = run_worker_pool(
+            (0..1000).collect(),
+            2,
+            1,
+            &cancel,
+            "failure",
+            |n| {
+                started.fetch_add(1, Ordering::SeqCst);
+                n
+            },
+            |_| Err(AppError::Config("stop".into())),
+        );
+        assert!(result.is_err());
+        // One consumed result + one buffered result + one held per worker,
+        // plus each worker's final failed send after the receiver closes.
+        assert!(started.load(Ordering::SeqCst) <= 6);
+    }
+
+    #[test]
+    fn consumer_cancellation_releases_blocked_workers() {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let result = run_worker_pool(
+            (0..1000).collect(),
+            3,
+            1,
+            &cancel,
+            "cancel",
+            |n| n,
+            |_| {
+                cancel.store(true, Ordering::Relaxed);
+                Ok(())
+            },
+        );
+        assert!(matches!(result, Err(AppError::Cancelled(_))));
+    }
 
     #[test]
     fn panicked_task_surfaces_as_an_error_without_killing_the_process() {

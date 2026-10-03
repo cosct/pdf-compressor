@@ -61,6 +61,7 @@ jpx = ["dep:jpeg2k"]
 cmyk-cms = ["dep:lcms2", "dep:zune-jpeg"]
 
 [dependencies]
+tempfile = "3"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 lopdf = "0.45"
 # Pure-Rust JBIG2 (ITU T.88) decode for scanned text pages — no feature
@@ -102,9 +103,6 @@ rustc-hash = "2"
 fast_image_resize = { version = "6", features = ["image"] }
 
 [dev-dependencies]
-# Tests/benches only (incl. the cfg(test) modules in the lib and the CLI
-# bin) — no production path touches it.
-tempfile = "3"
 criterion = "0.8"
 # Self dev-dependency: turns on the `testutil` feature for tests, benches,
 # and examples only (resolver = "2" keeps it out of normal builds).
