@@ -205,7 +205,7 @@ export function getPresetDefaults(preset: CompressionPreset): PresetDefaults {
   return { ...profile }
 }
 
-export async function saveUserPresetProfile(
+async function writeUserPresetProfile(
   preset: CompressionPreset,
   profile: Partial<PresetProfile>,
 ): Promise<void> {
@@ -227,10 +227,29 @@ export async function saveUserPresetProfile(
   cachedUserPresetConfig = nextConfig
 }
 
-export async function clearUserPresetConfig(): Promise<void> {
+async function deleteUserPresetConfig(): Promise<void> {
   if (hasNativeCommands()) {
     await clearNativePresetUserConfig()
   }
 
   cachedUserPresetConfig = createEmptyUserConfig()
+}
+
+// Serialize read/modify/write operations, including clear: two profile saves
+// must not read the same old snapshot and erase each other's changes.
+let pendingMutation: Promise<void> = Promise.resolve()
+function enqueueMutation(action: () => Promise<void>): Promise<void> {
+  const result = pendingMutation.then(action)
+  pendingMutation = result.catch(() => {})
+  return result
+}
+export function saveUserPresetProfile(
+  preset: CompressionPreset,
+  profile: Partial<PresetProfile>,
+): Promise<void> {
+  const snapshot = { ...profile }
+  return enqueueMutation(() => writeUserPresetProfile(preset, snapshot))
+}
+export function clearUserPresetConfig(): Promise<void> {
+  return enqueueMutation(deleteUserPresetConfig)
 }

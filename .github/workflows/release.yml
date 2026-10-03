@@ -223,6 +223,7 @@ jobs:
       - name: Attach SHA256SUMS for the release assets
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           mkdir -p release-assets

@@ -293,8 +293,8 @@ describe('addSourcePaths', () => {
     expect(composable.jobs.value[0].progress.percent).toBe(0)
   })
 
-  it('ignores duplicate paths case-insensitively', async () => {
-    const composable = await readyQueue(['/tmp/A.pdf'])
+  it('ignores identical paths', async () => {
+    const composable = await readyQueue(['/tmp/a.pdf'])
     composable.addSourcePaths(['/tmp/a.pdf'])
 
     expect(composable.jobs.value).toHaveLength(1)
@@ -443,13 +443,14 @@ describe('cancelCompressionRun', () => {
       expect(composable.jobs.value[0].status).toBe('compressing')
     })
 
-    await composable.cancelCompressionRun()
+    const cancelling = composable.cancelCompressionRun()
     expect(composable.jobs.value[0].status).toBe('ready')
     expect(mockedCancel).toHaveBeenCalledTimes(1)
 
     // The run resolves successfully after cancellation — the result must be
     // discarded, not applied.
     releaseCompress()
+    await cancelling
     await run
 
     expect(composable.jobs.value[0].status).toBe('ready')
@@ -488,8 +489,11 @@ describe('cancelCompressionRun', () => {
     expect(mockedCompress).toHaveBeenCalledTimes(1)
 
     releaseCancel()
-    await cancelling
+    await Promise.resolve()
+    await composable.compressCurrentPdf()
+    expect(mockedCompress).toHaveBeenCalledTimes(1)
     releaseCompress()
+    await cancelling
     await run
 
     // Once the cancel settles, the next start goes through normally.
@@ -547,7 +551,7 @@ describe('analysis cancellation', () => {
     })
     expect(composable.canCancelCompression.value).toBe(true)
 
-    await composable.cancelCompressionRun()
+    const cancelling = composable.cancelCompressionRun()
     expect(mockedCancel).toHaveBeenCalledWith(expect.stringMatching(/::analysis$/))
 
     rejectAnalysis(
@@ -556,6 +560,7 @@ describe('analysis cancellation', () => {
         fallback: 'The active compression task was cancelled.',
       }),
     )
+    await cancelling
     await vi.waitFor(() => {
       expect(composable.jobs.value[0].status).toBe('selected')
     })
@@ -815,5 +820,34 @@ describe('password retry', () => {
       expect(composable.jobs.value[0].error?.id.startsWith('error.wrongPassword')).toBe(true)
     })
     expect(composable.selectedJobNeedsPassword.value).toBe(true)
+  })
+})
+
+describe('1.0 queue boundaries', () => {
+  it('keeps case-distinct file paths', async () => {
+    const c = await readyQueue(['/tmp/A.pdf', '/tmp/a.pdf'])
+    expect(c.jobs.value).toHaveLength(2)
+  })
+  it('normalizes corrupt persisted field types', () => {
+    const settings = normalizeSettings(makeSettings({ outputDir: 123 as unknown as string }))
+    expect(settings.outputDir).toBeNull()
+  })
+  it('does not start the next analysis after cancel ACK', async () => {
+    const c = usePdfCompressor()
+    let rejectFirst!: (reason: unknown) => void
+    mockedAnalyze.mockImplementationOnce(
+      () =>
+        new Promise((_, reject) => {
+          rejectFirst = reject
+        }),
+    )
+    mockedAnalyze.mockResolvedValue(analysisResponse())
+    c.addSourcePaths(['/tmp/a.pdf', '/tmp/b.pdf'])
+    await vi.waitFor(() => expect(mockedAnalyze).toHaveBeenCalledTimes(1))
+    const cancelling = c.cancelCompressionRun()
+    await Promise.resolve()
+    rejectFirst(Object.assign(new Error('cancelled'), { code: 'error.cancelled' }))
+    await cancelling
+    expect(mockedAnalyze).toHaveBeenCalledTimes(1)
   })
 })

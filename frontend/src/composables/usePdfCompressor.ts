@@ -85,7 +85,9 @@ function normalizeTargetFileSizeMb(value: number | null | undefined): number | n
 }
 
 export function normalizeSettings(settings: CompressionSettings): CompressionSettings {
-  const preset = settings.preset ?? 'balanced'
+  const preset = ['conservative', 'balanced', 'maximum', 'custom'].includes(settings.preset)
+    ? settings.preset
+    : 'balanced'
 
   return {
     ...settings,
@@ -103,13 +105,20 @@ export function normalizeSettings(settings: CompressionSettings): CompressionSet
     referenceMaxImageEdgePx: normalizeReferenceMaxImageEdgePx(settings.referenceMaxImageEdgePx),
     // Restored legacy queues may predate the grayscale field, so coerce
     // `undefined` back to the default instead of trusting the stored shape.
-    grayscale: settings.grayscale ?? false,
+    optimizeImages: typeof settings.optimizeImages === 'boolean' ? settings.optimizeImages : true,
+    compressStreams:
+      typeof settings.compressStreams === 'boolean' ? settings.compressStreams : true,
+    stripMetadata: typeof settings.stripMetadata === 'boolean' ? settings.stripMetadata : true,
+    grayscale: typeof settings.grayscale === 'boolean' ? settings.grayscale : false,
     // 0.10.0: G4 is the default bilevel codec (lossless for scans); an
     // unrecognized value falls back to it, `jpeg` stays a genuine opt-out.
     bilevelCodec: settings.bilevelCodec === 'jpeg' ? 'jpeg' : 'ccitt-g4',
-    subsetFonts: settings.subsetFonts ?? false,
-    cmykConversion: settings.cmykConversion ?? true,
-    outputDir: settings.outputDir?.trim() ? settings.outputDir.trim() : null,
+    subsetFonts: typeof settings.subsetFonts === 'boolean' ? settings.subsetFonts : false,
+    cmykConversion: typeof settings.cmykConversion === 'boolean' ? settings.cmykConversion : true,
+    outputDir:
+      typeof settings.outputDir === 'string' && settings.outputDir.trim()
+        ? settings.outputDir.trim()
+        : null,
     targetFileSizeMb: normalizeTargetFileSizeMb(settings.targetFileSizeMb),
   }
 }
@@ -199,7 +208,7 @@ type PersistedQueueEntry = {
 
 function persistQueue(entries: PersistedQueueEntry[]) {
   try {
-    window.localStorage.setItem(QUEUE_STORAGE_KEY, JSON.stringify(entries))
+    window.localStorage.setItem(QUEUE_STORAGE_KEY, JSON.stringify({ version: 1, entries }))
   } catch {
     // Storage unavailable — persistence is best-effort only.
   }
@@ -211,7 +220,8 @@ function readPersistedQueue(): PersistedQueueEntry[] {
     if (!raw) {
       return []
     }
-    const parsed = JSON.parse(raw)
+    const stored = JSON.parse(raw)
+    const parsed = Array.isArray(stored) ? stored : stored?.version === 1 ? stored.entries : null
     if (!Array.isArray(parsed)) {
       return []
     }
@@ -222,7 +232,8 @@ function readPersistedQueue(): PersistedQueueEntry[] {
         typeof entry.sourcePath === 'string' &&
         entry.sourcePath.trim().length > 0 &&
         entry.settings !== null &&
-        typeof entry.settings === 'object',
+        typeof entry.settings === 'object' &&
+        !Array.isArray(entry.settings),
     )
   } catch {
     return []
@@ -255,6 +266,15 @@ export function usePdfCompressor() {
   let compressionRunSerial = 0
   let currentCompressionRunId: number | null = null
   let analysisQueuePromise: Promise<void> | null = null
+  const nativeTasks = new Set<Promise<unknown>>()
+  async function trackNative<T>(task: Promise<T>): Promise<T> {
+    nativeTasks.add(task)
+    try {
+      return await task
+    } finally {
+      nativeTasks.delete(task)
+    }
+  }
   const activeCompressionTaskIds = new Map<string, string>()
   // Analysis runs register backend task ids too (0.11.0): the cancel button
   // must work while a large document is still being scanned.
@@ -293,6 +313,7 @@ export function usePdfCompressor() {
   const canCompress = computed(
     () =>
       !compressionRunning.value &&
+      !cancelInFlight.value &&
       (allCompressionTargetIds.value.length > 0 || selectedCompressionTargetIds.value.length > 0),
   )
   // Visible while either phase runs: analysis registers backend task ids
@@ -381,7 +402,7 @@ export function usePdfCompressor() {
     paths: string[],
     restoredSettingsByPath: Map<string, CompressionSettings> = new Map(),
   ) {
-    if (compressionRunning.value) {
+    if (compressionRunning.value || cancelInFlight.value) {
       pushErrorToast(
         createNotice(
           'queue:locked',
@@ -398,11 +419,11 @@ export function usePdfCompressor() {
       return
     }
 
-    const existingPaths = new Set(jobs.value.map((job) => job.sourcePath.toLowerCase()))
+    const existingPaths = new Set(jobs.value.map((job) => job.sourcePath))
     let nextSelectedId: string | null = selectedJobId.value
 
     for (const path of normalized) {
-      const lowered = path.toLowerCase()
+      const lowered = path
       if (existingPaths.has(lowered)) {
         continue
       }
@@ -435,7 +456,7 @@ export function usePdfCompressor() {
   }
 
   function removeJobById(jobId: string) {
-    if (compressionRunning.value) {
+    if (compressionRunning.value || cancelInFlight.value) {
       return
     }
 
@@ -554,21 +575,23 @@ export function usePdfCompressor() {
     const analysisTaskId = `${job.id}::analysis`
     activeAnalysisTaskIds.add(analysisTaskId)
     try {
-      const response = await analyzePdf(
-        requestedPath,
-        job.password,
-        analysisTaskId,
-        (update) => {
-          if (job.sourcePath === requestedPath) {
-            applyProgress(job, update)
-          }
-        },
-        // The job's live settings make the estimate honest about what a
-        // run with them would do (CMYK stance, size cap, preset ratios).
-        job.settings,
+      const response = await trackNative(
+        analyzePdf(
+          requestedPath,
+          job.password,
+          analysisTaskId,
+          (update) => {
+            if (job.sourcePath === requestedPath && !cancellationRequested.value) {
+              applyProgress(job, update)
+            }
+          },
+          // The job's live settings make the estimate honest about what a
+          // run with them would do (CMYK stance, size cap, preset ratios).
+          job.settings,
+        ),
       )
 
-      if (job.sourcePath !== requestedPath) {
+      if (job.sourcePath !== requestedPath || cancellationRequested.value) {
         return
       }
 
@@ -579,7 +602,7 @@ export function usePdfCompressor() {
       job.progress = { phase: 'queued', percent: 0 }
       setJobStatus(job, 'ready')
     } catch (error) {
-      if (job.sourcePath !== requestedPath) {
+      if (job.sourcePath !== requestedPath || cancellationRequested.value) {
         return
       }
 
@@ -618,6 +641,8 @@ export function usePdfCompressor() {
       }
     }
 
+    if (cancellationRequested.value || cancelledCompressionRuns.has(runId)) return
+
     const requestedPath = job.sourcePath
     const taskId = `${job.id}::run-${runId}`
     job.error = null
@@ -640,16 +665,18 @@ export function usePdfCompressor() {
           ),
         )
       }
-      const response = await runCompression(
-        requestedPath,
-        job.settings,
-        taskId,
-        (update) => {
-          if (job.sourcePath === requestedPath && isActiveCompressionTask(job.id, taskId)) {
-            applyProgress(job, update)
-          }
-        },
-        job.password,
+      const response = await trackNative(
+        runCompression(
+          requestedPath,
+          job.settings,
+          taskId,
+          (update) => {
+            if (job.sourcePath === requestedPath && isActiveCompressionTask(job.id, taskId)) {
+              applyProgress(job, update)
+            }
+          },
+          job.password,
+        ),
       )
 
       if (job.sourcePath !== requestedPath || !isActiveCompressionTask(job.id, taskId)) {
@@ -811,23 +838,20 @@ export function usePdfCompressor() {
       }
     }
 
-    if (!activeIds.length) {
-      compressionRunning.value = false
-      currentCompressionRunId = null
+    // Cancel ACK only sets the backend flag. Keep the run locked until the
+    // original native calls and analysis scheduler have really settled.
+    analysisQueue.value = []
+    const settling = [...nativeTasks]
+    const analysisSettling = analysisQueuePromise
+    activeCompressionTaskIds.clear()
+    try {
+      await Promise.allSettled(activeIds.map(({ taskId }) => cancelCompression(taskId)))
+      await Promise.allSettled(settling)
+      if (analysisSettling) await analysisSettling
+    } finally {
       cancellationRequested.value = false
       cancelInFlight.value = false
-      return
     }
-
-    compressionRunning.value = false
-    currentCompressionRunId = null
-    activeCompressionTaskIds.clear()
-    await Promise.allSettled(activeIds.map(({ taskId }) => cancelCompression(taskId)))
-    // Reset only after the backend tasks settled: the old run's workers key
-    // their exit off cancelledCompressionRuns (cleared by its own finally),
-    // so this reset can no longer disarm them mid-flight.
-    cancellationRequested.value = false
-    cancelInFlight.value = false
   }
 
   async function selectOutputDir() {
@@ -899,7 +923,7 @@ export function usePdfCompressor() {
   // --- Queue persistence: throttle writes (progress ticks mutate jobs often) ---
   let persistTimer: ReturnType<typeof setTimeout> | null = null
   watch(
-    jobs,
+    () => jobs.value.map((job) => ({ sourcePath: job.sourcePath, settings: { ...job.settings } })),
     (list) => {
       if (persistTimer) {
         clearTimeout(persistTimer)
@@ -966,10 +990,7 @@ export function usePdfCompressor() {
     // analyzed the first restored job against the draft baseline (wrong
     // estimate + a recommended-preset flip).
     const restoredSettings = new Map(
-      entries.map((entry) => [
-        entry.sourcePath.toLowerCase(),
-        normalizeSettings({ ...entry.settings }),
-      ]),
+      entries.map((entry) => [entry.sourcePath, normalizeSettings({ ...entry.settings })]),
     )
     addSourcePaths(
       entries.map((entry) => entry.sourcePath),
