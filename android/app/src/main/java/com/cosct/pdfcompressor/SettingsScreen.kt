@@ -68,7 +68,7 @@ fun SettingsDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = onDismiss) { Text("OK") }
+            TextButton(onClick = onDismiss) { Text(stringResource(android.R.string.ok)) }
         },
     )
 }

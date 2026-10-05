@@ -242,7 +242,7 @@ mod tests {
         assert_eq!(loaded.preset.as_deref(), Some("maximum"));
         assert_eq!(loaded.image_quality, Some(55));
         assert_eq!(loaded.target_size_bytes, Some(5 * 1024 * 1024));
-        // The pid-suffixed atomic-write temp files never linger.
+        // The atomic writer's owned random-named temp files never linger.
         let leftovers: Vec<_> = fs::read_dir(dir.path())
             .expect("read dir")
             .filter_map(Result::ok)

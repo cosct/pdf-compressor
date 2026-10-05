@@ -260,7 +260,7 @@ private fun CompressScreen(
                 TextButton(onClick = {
                     viewModel.dismissPasswordDialog()
                     viewModel.retryAnalysis(context, ready, password.ifBlank { null })
-                }) { Text("OK") }
+                }) { Text(stringResource(android.R.string.ok)) }
             },
             dismissButton = {
                 TextButton(onClick = { viewModel.dismissPasswordDialog() }) {
@@ -565,6 +565,9 @@ private suspend fun shareResult(context: Context, done: Stage.Done) {
         val name = suggestedOutputName(done.displayName)
         val uri = withContext(Dispatchers.IO) {
             val dir = File(context.cacheDir, "shared").apply { mkdirs() }
+            // One shared payload at a time: stale copies would otherwise
+            // accumulate in the cache until the system reclaims it.
+            dir.listFiles()?.forEach { it.delete() }
             val file = File(dir, name)
             file.writeBytes(done.result.bytes)
             FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)

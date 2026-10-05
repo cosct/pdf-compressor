@@ -1878,10 +1878,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn atomic_write_refuses_to_clobber_an_existing_temp_name() {
-        // The temp name is predictable (`<output>.<pid>.tmp`); create_new
-        // must refuse a same-named file (or symlink) instead of truncating
-        // it, retry under a suffixed name, and still land the output.
+    fn atomic_write_treats_legacy_pid_temp_names_as_user_files() {
+        // The old writer used predictable `<output>.<pid>.tmp` names. The
+        // RAII writer owns exactly one random-named temporary, so a stray
+        // file with the legacy name is just a user file: never truncated,
+        // never swept, and the output still lands.
         let dir = tempfile::tempdir().expect("tempdir");
         let output = dir.path().join("out.pdf");
         let sentinel = dir
@@ -1899,7 +1900,7 @@ mod tests {
         assert_eq!(
             std::fs::read(&sentinel).expect("sentinel survives"),
             b"SENTINEL",
-            "a pre-existing same-named temp file must never be truncated"
+            "a legacy-named sibling is an ordinary user file and must survive"
         );
     }
 

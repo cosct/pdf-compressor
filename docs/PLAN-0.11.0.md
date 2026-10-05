@@ -264,6 +264,8 @@ P3 全部 8 项；P4 除下述项。质量门全绿，新增约 27 个钉子测�
   符号链接）；OutputClaimGuard 兜底清扫残留 `<output>.<pid>.tmp`。
   并补自动化钉子：create_new 防覆盖（哨兵文件存活）、残留清扫精确性
   （无关文件不动）、空占位移除三个用例（compressor.rs tests）。
+  （2026-10 注：pid 命名与 guard 清扫已被 R01/R14 的统一原子替换原语
+  取代——`crates/pdf-core/src/atomic_file.rs`，见 PLAN-1.0.md。）
 - AUR license 字段同步为四元组，THIRD-PARTY-NOTICES.md 随源码包与 zst
   分发。
 - CHANGELOG 增加 [未发布] 节（含 error.image 移除的破坏性声明与
