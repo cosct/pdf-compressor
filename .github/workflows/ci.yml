@@ -123,6 +123,28 @@ jobs:
       # builds into the root workspace's target dir (the cache default).
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
+      # The rereview_* fidelity gates hard-fail without pdftoppm by design
+      # (a silent skip would weaken the renderer contract to nothing), so
+      # every engine leg must provide poppler — main was red 2026-09-20 →
+      # 10-05 on exactly this.
+      - name: Install poppler (macOS)
+        if: runner.os == 'macOS'
+        run: brew install poppler
+
+      - name: Install poppler (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $tag = "26.09.0-0"
+          $dir = "poppler-26.09.0"
+          $expected = "7a6f256a0ddf7536182246a5733331bf4677cbcc34f4663774947ad34556c8d0"
+          $zip = "$env:RUNNER_TEMP\poppler.zip"
+          Invoke-WebRequest -Uri "https://github.com/oschwartz10612/poppler-windows/releases/download/v$tag/Release-$tag.zip" -OutFile $zip
+          $actual = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $expected) { throw "poppler-windows SHA256 mismatch: $actual" }
+          Expand-Archive $zip -DestinationPath "$env:RUNNER_TEMP\poppler"
+          Add-Content $env:GITHUB_PATH "$env:RUNNER_TEMP\poppler\$dir\Library\bin"
+
       - name: Engine tests (default features)
         run: cargo test -p pdf-core --locked
 
