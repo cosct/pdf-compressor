@@ -31,7 +31,13 @@ jobs:
       - uses: taiki-e/install-action@61bf3ab12ce6822f98b8e36068e711bd430ec1f7 # cargo-audit
 
       - name: Rust advisory audit (workspace lock)
-        run: cargo audit --quiet
+        run: cargo audit --quiet --ignore RUSTSEC-2026-0367 --ignore RUSTSEC-2026-0368 --ignore RUSTSEC-2026-0369
+        # zip 4.6.1 的三条解包公告（2026-10-09/10 披露）：仅存在于
+        # tauri-plugin-updater 2.11.0 的 Windows NSIS 更新解包路径，其
+        # `zip = "4"` 约束与修复版（>=9.0.0）不兼容，上游暂无可用升级。
+        # 更新包在解包前经 minisign 签名校验，恶意压缩包向量被签名前置
+        # 阻断，故按有论证的例外放行；上游放宽 zip 约束后立即移除例外
+        # 并升级（本工作流每周一复查）。
 
       - name: Rust advisory audit (fuzz crate lock)
         run: cargo audit --quiet --file crates/pdf-core/fuzz/Cargo.lock
