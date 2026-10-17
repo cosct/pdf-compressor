@@ -13,6 +13,16 @@
 - Android 原生库按 variant 构建并验证双 ABI，缺少 NDK/库构建失败；新增 Kotlin 回归测试和 APK 原生载荷检查。Release 校验和任务显式指定 GitHub 仓库。
 - 1.0 开发与发布验收分别跟踪于 `docs/PLAN-1.0.md`；版本号将在发布门槛满足后提升。
 
+### 性能与内存基准（2026-10-18）
+
+- 新增 `scripts/bench.sh` 一键基准（`scripts/bench/{corpus,run}.py` +
+  `crates/pdf-core/examples/cancel_latency.rs`）：真实 release CLI 管道
+  模式的耗时与峰值 RSS（/proc VmHWM 采样），主语料冷/热 p50/p95、
+  唯一页缩放（1–80 页）、目标大小、双文件并发、取消时延探针；
+  `scripts/bench/baseline.json` 为基线，`--check` 按 10% 相对回归
+  触发人工复核。方法与基线见 `docs/BENCHMARK.md`，发布门槛第 3 项
+  据此勾选。
+
 ### 评审核验跟进（2026-10-05）
 
 - 旧计划 `docs/PLAN-1.0-2026-09-20.md` 补入库（PLAN-1.0.md 的链接不再

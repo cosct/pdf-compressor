@@ -1,0 +1,705 @@
+{
+  "environment": {
+    "platform": "Linux-7.2.9-arch1-1-x86_64-with-glibc2.44",
+    "cpu_count": 16,
+    "total_ram_mib": 15328,
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "git": "1f8dc3c",
+    "timestamp": "2026-10-18T03:27:51+0800"
+  },
+  "fixtures": {
+    "scan-photo-small": {
+      "cold_wall_ms": 128.1,
+      "cold_peak_rss_mib": 84.0,
+      "warm_wall_p50": 116.5,
+      "warm_wall_p95": 142.13999999999996,
+      "warm_wall_min": 109.3,
+      "peak_rss_mib": 85.9,
+      "summary": {
+        "outputPath": "<stdout>",
+        "originalSizeBytes": 7516277.0,
+        "compressedSizeBytes": 483146.0,
+        "savedBytes": 7033131.0,
+        "savingsPercent": 93.57201,
+        "elapsedMs": 103,
+        "imagesRecompressed": 3,
+        "imagesSkipped": 0,
+        "imagesDeduplicated": 0,
+        "streamsCompressed": 0,
+        "metadataRemoved": true,
+        "outputWasSmaller": true,
+        "notices": [
+          {
+            "code": "compress.note.appliedProfile",
+            "level": "neutral",
+            "values": {
+              "maxImageSizePx": "1500",
+              "preset": "balanced",
+              "quality": "60"
+            },
+            "fallback": "Applied the 'balanced' profile with JPEG quality 60 and max image edge 1500 px."
+          },
+          {
+            "code": "compress.note.safeRewrite",
+            "level": "neutral",
+            "values": {},
+            "fallback": "The optimizer preserves text and vector instructions when a rewrite is not safe."
+          },
+          {
+            "code": "compress.note.streamDedupe",
+            "level": "neutral",
+            "values": {
+              "count": "2"
+            },
+            "fallback": "Merged 2 duplicate non-image stream object(s) (content, fonts, forms) into shared references."
+          }
+        ]
+      },
+      "exit": 0
+    },
+    "scan-photo-medium": {
+      "cold_wall_ms": 799.5,
+      "cold_peak_rss_mib": 461.3,
+      "warm_wall_p50": 613.0,
+      "warm_wall_p95": 632.0200000000002,
+      "warm_wall_min": 585.7,
+      "peak_rss_mib": 458.8,
+      "summary": {
+        "outputPath": "<stdout>",
+        "originalSizeBytes": 54592718.0,
+        "compressedSizeBytes": 3557144.0,
+        "savedBytes": 51035574.0,
+        "savingsPercent": 93.484215,
+        "elapsedMs": 683,
+        "imagesRecompressed": 10,
+        "imagesSkipped": 0,
+        "imagesDeduplicated": 0,
+        "streamsCompressed": 0,
+        "metadataRemoved": true,
+        "outputWasSmaller": true,
+        "notices": [
+          {
+            "code": "compress.note.appliedProfile",
+            "level": "neutral",
+            "values": {
+              "maxImageSizePx": "2200",
+              "preset": "balanced",
+              "quality": "60"
+            },
+            "fallback": "Applied the 'balanced' profile with JPEG quality 60 and max image edge 2200 px."
+          },
+          {
+            "code": "compress.note.safeRewrite",
+            "level": "neutral",
+            "values": {},
+            "fallback": "The optimizer preserves text and vector instructions when a rewrite is not safe."
+          },
+          {
+            "code": "compress.note.streamDedupe",
+            "level": "neutral",
+            "values": {
+              "count": "9"
+            },
+            "fallback": "Merged 9 duplicate non-image stream object(s) (content, fonts, forms) into shared references."
+          }
+        ]
+      },
+      "exit": 0
+    },
+    "scan-photo-large": {
+      "cold_wall_ms": 1069.8,
+      "cold_peak_rss_mib": 633.9,
+      "warm_wall_p50": 1071.5,
+      "warm_wall_p95": 1363.9500000000003,
+      "warm_wall_min": 964.7,
+      "peak_rss_mib": 624.8,
+      "summary": {
+        "outputPath": "<stdout>",
+        "originalSizeBytes": 109186298.0,
+        "compressedSizeBytes": 7113135.0,
+        "savedBytes": 102073163.0,
+        "savingsPercent": 93.48532,
+        "elapsedMs": 911,
+        "imagesRecompressed": 20,
+        "imagesSkipped": 0,
+        "imagesDeduplicated": 0,
+        "streamsCompressed": 0,
+        "metadataRemoved": true,
+        "outputWasSmaller": true,
+        "notices": [
+          {
+            "code": "compress.note.appliedProfile",
+            "level": "neutral",
+            "values": {
+              "maxImageSizePx": "2200",
+              "preset": "balanced",
+              "quality": "60"
+            },
+            "fallback": "Applied the 'balanced' profile with JPEG quality 60 and max image edge 2200 px."
+          },
+          {
+            "code": "compress.note.safeRewrite",
+            "level": "neutral",
+            "values": {},
+            "fallback": "The optimizer preserves text and vector instructions when a rewrite is not safe."
+          },
+          {
+            "code": "compress.note.streamDedupe",
+            "level": "neutral",
+            "values": {
+              "count": "19"
+            },
+            "fallback": "Merged 19 duplicate non-image stream object(s) (content, fonts, forms) into shared references."
+          }
+        ]
+      },
+      "exit": 0
+    },
+    "scan-bw-medium": {
+      "cold_wall_ms": 225.3,
+      "cold_peak_rss_mib": 280.0,
+      "warm_wall_p50": 240.4,
+      "warm_wall_p95": 244.02999999999992,
+      "warm_wall_min": 224.4,
+      "peak_rss_mib": 283.8,
+      "summary": {
+        "outputPath": "<stdout>",
+        "originalSizeBytes": 8185321.0,
+        "compressedSizeBytes": 1230951.0,
+        "savedBytes": 6954370.0,
+        "savingsPercent": 84.96148,
+        "elapsedMs": 206,
+        "imagesRecompressed": 10,
+        "imagesSkipped": 0,
+        "imagesDeduplicated": 0,
+        "streamsCompressed": 0,
+        "metadataRemoved": true,
+        "outputWasSmaller": true,
+        "notices": [
+          {
+            "code": "compress.note.appliedProfile",
+            "level": "neutral",
+            "values": {
+              "maxImageSizePx": "1900",
+              "preset": "balanced",
+              "quality": "60"
+            },
+            "fallback": "Applied the 'balanced' profile with JPEG quality 60 and max image edge 1900 px."
+          },
+          {
+            "code": "compress.note.safeRewrite",
+            "level": "neutral",
+            "values": {},
+            "fallback": "The optimizer preserves text and vector instructions when a rewrite is not safe."
+          },
+          {
+            "code": "compress.note.streamDedupe",
+            "level": "neutral",
+            "values": {
+              "count": "9"
+            },
+            "fallback": "Merged 9 duplicate non-image stream object(s) (content, fonts, forms) into shared references."
+          }
+        ]
+      },
+      "exit": 0
+    },
+    "mixed-medium": {
+      "cold_wall_ms": 78.9,
+      "cold_peak_rss_mib": 86.4,
+      "warm_wall_p50": 82.9,
+      "warm_wall_p95": 90.48000000000002,
+      "warm_wall_min": 78.7,
+      "peak_rss_mib": 92.1,
+      "summary": {
+        "outputPath": "<stdout>",
+        "originalSizeBytes": 8198953.0,
+        "compressedSizeBytes": 545163.0,
+        "savedBytes": 7653790.0,
+        "savingsPercent": 93.35082,
+        "elapsedMs": 63,
+        "imagesRecompressed": 6,
+        "imagesSkipped": 0,
+        "imagesDeduplicated": 0,
+        "streamsCompressed": 0,
+        "metadataRemoved": true,
+        "outputWasSmaller": true,
+        "notices": [
+          {
+            "code": "compress.note.appliedProfile",
+            "level": "neutral",
+            "values": {
+              "maxImageSizePx": "1100",
+              "preset": "balanced",
+              "quality": "60"
+            },
+            "fallback": "Applied the 'balanced' profile with JPEG quality 60 and max image edge 1100 px."
+          },
+          {
+            "code": "compress.note.safeRewrite",
+            "level": "neutral",
+            "values": {},
+            "fallback": "The optimizer preserves text and vector instructions when a rewrite is not safe."
+          },
+          {
+            "code": "compress.note.streamDedupe",
+            "level": "neutral",
+            "values": {
+              "count": "5"
+            },
+            "fallback": "Merged 5 duplicate non-image stream object(s) (content, fonts, forms) into shared references."
+          }
+        ]
+      },
+      "exit": 0
+    },
+    "text-small": {
+      "cold_wall_ms": 3.4,
+      "cold_peak_rss_mib": 0.7,
+      "warm_wall_p50": 2.9,
+      "warm_wall_p95": 3.439999999999999,
+      "warm_wall_min": 2.5,
+      "peak_rss_mib": 0.6,
+      "summary": {
+        "outputPath": "<stdout>",
+        "originalSizeBytes": 1708.0,
+        "compressedSizeBytes": 1046.0,
+        "savedBytes": 662.0,
+        "savingsPercent": 38.75878,
+        "elapsedMs": 1,
+        "imagesRecompressed": 0,
+        "imagesSkipped": 0,
+        "imagesDeduplicated": 0,
+        "streamsCompressed": 0,
+        "metadataRemoved": false,
+        "outputWasSmaller": true,
+        "notices": [
+          {
+            "code": "compress.note.appliedProfile",
+            "level": "neutral",
+            "values": {
+              "maxImageSizePx": "2200",
+              "preset": "balanced",
+              "quality": "60"
+            },
+            "fallback": "Applied the 'balanced' profile with JPEG quality 60 and max image edge 2200 px."
+          },
+          {
+            "code": "compress.note.safeRewrite",
+            "level": "neutral",
+            "values": {},
+            "fallback": "The optimizer preserves text and vector instructions when a rewrite is not safe."
+          },
+          {
+            "code": "compress.note.metadataKept",
+            "level": "neutral",
+            "values": {},
+            "fallback": "Document metadata stayed in place because metadata cleanup was disabled or unavailable."
+          }
+        ]
+      },
+      "exit": 0
+    },
+    "corrupt": {
+      "wall_ms": 10.8,
+      "peak_rss_mib": 0.6,
+      "exit": 1,
+      "summary": {
+        "code": "error.pdfBuild",
+        "values": {
+          "detail": "Failed to load PDF: failed parsing cross reference table"
+        },
+        "fallback": "Failed to build the output PDF: Failed to load PDF: failed parsing cross reference table"
+      }
+    }
+  },
+  "scaling": [
+    {
+      "cold_wall_ms": 225.7,
+      "cold_peak_rss_mib": 65.7,
+      "warm_wall_p50": 141.2,
+      "warm_wall_p95": 147.68,
+      "warm_wall_min": 140.1,
+      "peak_rss_mib": 65.8,
+      "summary": {
+        "outputPath": "<stdout>",
+        "originalSizeBytes": 5459686.0,
+        "compressedSizeBytes": 356079.0,
+        "savedBytes": 5103607.0,
+        "savingsPercent": 93.47803,
+        "elapsedMs": 215,
+        "imagesRecompressed": 1,
+        "imagesSkipped": 0,
+        "imagesDeduplicated": 0,
+        "streamsCompressed": 0,
+        "metadataRemoved": true,
+        "outputWasSmaller": true,
+        "notices": [
+          {
+            "code": "compress.note.appliedProfile",
+            "level": "neutral",
+            "values": {
+              "maxImageSizePx": "2200",
+              "preset": "balanced",
+              "quality": "60"
+            },
+            "fallback": "Applied the 'balanced' profile with JPEG quality 60 and max image edge 2200 px."
+          },
+          {
+            "code": "compress.note.safeRewrite",
+            "level": "neutral",
+            "values": {},
+            "fallback": "The optimizer preserves text and vector instructions when a rewrite is not safe."
+          }
+        ]
+      },
+      "exit": 0,
+      "pages": 1
+    },
+    {
+      "cold_wall_ms": 272.3,
+      "cold_peak_rss_mib": 282.0,
+      "warm_wall_p50": 306.0,
+      "warm_wall_p95": 369.0,
+      "warm_wall_min": 265.3,
+      "peak_rss_mib": 289.2,
+      "summary": {
+        "outputPath": "<stdout>",
+        "originalSizeBytes": 27295968.0,
+        "compressedSizeBytes": 1778356.0,
+        "savedBytes": 25517612.0,
+        "savingsPercent": 93.48492,
+        "elapsedMs": 226,
+        "imagesRecompressed": 5,
+        "imagesSkipped": 0,
+        "imagesDeduplicated": 0,
+        "streamsCompressed": 0,
+        "metadataRemoved": true,
+        "outputWasSmaller": true,
+        "notices": [
+          {
+            "code": "compress.note.appliedProfile",
+            "level": "neutral",
+            "values": {
+              "maxImageSizePx": "2200",
+              "preset": "balanced",
+              "quality": "60"
+            },
+            "fallback": "Applied the 'balanced' profile with JPEG quality 60 and max image edge 2200 px."
+          },
+          {
+            "code": "compress.note.safeRewrite",
+            "level": "neutral",
+            "values": {},
+            "fallback": "The optimizer preserves text and vector instructions when a rewrite is not safe."
+          },
+          {
+            "code": "compress.note.streamDedupe",
+            "level": "neutral",
+            "values": {
+              "count": "4"
+            },
+            "fallback": "Merged 4 duplicate non-image stream object(s) (content, fonts, forms) into shared references."
+          }
+        ]
+      },
+      "exit": 0,
+      "pages": 5
+    },
+    {
+      "cold_wall_ms": 573.0,
+      "cold_peak_rss_mib": 463.8,
+      "warm_wall_p50": 520.1,
+      "warm_wall_p95": 602.72,
+      "warm_wall_min": 496.3,
+      "peak_rss_mib": 467.6,
+      "summary": {
+        "outputPath": "<stdout>",
+        "originalSizeBytes": 54592477.0,
+        "compressedSizeBytes": 3556607.0,
+        "savedBytes": 51035870.0,
+        "savingsPercent": 93.485176,
+        "elapsedMs": 501,
+        "imagesRecompressed": 10,
+        "imagesSkipped": 0,
+        "imagesDeduplicated": 0,
+        "streamsCompressed": 0,
+        "metadataRemoved": true,
+        "outputWasSmaller": true,
+        "notices": [
+          {
+            "code": "compress.note.appliedProfile",
+            "level": "neutral",
+            "values": {
+              "maxImageSizePx": "2200",
+              "preset": "balanced",
+              "quality": "60"
+            },
+            "fallback": "Applied the 'balanced' profile with JPEG quality 60 and max image edge 2200 px."
+          },
+          {
+            "code": "compress.note.safeRewrite",
+            "level": "neutral",
+            "values": {},
+            "fallback": "The optimizer preserves text and vector instructions when a rewrite is not safe."
+          },
+          {
+            "code": "compress.note.streamDedupe",
+            "level": "neutral",
+            "values": {
+              "count": "9"
+            },
+            "fallback": "Merged 9 duplicate non-image stream object(s) (content, fonts, forms) into shared references."
+          }
+        ]
+      },
+      "exit": 0,
+      "pages": 10
+    },
+    {
+      "cold_wall_ms": 915.4,
+      "cold_peak_rss_mib": 628.4,
+      "warm_wall_p50": 928.5,
+      "warm_wall_p95": 951.18,
+      "warm_wall_min": 915.3,
+      "peak_rss_mib": 619.6,
+      "summary": {
+        "outputPath": "<stdout>",
+        "originalSizeBytes": 109181260.0,
+        "compressedSizeBytes": 7112917.0,
+        "savedBytes": 102068343.0,
+        "savingsPercent": 93.48522,
+        "elapsedMs": 788,
+        "imagesRecompressed": 20,
+        "imagesSkipped": 0,
+        "imagesDeduplicated": 0,
+        "streamsCompressed": 0,
+        "metadataRemoved": true,
+        "outputWasSmaller": true,
+        "notices": [
+          {
+            "code": "compress.note.appliedProfile",
+            "level": "neutral",
+            "values": {
+              "maxImageSizePx": "2200",
+              "preset": "balanced",
+              "quality": "60"
+            },
+            "fallback": "Applied the 'balanced' profile with JPEG quality 60 and max image edge 2200 px."
+          },
+          {
+            "code": "compress.note.safeRewrite",
+            "level": "neutral",
+            "values": {},
+            "fallback": "The optimizer preserves text and vector instructions when a rewrite is not safe."
+          },
+          {
+            "code": "compress.note.streamDedupe",
+            "level": "neutral",
+            "values": {
+              "count": "19"
+            },
+            "fallback": "Merged 19 duplicate non-image stream object(s) (content, fonts, forms) into shared references."
+          }
+        ]
+      },
+      "exit": 0,
+      "pages": 20
+    },
+    {
+      "cold_wall_ms": 1792.4,
+      "cold_peak_rss_mib": 807.2,
+      "warm_wall_p50": 1748.2,
+      "warm_wall_p95": 1784.0199999999998,
+      "warm_wall_min": 1730.6,
+      "peak_rss_mib": 813.2,
+      "summary": {
+        "outputPath": "<stdout>",
+        "originalSizeBytes": 218361436.0,
+        "compressedSizeBytes": 14222524.0,
+        "savedBytes": 204138912.0,
+        "savingsPercent": 93.4867,
+        "elapsedMs": 1497,
+        "imagesRecompressed": 40,
+        "imagesSkipped": 0,
+        "imagesDeduplicated": 0,
+        "streamsCompressed": 0,
+        "metadataRemoved": true,
+        "outputWasSmaller": true,
+        "notices": [
+          {
+            "code": "compress.note.appliedProfile",
+            "level": "neutral",
+            "values": {
+              "maxImageSizePx": "2200",
+              "preset": "balanced",
+              "quality": "60"
+            },
+            "fallback": "Applied the 'balanced' profile with JPEG quality 60 and max image edge 2200 px."
+          },
+          {
+            "code": "compress.note.safeRewrite",
+            "level": "neutral",
+            "values": {},
+            "fallback": "The optimizer preserves text and vector instructions when a rewrite is not safe."
+          },
+          {
+            "code": "compress.note.streamDedupe",
+            "level": "neutral",
+            "values": {
+              "count": "39"
+            },
+            "fallback": "Merged 39 duplicate non-image stream object(s) (content, fonts, forms) into shared references."
+          }
+        ]
+      },
+      "exit": 0,
+      "pages": 40
+    },
+    {
+      "cold_wall_ms": 3540.7,
+      "cold_peak_rss_mib": 1222.4,
+      "warm_wall_p50": 3375.8,
+      "warm_wall_p95": 3734.3599999999997,
+      "warm_wall_min": 3301.7,
+      "peak_rss_mib": 1223.7,
+      "summary": {
+        "outputPath": "<stdout>",
+        "originalSizeBytes": 436730580.0,
+        "compressedSizeBytes": 28449506.0,
+        "savedBytes": 408281074.0,
+        "savingsPercent": 93.4858,
+        "elapsedMs": 2950,
+        "imagesRecompressed": 80,
+        "imagesSkipped": 0,
+        "imagesDeduplicated": 0,
+        "streamsCompressed": 0,
+        "metadataRemoved": true,
+        "outputWasSmaller": true,
+        "notices": [
+          {
+            "code": "compress.note.appliedProfile",
+            "level": "neutral",
+            "values": {
+              "maxImageSizePx": "2200",
+              "preset": "balanced",
+              "quality": "60"
+            },
+            "fallback": "Applied the 'balanced' profile with JPEG quality 60 and max image edge 2200 px."
+          },
+          {
+            "code": "compress.note.safeRewrite",
+            "level": "neutral",
+            "values": {},
+            "fallback": "The optimizer preserves text and vector instructions when a rewrite is not safe."
+          },
+          {
+            "code": "compress.note.streamDedupe",
+            "level": "neutral",
+            "values": {
+              "count": "79"
+            },
+            "fallback": "Merged 79 duplicate non-image stream object(s) (content, fonts, forms) into shared references."
+          }
+        ]
+      },
+      "exit": 0,
+      "pages": 80
+    }
+  ],
+  "target_size": {
+    "cold_wall_ms": 6806.1,
+    "cold_peak_rss_mib": 1444.9,
+    "warm_wall_p50": 7067.3,
+    "warm_wall_p95": 7348.639999999999,
+    "warm_wall_min": 6586.5,
+    "peak_rss_mib": 1554.4,
+    "summary": {
+      "outputPath": "<stdout>",
+      "originalSizeBytes": 109186298.0,
+      "compressedSizeBytes": 2039590.0,
+      "savedBytes": 107146708.0,
+      "savingsPercent": 98.13201,
+      "elapsedMs": 6400,
+      "imagesRecompressed": 20,
+      "imagesSkipped": 0,
+      "imagesDeduplicated": 0,
+      "streamsCompressed": 0,
+      "metadataRemoved": true,
+      "outputWasSmaller": true,
+      "notices": [
+        {
+          "code": "compress.note.targetSizeMet",
+          "level": "success",
+          "values": {
+            "quality": "19",
+            "targetKb": "2048"
+          },
+          "fallback": "Met the 2048 KB target size with JPEG quality 19."
+        },
+        {
+          "code": "compress.note.appliedProfile",
+          "level": "neutral",
+          "values": {
+            "maxImageSizePx": "2400",
+            "preset": "balanced",
+            "quality": "19"
+          },
+          "fallback": "Applied the 'balanced' profile with JPEG quality 19 and max image edge 2400 px."
+        },
+        {
+          "code": "compress.note.safeRewrite",
+          "level": "neutral",
+          "values": {},
+          "fallback": "The optimizer preserves text and vector instructions when a rewrite is not safe."
+        },
+        {
+          "code": "compress.note.streamDedupe",
+          "level": "neutral",
+          "values": {
+            "count": "19"
+          },
+          "fallback": "Merged 19 duplicate non-image stream object(s) (content, fonts, forms) into shared references."
+        }
+      ]
+    },
+    "exit": 0
+  },
+  "concurrency": [
+    {
+      "fixture": "scan-photo-large",
+      "wall_ms": 931.8,
+      "peak_rss_mib": 575.9,
+      "exit": 0
+    },
+    {
+      "fixture": "scan-bw-medium",
+      "wall_ms": 1160.1,
+      "peak_rss_mib": 276.3,
+      "exit": 0
+    }
+  ],
+  "cancel": [
+    {
+      "run": 0,
+      "cancel_after_ms": 250,
+      "total_ms": 303.1,
+      "latency_ms": 52.9,
+      "outcome": "cancelled"
+    },
+    {
+      "run": 1,
+      "cancel_after_ms": 250,
+      "total_ms": 330.1,
+      "latency_ms": 80.0,
+      "outcome": "cancelled"
+    },
+    {
+      "run": 2,
+      "cancel_after_ms": 250,
+      "total_ms": 321.1,
+      "latency_ms": 71.0,
+      "outcome": "cancelled"
+    }
+  ]
+}

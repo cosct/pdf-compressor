@@ -17,6 +17,7 @@
 | 桌面壳单元 | `cargo test -p app --lib` | 任务注册表、输出路径白名单、预设配置原子读写 | 10 项 |
 | Bindings | `cargo test --workspace` | 由 Rust 签名再生成 `frontend/src/lib/bindings.ts`——**命令签名变更后必须运行并提交** | 1 项 |
 | 基准 | `cargo bench -p pdf-core` | 全管线各预设、编码器对比（jpeg-encoder vs image crate） | criterion |
+| 性能/内存基准 | `scripts/bench.sh`（`--check` 回归比较） | 真实 release CLI 的耗时与峰值 RSS（/proc VmHWM）：主语料冷/热 p50/p95、唯一页缩放（1–80 页）、目标大小、双文件并发、取消时延探针 | 方法与基线见 docs/BENCHMARK.md |
 | 模糊测试 | `cargo +nightly fuzz run pipeline` / `fuzz run jpx` | 任意字节跑 analyze+compress+目标大小搜索；jpx target 专打 OpenJPEG C 解码路径 | CI 每次 push 各 45s 冒烟 |
 | 变异测试 | `cargo mutants`（diff 定向：`scripts/mutants-diff.sh [基线]`，0.9.0） | 引擎测试对实现的杀伤力 | 本地按需（无 CI 作业） |
 
