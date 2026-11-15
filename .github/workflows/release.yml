@@ -101,6 +101,10 @@ jobs:
       - name: Build the bundled CLI into src-tauri/binaries
         shell: bash
         run: |
+          # Fail fast when any manifest drifted from Cargo.lock: the tauri
+          # build below cannot take `--locked`, so this is the only point
+          # where a mismatch can still abort the release.
+          cargo metadata --format-version 1 --locked > /dev/null
           if [ "${{ runner.os }}" = "macOS" ]; then
             rustup target add aarch64-apple-darwin x86_64-apple-darwin
             cargo build --release --locked -p pdf-core --bin pdf-compressor-cli --features jpx,cmyk-cms --target aarch64-apple-darwin
@@ -137,9 +141,12 @@ jobs:
           prerelease: false
           # `--features jpx,cmyk-cms` turn on JPEG 2000 decode (vendored
           # OpenJPEG, statically linked) and real CMYK color management
-          # (vendored lcms2) in the shipped desktop binaries. `--locked`
-          # keeps the release reproducible against Cargo.lock.
-          args: ${{ matrix.args }} --locked --features jpx,cmyk-cms
+          # (vendored lcms2) in the shipped desktop binaries. Lockfile
+          # pinning is enforced one step above via `cargo metadata
+          # --locked` — the tauri CLI has no `--locked` flag of its own,
+          # and passing one is what broke the v0.11.0 pipeline on all
+          # three runners ("unexpected argument '--locked' found").
+          args: ${{ matrix.args }} --features jpx,cmyk-cms
 
       # Unpack the built NSIS installer and verify its payload layout. The
       # Explorer context-menu entries reference $INSTDIR\app.exe (no
