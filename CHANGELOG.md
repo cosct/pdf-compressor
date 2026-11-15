@@ -41,6 +41,9 @@
   因此在三平台构建即失败、未产出 Release（该版本未发布，其变更随本版本
   一并交付）；锁文件一致性改由构建前的 `cargo metadata --locked` 预检
   保证。
+- 修复安卓 CI：ubuntu-26.04 runner 镜像（2026-11 滚动）默认 JDK 25，
+  Gradle 8.14 无法在其上运行（报错为裸版本串 "25.0.5"）；工作流显式
+  `actions/setup-java` 钉 JDK 17。
 
 安卓原生版起步（docs/PLAN-android.md 的 P0-P2 首刀 + P3 MVP 单文件流；
 引擎复用与移动端能力已接入，后续可靠性修复见上节）。
