@@ -1,6 +1,6 @@
 [package]
 name = "pdf-core-ffi"
-version = "0.11.0"
+version = "1.0.0"
 description = "UniFFI mobile wrapper over pdf-core — DTOs, cancel handle, progress callback, error mapping"
 authors = ["cosct"]
 license = "MIT"

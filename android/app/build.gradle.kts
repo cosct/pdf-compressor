@@ -18,8 +18,8 @@ android {
         applicationId = "com.cosct.pdfcompressor"
         // versionName tracks the repo version (package.json ← sync-version.mjs);
         // versionCode bumps per release at publish time.
-        versionName = "0.11.0"
-        versionCode = 1
+        versionName = "1.0.0"
+        versionCode = 2
         minSdk = 26
         targetSdk = 36
         vectorDrawables { useSupportLibrary = true }

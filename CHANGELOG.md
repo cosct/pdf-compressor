@@ -2,7 +2,11 @@
 
 本项目的所有显著变更都记录在此文件中。格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。日期为提交日期。
 
-## [未发布]
+## [1.0.0] - 2026-11-16
+
+1.0 是兼容性承诺的生效点：R01–R15 全面审查的可靠性收口 + 安卓原生版
+首个公开版本（P0–P6）。桌面/CLI/Android 共用同一引擎；发布门槛与
+验收证据见 `docs/PLAN-1.0.md` 与 `docs/BENCHMARK.md`。
 
 ### 1.0 可靠性收口（2026-10-02）
 
@@ -30,6 +34,13 @@
   框架本地化字符串；重写前提已失效的原子写测试为现行所有权语义
   （legacy pid 临时名按普通用户文件对待），同步 quick_profile 注释与
   PLAN-0.11.0 的 guard 描述（标注已被 atomic_file.rs 取代）。
+
+### 发布工程修复（2026-11-16）
+
+- 修复 release 流水线：tauri CLI 不接受 `--locked` 参数，v0.11.0 的 tag
+  因此在三平台构建即失败、未产出 Release（该版本未发布，其变更随本版本
+  一并交付）；锁文件一致性改由构建前的 `cargo metadata --locked` 预检
+  保证。
 
 安卓原生版起步（docs/PLAN-android.md 的 P0-P2 首刀 + P3 MVP 单文件流；
 引擎复用与移动端能力已接入，后续可靠性修复见上节）。
@@ -97,6 +108,10 @@
 - **`build-android-libs.sh --release`**：cargo-ndk 4.x 的 `--release`
   必须放在 `build` 子命令之后——此前 release 交叉构建路径从未实际
   运行（只有 debug 被验证），P6 首次跑 `assembleRelease` 时暴露。
+- **CI 与供应链**：macOS/Windows 引擎腿补装 poppler（rereview 保真
+  门禁恢复）；全部脚本补执行位；rustls 0.23.46、source-map-js 1.2.2
+  修新披露公告；zip 解包公告按有论证例外放行（Windows NSIS 解包
+  路径 + 更新包 minisign 验签前置）。
 
 ### 验收状态
 
