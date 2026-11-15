@@ -179,6 +179,21 @@ jobs:
           [ -z "$(find nsis-payload -type f -name 'pdf-compressor.exe' -print -quit)" ] \
             || echo "::warning::pdf-compressor.exe also exists in the payload — the context-menu Icon should point at it instead"
 
+      # Same assertion as the NSIS check above, for the deb bundler: the
+      # resource-map form silently degraded the bundled CLI to a file named
+      # `binaries` (tauri-utils keeps no trailing-slash directory semantics),
+      # so pin the payload layout that the desktop integration scripts call.
+      - name: Smoke-check the deb payload
+        if: matrix.os == 'ubuntu-22.04'
+        shell: bash
+        run: |
+          set -euo pipefail
+          deb=$(ls target/release/bundle/deb/*.deb | head -n1)
+          echo "deb: $deb"
+          [ -n "$(dpkg-deb -c "$deb" | awk '$NF ~ /binaries\/pdf-compressor-cli$/')" ] \
+            || { echo "::error::expected the headless CLI at binaries/pdf-compressor-cli inside the deb (the desktop integration scripts target it)"; exit 1; }
+          dpkg-deb -c "$deb" | awk '{print "  " $NF}' | grep -E 'app$|binaries/' | head -5
+
       # The Arch package job rebuilds the .pkg.tar.zst from these raw release
       # binaries via the same makepkg pipeline as a local `pnpm run tauri:arch`
       # (scripts/build-arch-bundle.sh) — no recompilation, no drift.

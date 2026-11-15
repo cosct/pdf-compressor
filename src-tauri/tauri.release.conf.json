@@ -2,8 +2,8 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "bundle": {
     "createUpdaterArtifacts": true,
-    "resources": {
-      "binaries/pdf-compressor-cli": "binaries/"
-    }
+    "resources": [
+      "binaries/pdf-compressor-cli"
+    ]
   }
 }

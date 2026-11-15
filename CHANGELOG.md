@@ -44,6 +44,11 @@
 - 修复安卓 CI：ubuntu-26.04 runner 镜像（2026-11 滚动）默认 JDK 25，
   Gradle 8.14 无法在其上运行（报错为裸版本串 "25.0.5"）；工作流显式
   `actions/setup-java` 钉 JDK 17。
+- 修复随包 CLI 未进安装包载荷：tauri 的 resources map 形式不存在尾斜杠
+  目录语义，`"binaries/pdf-compressor-cli": "binaries/"` 自 0.7.0 起实际
+  把 CLI 复制成了名为 `binaries` 的单个文件（NSIS/deb/dmg/appimage 均
+  受影响，桌面右键菜单指向不存在的路径；Arch 走裸二进制工件不受影响）。
+  改用数组形式保留完整相对路径，并为 NSIS 之外补 deb 载荷冒烟校验。
 
 安卓原生版起步（docs/PLAN-android.md 的 P0-P2 首刀 + P3 MVP 单文件流；
 引擎复用与移动端能力已接入，后续可靠性修复见上节）。
