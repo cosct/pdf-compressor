@@ -2,7 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # gpui-rewrite: the long-lived branch replacing the Tauri shell with a GPUI
+    # one. It has no open PR, so it needs its own push trigger to get CI.
+    branches: [main, gpui-rewrite]
   pull_request:
 
 # Least privilege by default; no job in this workflow needs write access.
@@ -52,6 +54,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev librsvg2-dev patchelf
+
+      # `--workspace` below also builds crates/pdf-compressor-gui, which links
+      # xcb and xkbcommon (Wayland and EGL are dlopen'ed at runtime).
+      - name: Install GPUI system dependencies
+        run: sudo apt-get install -y libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev
 
       # The engine's fidelity gates rasterize through poppler; the strict
       # renderer gate (testutil::render_poppler_png) only skips when the
@@ -150,6 +157,48 @@ jobs:
 
       - name: Engine tests (jpx,cmyk-cms)
         run: cargo test -p pdf-core --features jpx,cmyk-cms
+
+  # The GPUI shell is the only workspace member with a platform-specific
+  # windowing/GPU backend, so it is the one that must be built on all three
+  # desktop targets. The tests run on GPUI's headless test platform: they
+  # need neither a display server nor a GPU.
+  gui:
+    name: GPUI shell (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Same runners as the release matrix (release.yml), so a green leg
+          # here means the release build has the toolchain it needs.
+          - os: ubuntu-22.04
+          - os: windows-latest
+          - os: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install GPUI system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          prefix-key: gui
+
+      - name: Tests (headless)
+        run: cargo test -p pdf-compressor-gui --locked
+
+      - name: Release build
+        run: cargo build -p pdf-compressor-gui --release --locked
+
+      - name: Report binary size
+        shell: bash
+        run: ls -l target/release/pdf-compressor target/release/pdf-compressor.exe 2>/dev/null || true
 
   msrv:
     name: MSRV check (${{ matrix.crate }})

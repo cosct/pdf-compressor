@@ -1,0 +1,44 @@
+[package]
+name = "pdf-compressor-gui"
+version = "1.0.0"
+description = "GPUI desktop shell over pdf-core — native Rust UI, no webview"
+authors = ["cosct"]
+license = "MIT"
+edition = "2024"
+publish = false
+
+# Installed as `pdf-compressor` (the Tauri shell ships its main binary as
+# `app`); the packaging scripts switch over once this shell reaches parity.
+[[bin]]
+name = "pdf-compressor"
+path = "src/main.rs"
+
+[features]
+# Forwarded engine features, same names as the Tauri shell so release
+# pipelines keep passing `--features jpx,cmyk-cms`.
+jpx = ["pdf-core/jpx"]
+cmyk-cms = ["pdf-core/cmyk-cms"]
+
+[dependencies]
+pdf-core = { path = "../pdf-core" }
+
+# GPUI ships through the `gpui-pre` snapshot channel (lib name `gpui`); the
+# three crates move as one set — gpui-component pins gpui-pre with `=`, so
+# they are pinned exactly here and upgraded together.
+gpui-pre = "=0.3.12"
+gpui-component = "=0.10.0"
+gpui-kit = "=0.10.0"
+
+async-channel = "2"
+
+[dev-dependencies]
+# Headless UI tests: a real window on GPUI's test platform, real hit testing.
+# The feature is taken from gpui-component, not gpui-kit: gpui-kit's
+# `test-support` drags the optional gpui-fast backend into Cargo.lock, whose
+# `wgpu = "=30.0.1"` pin conflicts with gpui-pre's 30.0.2.
+gpui-component = { version = "=0.10.0", features = ["test-support"] }
+pdf-core = { path = "../pdf-core", features = ["testutil"] }
+tempfile = "3"
+
+[lints]
+workspace = true
