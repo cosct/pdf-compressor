@@ -95,7 +95,7 @@ impl Queue {
                 .clone()
                 .unwrap_or_else(|| self.draft_settings.clone())
                 .normalize();
-            let mut job = Job::new(self.allocate_id(), path.clone(), settings);
+            let mut job = Job::new(self.allocate_id(), path, settings);
             if restored_settings.is_some() {
                 job.settings_restored = true;
                 job.use_recommended_settings = false;
