@@ -61,47 +61,94 @@ impl AppView {
         let target_size_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Target size (MB)"));
         let password_input = cx.new(|cx| InputState::new(window, cx).placeholder("PDF password"));
-        let mut view = Self {
+        let mut restored_entries = Vec::new();
+        let mut preferences = Preferences::default();
+        let mut restore_error = None;
+        if let Some(path) = state_path.as_deref() {
+            match persistence::load_gui_state_at(path) {
+                Ok(state) => {
+                    preferences = state.preferences;
+                    restored_entries = state.entries;
+                }
+                Err(error) => restore_error = Some(format!("queue restore: {error}")),
+            }
+        }
+        let view = Self {
             queue,
             scheduler: Scheduler::default(),
             analysis_running: false,
             compression_targets: VecDeque::new(),
             compression_workers: 0,
             compression_limit: 0,
-            preferences: Preferences::default(),
+            preferences,
             output_dir_input,
             target_size_input,
             password_input,
             toasts: super::toasts::Toasts::default(),
-            state_path: state_path.clone(),
+            state_path,
             persist_generation: 0,
-            last_error: None,
+            last_error: restore_error,
         };
-        if let Some(path) = state_path {
-            match persistence::load_gui_state_at(&path) {
-                Ok(state) => {
-                    view.preferences = state.preferences;
-                    if !state.entries.is_empty() {
-                        let (mutation, ids) =
-                            persistence::restore_queue(&mut view.queue, &state.entries);
-                        if mutation == QueueMutation::Changed {
-                            for id in ids {
-                                view.scheduler.queue_analysis(id);
-                            }
-                        }
-                    }
-                }
-                Err(error) => view.last_error = Some(format!("queue restore: {error}")),
-            }
-        }
+        let entries = std::mem::take(&mut restored_entries);
         apply_preferences(&view.preferences, Some(window), cx);
+        let window_handle = window.window_handle();
         let entity = cx.new(|_| view);
         let weak = entity.downgrade();
         cx.spawn(async move |cx| {
-            let _ = weak.update(cx, |view, cx| view.start_next_analysis(cx));
+            let existing = cx
+                .background_executor()
+                .spawn(async move {
+                    let original_count = entries.len();
+                    let existing = entries
+                        .into_iter()
+                        .filter(|entry| PathBuf::from(&entry.source_path).exists())
+                        .collect::<Vec<_>>();
+                    (original_count, existing)
+                })
+                .await;
+            let _ = cx.update_window(window_handle, |_, window, cx| {
+                weak.update(cx, |view, cx| {
+                    let (original_count, entries) = existing;
+                    if original_count > entries.len() && !entries.is_empty() {
+                        view.toasts.push(super::notices::Notice {
+                            code: "queue:restoredMissing".into(),
+                            tone: super::notices::NoticeTone::Warning,
+                            values: Default::default(),
+                            fallback: format!(
+                                "Skipped {} missing PDF file(s) while restoring the queue.",
+                                original_count - entries.len()
+                            ),
+                        });
+                    }
+                    let (_, ids) = persistence::restore_queue(&mut view.queue, &entries);
+                    for id in ids {
+                        view.scheduler.queue_analysis(id);
+                    }
+                    view.sync_selected_inputs(window, cx);
+                    view.start_next_analysis(cx);
+                    cx.notify();
+                })
+            });
         })
         .detach();
         entity
+    }
+
+    fn sync_selected_inputs(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        let settings = self
+            .queue
+            .selected_job()
+            .map(|job| job.settings.clone())
+            .unwrap_or_else(|| self.queue.draft_settings.clone());
+        let output_dir = settings.output_dir.unwrap_or_default();
+        let target_size = settings
+            .target_file_size_mb
+            .map(|value| value.to_string())
+            .unwrap_or_default();
+        self.output_dir_input
+            .update(cx, |input, cx| input.set_value(output_dir, window, cx));
+        self.target_size_input
+            .update(cx, |input, cx| input.set_value(target_size, window, cx));
     }
 
     fn set_theme(&mut self, preference: ThemePreference, cx: &mut Context<'_, Self>) {
@@ -247,10 +294,18 @@ impl AppView {
                 } else {
                     match result {
                         Ok(analysis) => {
+                            for note in analysis.notices.clone() {
+                                if matches!(note.level.as_str(), "warning" | "danger") {
+                                    this.toasts.push(note.into());
+                                }
+                            }
                             this.queue.finish_analysis(id, token, &path, analysis);
                         }
                         Err(error) => {
                             this.compression_targets.retain(|target| *target != id);
+                            if !matches!(error, pdf_core::AppError::Cancelled(_)) {
+                                this.toasts.push(super::notices::Notice::from_error(&error));
+                            }
                             this.queue.fail(id, token, &path, error);
                         }
                     }
@@ -281,6 +336,11 @@ impl AppView {
                 let alive = this
                     .update(cx, |this, cx| {
                         if !this.scheduler.cancellation_in_flight() {
+                            if let Some(note) = latest.message.clone()
+                                && matches!(note.level.as_str(), "warning" | "danger")
+                            {
+                                this.toasts.push(note.into());
+                            }
                             this.queue.apply_progress(id, token, &path, latest);
                         }
                         cx.notify();
@@ -294,7 +354,7 @@ impl AppView {
         .detach();
     }
 
-    fn choose_preset(&mut self, preset: Preset, cx: &mut Context<'_, Self>) {
+    fn choose_preset(&mut self, preset: Preset, window: &mut Window, cx: &mut Context<'_, Self>) {
         let mut settings = self.queue.presets.settings_for(preset);
         if let Some(current) = self.queue.selected_job() {
             settings.output_dir = current.settings.output_dir.clone();
@@ -305,6 +365,7 @@ impl AppView {
         }
         settings.preset = preset;
         self.queue.update_selected_settings(settings);
+        self.sync_selected_inputs(window, cx);
         self.save_queue(cx);
         cx.notify();
     }
@@ -429,6 +490,13 @@ impl AppView {
             });
         })
         .detach();
+    }
+
+    fn select_job(&mut self, id: JobId, window: &mut Window, cx: &mut Context<'_, Self>) {
+        if self.queue.select(id) {
+            self.sync_selected_inputs(window, cx);
+            cx.notify();
+        }
     }
 
     fn dismiss_toast(&mut self, id: u64, cx: &mut Context<'_, Self>) {
@@ -667,9 +735,8 @@ impl AppView {
             } else {
                 theme.secondary
             })
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.queue.select(id);
-                cx.notify();
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.select_job(id, window, cx);
             }))
             .child(
                 v_flex().flex_1().child(file_name).child(
@@ -885,32 +952,32 @@ impl Render for AppView {
                                 Button::new("preset-conservative")
                                     .label("Conservative")
                                     .disabled(locked)
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.choose_preset(Preset::Conservative, cx)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.choose_preset(Preset::Conservative, window, cx)
                                     })),
                             )
                             .child(
                                 Button::new("preset-balanced")
                                     .label("Balanced")
                                     .disabled(locked)
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.choose_preset(Preset::Balanced, cx)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.choose_preset(Preset::Balanced, window, cx)
                                     })),
                             )
                             .child(
                                 Button::new("preset-maximum")
                                     .label("Maximum")
                                     .disabled(locked)
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.choose_preset(Preset::Maximum, cx)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.choose_preset(Preset::Maximum, window, cx)
                                     })),
                             )
                             .child(
                                 Button::new("preset-custom")
                                     .label("Custom")
                                     .disabled(locked)
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.choose_preset(Preset::Custom, cx)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.choose_preset(Preset::Custom, window, cx)
                                     })),
                             )
                             .child(
