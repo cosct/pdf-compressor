@@ -6399,6 +6399,8 @@ dependencies = [
  "gpui-kit",
  "gpui-pre",
  "pdf-core",
+ "serde",
+ "serde_json",
  "tempfile",
 ]
 
