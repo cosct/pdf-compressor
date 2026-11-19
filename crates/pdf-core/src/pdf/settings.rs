@@ -221,6 +221,17 @@ impl CompressionSettingsOverrides {
             output_dir: self.output_dir.or(fallback.output_dir),
         }
     }
+
+    /// The scanned-document pipeline's rule, shared by every shell: image
+    /// optimization and stream compression are forced on, whatever the
+    /// settings payload says — they are where scan savings live, and a
+    /// scan-heavy file compressed without them comes out essentially
+    /// unchanged. Everything else (grayscale, bilevel codec, …) is untouched.
+    pub fn scanned_pipeline(mut self) -> Self {
+        self.optimize_images = Some(true);
+        self.compress_streams = Some(true);
+        self
+    }
 }
 
 impl CompressionSettings {
@@ -594,6 +605,32 @@ mod tests {
             },
         );
         assert!(!opted_out.subset_fonts);
+    }
+
+    #[test]
+    fn scanned_pipeline_forces_image_and_stream_optimization_only() {
+        // A payload that switched both off (a preset saved for text PDFs,
+        // say) must not survive into a scan-heavy run.
+        let mut off = payload(Some("balanced"), Some(70), None).expect("payload");
+        off.optimize_images = Some(false);
+        off.compress_streams = Some(false);
+        off.strip_metadata = Some(false);
+
+        let plain = CompressionSettings::from_sources(Some(off.clone()), Default::default());
+        assert!(!plain.optimize_images && !plain.compress_streams);
+
+        let overrides = CompressionSettingsOverrides {
+            grayscale: Some(true),
+            ..Default::default()
+        }
+        .scanned_pipeline();
+        let scanned = CompressionSettings::from_sources(Some(off), overrides);
+        assert!(scanned.optimize_images, "image optimization is forced on");
+        assert!(scanned.compress_streams, "stream compression is forced on");
+        // The rule touches nothing else.
+        assert!(scanned.grayscale, "caller overrides pass through");
+        assert!(!scanned.strip_metadata, "unrelated payload fields survive");
+        assert_eq!(scanned.image_quality, 70);
     }
 
     #[test]

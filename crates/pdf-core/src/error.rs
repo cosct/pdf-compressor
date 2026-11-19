@@ -51,6 +51,43 @@ pub enum AppError {
     PdfBuild(String),
 }
 
+/// Every `error.*` code [`AppError::code`] can produce, in variant order.
+/// Shells pin their locale tables against this list so a new engine error
+/// cannot ship without a translation.
+pub const ERROR_CODES: [&str; 11] = [
+    "error.missingInput",
+    "error.invalidPdfPath",
+    "error.inputTooLarge",
+    "error.encryptedPdf",
+    "error.passwordRequired",
+    "error.wrongPassword",
+    "error.io",
+    "error.cancelled",
+    "error.config",
+    "error.opener",
+    "error.pdfBuild",
+];
+
+impl AppError {
+    /// The stable i18n code for this error (the `code` of its
+    /// [`AppErrorPayload`]); always a member of [`ERROR_CODES`].
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::MissingInput(_) => "error.missingInput",
+            Self::InvalidPdfPath(_) => "error.invalidPdfPath",
+            Self::InputTooLarge { .. } => "error.inputTooLarge",
+            Self::Encrypted => "error.encryptedPdf",
+            Self::PasswordRequired => "error.passwordRequired",
+            Self::WrongPassword => "error.wrongPassword",
+            Self::Io(_) => "error.io",
+            Self::Cancelled(_) => "error.cancelled",
+            Self::Config(_) => "error.config",
+            Self::Opener(_) => "error.opener",
+            Self::PdfBuild(_) => "error.pdfBuild",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
@@ -62,9 +99,10 @@ pub struct AppErrorPayload {
 
 impl From<AppError> for AppErrorPayload {
     fn from(value: AppError) -> Self {
+        let code = value.code().to_string();
         match value {
             AppError::MissingInput(path) => Self {
-                code: "error.missingInput".to_string(),
+                code,
                 values: BTreeMap::from([("path".to_string(), path.to_string_lossy().to_string())]),
                 fallback: format!(
                     "The selected file does not exist: {}",
@@ -72,7 +110,7 @@ impl From<AppError> for AppErrorPayload {
                 ),
             },
             AppError::InvalidPdfPath(path) => Self {
-                code: "error.invalidPdfPath".to_string(),
+                code,
                 values: BTreeMap::from([("path".to_string(), path.to_string_lossy().to_string())]),
                 fallback: format!("The selected file is not a PDF: {}", path.to_string_lossy()),
             },
@@ -80,7 +118,7 @@ impl From<AppError> for AppErrorPayload {
                 size_bytes,
                 limit_bytes,
             } => Self {
-                code: "error.inputTooLarge".to_string(),
+                code,
                 values: BTreeMap::from([
                     ("size".to_string(), humanized_size(size_bytes)),
                     ("limit".to_string(), humanized_size(limit_bytes)),
@@ -92,45 +130,45 @@ impl From<AppError> for AppErrorPayload {
                 ),
             },
             AppError::Encrypted => Self {
-                code: "error.encryptedPdf".to_string(),
+                code,
                 values: BTreeMap::new(),
                 fallback: "The PDF is DRM-encrypted with an unsupported security handler; \
                            it cannot be processed"
                     .to_string(),
             },
             AppError::PasswordRequired => Self {
-                code: "error.passwordRequired".to_string(),
+                code,
                 values: BTreeMap::new(),
                 fallback: "The PDF requires an open password; supply one to process the file."
                     .to_string(),
             },
             AppError::WrongPassword => Self {
-                code: "error.wrongPassword".to_string(),
+                code,
                 values: BTreeMap::new(),
                 fallback: "The supplied password did not unlock the PDF.".to_string(),
             },
             AppError::Io(error) => Self {
-                code: "error.io".to_string(),
+                code,
                 values: BTreeMap::from([("detail".to_string(), error.to_string())]),
                 fallback: format!("Filesystem operation failed: {error}"),
             },
             AppError::Cancelled(task_id) => Self {
-                code: "error.cancelled".to_string(),
+                code,
                 values: BTreeMap::from([("taskId".to_string(), task_id.clone())]),
                 fallback: format!("Compression cancelled for task: {task_id}"),
             },
             AppError::Config(detail) => Self {
-                code: "error.config".to_string(),
+                code,
                 values: BTreeMap::from([("detail".to_string(), detail.clone())]),
                 fallback: format!("Configuration operation failed: {detail}"),
             },
             AppError::Opener(detail) => Self {
-                code: "error.opener".to_string(),
+                code,
                 values: BTreeMap::from([("detail".to_string(), detail.clone())]),
                 fallback: format!("Failed to open the path with the system handler: {detail}"),
             },
             AppError::PdfBuild(detail) => Self {
-                code: "error.pdfBuild".to_string(),
+                code,
                 values: BTreeMap::from([("detail".to_string(), detail.clone())]),
                 fallback: format!("Failed to build the output PDF: {detail}"),
             },
@@ -249,7 +287,13 @@ mod tests {
                 &["detail"],
             ),
         ];
+        // The exported list is this same closed set, in the same order —
+        // shells pin their locale tables against it.
+        let pinned: Vec<&str> = expectations.iter().map(|(_, code, _)| *code).collect();
+        assert_eq!(pinned, ERROR_CODES);
+
         for (error, code, value_keys) in expectations {
+            assert_eq!(error.code(), code);
             let payload = AppErrorPayload::from(error);
             assert_eq!(payload.code, code);
             let keys: Vec<&str> = payload.values.keys().map(String::as_str).collect();

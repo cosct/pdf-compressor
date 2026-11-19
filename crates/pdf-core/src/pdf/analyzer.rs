@@ -30,7 +30,7 @@ use super::{ensure_not_cancelled, optional_integer, validate_input_path};
 
 const TEXT_NATIVE_KIND: &str = "text-native";
 const MIXED_KIND: &str = "mixed";
-const SCAN_HEAVY_KIND: &str = "scan-heavy";
+const SCAN_HEAVY_KIND: &str = crate::models::DOCUMENT_KIND_SCAN_HEAVY;
 const MAX_ANALYSIS_SAMPLE_PAGES: usize = 24;
 
 #[derive(Debug, Default)]

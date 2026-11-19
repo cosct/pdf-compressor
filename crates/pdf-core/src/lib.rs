@@ -16,13 +16,15 @@ pub mod atomic_file;
 pub mod error;
 pub mod models;
 pub mod pdf;
+pub mod preset_config;
 pub mod quick_profile;
 #[cfg(feature = "testutil")]
 pub mod testutil;
 
-pub use error::{AppError, AppErrorPayload};
+pub use error::{AppError, AppErrorPayload, ERROR_CODES};
 pub use models::{
     migrate_bilevel_default_flip, migrate_cmyk_default_flip, BuildFeatures, CompressionResponse,
+    DOCUMENT_KIND_SCAN_HEAVY,
 };
 pub use pdf::{
     analyze_pdf_bytes_with_progress, analyze_pdf_with_progress, compress_pdf_bytes_to_target_size,

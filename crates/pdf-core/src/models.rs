@@ -367,6 +367,19 @@ pub struct AnalysisResponse {
     pub notices: Vec<BackendNotice>,
 }
 
+/// [`AnalysisResponse::document_kind`] label for documents whose pages are
+/// mostly full-page images. The kind stays an open string on the wire; this
+/// is the one value shells branch on.
+pub const DOCUMENT_KIND_SCAN_HEAVY: &str = "scan-heavy";
+
+impl AnalysisResponse {
+    /// Whether a shell should compress this document through the scanned
+    /// pipeline ([`crate::CompressionSettingsOverrides::scanned_pipeline`]).
+    pub fn wants_scanned_pipeline(&self) -> bool {
+        self.document_kind == DOCUMENT_KIND_SCAN_HEAVY
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
@@ -384,4 +397,36 @@ pub struct CompressionResponse {
     pub metadata_removed: bool,
     pub output_was_smaller: bool,
     pub notices: Vec<BackendNotice>,
+}
+
+#[cfg(test)]
+mod document_kind_tests {
+    use super::*;
+
+    fn response(document_kind: &str) -> AnalysisResponse {
+        AnalysisResponse {
+            file_size_bytes: 0.0,
+            page_count: 0,
+            image_object_count: 0,
+            document_kind: document_kind.to_string(),
+            scanned_confidence: 0.0,
+            image_coverage: 0.0,
+            estimated_savings_percent: 0.0,
+            recommended_preset: String::new(),
+            max_image_edge_px: 0,
+            recommended_max_image_size_px: 0,
+            recommended_image_quality: 0,
+            is_likely_scanned: false,
+            notices: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn only_scan_heavy_documents_select_the_scanned_pipeline() {
+        assert!(response(DOCUMENT_KIND_SCAN_HEAVY).wants_scanned_pipeline());
+        assert!(!response("text-native").wants_scanned_pipeline());
+        assert!(!response("mixed").wants_scanned_pipeline());
+        // The wire field intentionally remains open for future server kinds.
+        assert!(!response("future-kind").wants_scanned_pipeline());
+    }
 }

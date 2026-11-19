@@ -9,8 +9,6 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    fs::{self, File},
-    io::ErrorKind,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -28,61 +26,9 @@ use pdf_core::{
         AnalysisResponse, BuildFeatures, CompressPdfRequest, CompressScannedPdfRequest,
         CompressionResponse, PresetUserConfigPayload, ProgressUpdate, QuickProfilePayload,
     },
-    AppError, AppErrorPayload, BilevelCodec, CompressionSettings, CompressionSettingsOverrides,
+    preset_config, AppError, AppErrorPayload, BilevelCodec, CompressionSettings,
+    CompressionSettingsOverrides,
 };
-
-/// Fallback config directory when the install directory is not writable.
-fn app_config_dir_fallback() -> Result<PathBuf, AppError> {
-    let base = dirs_next::config_dir().ok_or_else(|| {
-        AppError::Config("Unable to determine OS application config directory.".to_string())
-    })?;
-    let dir = base.join("pdf-compressor");
-    fs::create_dir_all(&dir)?;
-    Ok(dir)
-}
-
-const PRESET_CONFIG_FILE_NAME: &str = "preset-user-config.json";
-
-/// Try the OS config directory first (predictable, multi-user safe, works on
-/// read-only install locations), falling back to the install directory
-/// (portable mode) only when the config directory is unavailable. A legacy
-/// install-dir config is migrated once.
-fn resolve_preset_config_path() -> Result<PathBuf, AppError> {
-    if let Ok(config_dir) = app_config_dir_fallback() {
-        let candidate = config_dir.join(PRESET_CONFIG_FILE_NAME);
-
-        if !candidate.exists() {
-            if let Ok(executable_path) = std::env::current_exe() {
-                if let Some(install_dir) = executable_path.parent() {
-                    let legacy = install_dir.join(PRESET_CONFIG_FILE_NAME);
-                    if legacy.exists() {
-                        if let Ok(contents) = fs::read(&legacy) {
-                            let _ = fs::write(&candidate, contents);
-                        }
-                    }
-                }
-            }
-        }
-
-        return Ok(candidate);
-    }
-
-    // Portable fallback: install directory when the OS config dir failed.
-    if let Some(install_dir) = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(Path::to_path_buf))
-    {
-        let candidate = install_dir.join(PRESET_CONFIG_FILE_NAME);
-        if candidate.exists() || File::create(install_dir.join(".write-probe")).is_ok() {
-            let _ = fs::remove_file(install_dir.join(".write-probe"));
-            return Ok(candidate);
-        }
-    }
-
-    Err(AppError::Config(
-        "Unable to determine a writable location for the preset config.".to_string(),
-    ))
-}
 
 #[derive(Debug, Clone, Default)]
 pub struct CompressionTaskRegistry {
@@ -157,84 +103,6 @@ impl SessionOutputRegistry {
     }
 }
 
-fn read_preset_user_config() -> Result<PresetUserConfigPayload, AppError> {
-    read_preset_config_at(&resolve_preset_config_path()?)
-}
-
-/// Path-parameterized core of [`read_preset_user_config`] so tests can point
-/// it at a temp directory.
-fn read_preset_config_at(config_path: &Path) -> Result<PresetUserConfigPayload, AppError> {
-    let contents = match fs::read_to_string(config_path) {
-        Ok(contents) => contents,
-        Err(error) if error.kind() == ErrorKind::NotFound => {
-            return Ok(PresetUserConfigPayload::default());
-        }
-        Err(error) => return Err(AppError::Io(error)),
-    };
-
-    if contents.trim().is_empty() {
-        return Ok(PresetUserConfigPayload::default());
-    }
-
-    let mut config =
-        serde_json::from_str::<PresetUserConfigPayload>(&contents).map_err(|error| {
-            AppError::Config(format!(
-                "Failed to parse preset config at {}: {error}",
-                config_path.display()
-            ))
-        })?;
-    // v1→v2: the 0.7.x CMYK default-off state must not pin the upgraded
-    // install to the old default. v2→v3: the ≤0.9 bilevel "jpeg" default
-    // likewise resets so 0.10.0's G4 default applies. The per-profile calls
-    // share the engine's migration rules; only the field values matter per
-    // entry, the stamped version is tracked by the container.
-    for profile in config.presets.values_mut() {
-        let _ = pdf_core::migrate_cmyk_default_flip(config.version, &mut profile.cmyk_conversion);
-        let _ = pdf_core::migrate_bilevel_default_flip(config.version, &mut profile.bilevel_codec);
-    }
-    config.version = config.version.max(3);
-    Ok(config)
-}
-
-fn write_preset_user_config(config: &PresetUserConfigPayload) -> Result<(), AppError> {
-    write_preset_config_at(&resolve_preset_config_path()?, config)
-}
-
-/// Path-parameterized core of [`write_preset_user_config`]: serialize, write
-/// to an exclusive-create temp file, sync, then atomically rename over the
-/// target — the same discipline as the compressor's output writer.
-fn write_preset_config_at(
-    config_path: &Path,
-    config: &PresetUserConfigPayload,
-) -> Result<(), AppError> {
-    let parent_dir = config_path.parent().ok_or_else(|| {
-        AppError::Config(format!(
-            "Unable to resolve parent directory for preset config: {}",
-            config_path.display()
-        ))
-    })?;
-    let payload = serde_json::to_vec_pretty(config)
-        .map_err(|error| AppError::Config(format!("Failed to serialize preset config: {error}")))?;
-
-    fs::create_dir_all(parent_dir)?;
-
-    pdf_core::atomic_file::write(config_path, &payload)
-}
-
-fn clear_preset_user_config_file() -> Result<(), AppError> {
-    clear_preset_config_at(&resolve_preset_config_path()?)
-}
-
-/// Path-parameterized core of [`clear_preset_user_config_file`]; a missing
-/// file is not an error.
-fn clear_preset_config_at(config_path: &Path) -> Result<(), AppError> {
-    match fs::remove_file(config_path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(AppError::Io(error)),
-    }
-}
-
 fn open_path_with_system(path: &Path) -> Result<(), AppError> {
     let canonical = path
         .canonicalize()
@@ -254,7 +122,9 @@ fn reveal_path_in_folder_with_system(path: &Path) -> Result<(), AppError> {
 #[tauri::command]
 #[specta::specta]
 pub fn load_preset_user_config() -> Result<PresetUserConfigPayload, AppErrorPayload> {
-    read_preset_user_config().map_err(AppErrorPayload::from)
+    preset_config::resolve_preset_config_path()
+        .and_then(|path| preset_config::read_preset_config_at(&path))
+        .map_err(AppErrorPayload::from)
 }
 
 #[tauri::command]
@@ -265,7 +135,9 @@ pub async fn save_preset_user_config(
     // The writer fsyncs (write_all + sync_all) — keep that off the main
     // thread; sync commands run on it in Tauri v2.
     tauri::async_runtime::spawn_blocking(move || {
-        write_preset_user_config(&config).map_err(AppErrorPayload::from)?;
+        preset_config::resolve_preset_config_path()
+            .and_then(|path| preset_config::write_preset_config_at(&path, &config))
+            .map_err(AppErrorPayload::from)?;
         Ok(config)
     })
     .await
@@ -279,7 +151,9 @@ pub async fn save_preset_user_config(
 #[tauri::command]
 #[specta::specta]
 pub fn clear_preset_user_config() -> Result<(), AppErrorPayload> {
-    clear_preset_user_config_file().map_err(AppErrorPayload::from)
+    preset_config::resolve_preset_config_path()
+        .and_then(|path| preset_config::clear_preset_config_at(&path))
+        .map_err(AppErrorPayload::from)
 }
 
 /// Quick-mode (right-click) profile, persisted at the shared OS-config
@@ -566,10 +440,9 @@ pub async fn compress_scanned_pdf(
             image_quality: request.image_quality,
             max_image_size_px: request.max_image_size_px,
             max_image_size_percent: request.max_image_size_percent,
-            // Grayscale is a real RGB→Luma re-encode inside the engine now —
-            // no longer a reason to skip image optimization entirely.
-            optimize_images: Some(true),
-            compress_streams: Some(true),
+            // Forced on by `scanned_pipeline()` below.
+            optimize_images: None,
+            compress_streams: None,
             grayscale: request.grayscale,
             bilevel_codec: request
                 .bilevel_codec
@@ -579,7 +452,8 @@ pub async fn compress_scanned_pdf(
             cmyk_conversion: None,
             strip_metadata: request.strip_metadata.or(request.remove_metadata),
             output_dir: request.output_dir,
-        },
+        }
+        .scanned_pipeline(),
     );
 
     run_compression(
@@ -657,6 +531,8 @@ pub fn app_ready(app: tauri::AppHandle) -> Result<(), AppErrorPayload> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
 
     #[test]
@@ -716,182 +592,6 @@ mod tests {
             lexical = format!("/{lexical}");
         }
         assert!(outputs.contains(&lexical));
-    }
-
-    #[test]
-    fn preset_config_roundtrips_and_clears() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let config_path = dir.path().join("preset-user-config.json");
-
-        // Missing file reads as the default config.
-        let empty = read_preset_config_at(&config_path).expect("read missing");
-        assert!(empty.presets.is_empty());
-
-        let mut config = PresetUserConfigPayload::default();
-        config.presets.insert(
-            "balanced".to_string(),
-            pdf_core::models::PresetProfilePayload {
-                image_quality: 72,
-                max_image_size_percent: 80,
-                ..Default::default()
-            },
-        );
-        write_preset_config_at(&config_path, &config).expect("write");
-
-        let loaded = read_preset_config_at(&config_path).expect("read");
-        assert_eq!(loaded.version, config.version);
-        assert_eq!(
-            loaded.presets.get("balanced").map(|p| p.image_quality),
-            Some(72)
-        );
-        // The atomic-write temp files (pid-suffixed) never linger.
-        let leftovers: Vec<_> = fs::read_dir(dir.path())
-            .expect("read dir")
-            .filter_map(Result::ok)
-            .filter(|entry| {
-                entry
-                    .path()
-                    .extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("tmp"))
-            })
-            .collect();
-        assert!(
-            leftovers.is_empty(),
-            "temp files never linger: {leftovers:?}"
-        );
-
-        clear_preset_config_at(&config_path).expect("clear");
-        assert!(!config_path.exists());
-        // Clearing again is fine.
-        clear_preset_config_at(&config_path).expect("clear missing");
-    }
-
-    #[test]
-    fn preset_config_rejects_corrupt_json() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let config_path = dir.path().join("preset-user-config.json");
-        fs::write(&config_path, b"{ not json").expect("write");
-
-        assert!(read_preset_config_at(&config_path).is_err());
-    }
-
-    #[test]
-    fn preset_config_v1_migrates_the_cmyk_default_flip() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let config_path = dir.path().join("preset-user-config.json");
-
-        // A 0.7.x config persisted cmykConversion verbatim: false was the
-        // old default state and must not pin the upgrade to it; true was a
-        // deliberate opt-in and survives. Unrelated fields ride along.
-        fs::write(
-            &config_path,
-            r#"{
-                "version": 1,
-                "presets": {
-                    "balanced":  { "imageQuality": 72, "maxImageSizePercent": 80, "cmykConversion": false },
-                    "maximum":   { "imageQuality": 46, "maxImageSizePercent": 52, "cmykConversion": true },
-                    "custom":    { "imageQuality": 60, "maxImageSizePercent": 70 }
-                }
-            }"#,
-        )
-        .expect("write v1 config");
-
-        let migrated = read_preset_config_at(&config_path).expect("read v1");
-        assert_eq!(
-            migrated.version, 3,
-            "v1 configs are stamped through to v3 in memory"
-        );
-        assert_eq!(
-            migrated.presets["balanced"].cmyk_conversion, None,
-            "old default-off resets to unset (new default applies)"
-        );
-        assert_eq!(
-            migrated.presets["maximum"].cmyk_conversion,
-            Some(true),
-            "deliberate opt-ins survive"
-        );
-        assert_eq!(
-            migrated.presets["custom"].cmyk_conversion, None,
-            "untouched entries stay unset"
-        );
-        assert_eq!(migrated.presets["balanced"].image_quality, 72);
-    }
-
-    #[test]
-    fn preset_config_v2_keeps_genuine_opt_outs() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let config_path = dir.path().join("preset-user-config.json");
-
-        // A false written by 0.8.0+ is a genuine opt-out and must survive
-        // every future load untouched.
-        fs::write(
-            &config_path,
-            r#"{ "version": 2, "presets": { "balanced": { "imageQuality": 72, "maxImageSizePercent": 80, "cmykConversion": false } } }"#,
-        )
-        .expect("write v2 config");
-
-        let loaded = read_preset_config_at(&config_path).expect("read v2");
-        assert_eq!(loaded.version, 3);
-        assert_eq!(loaded.presets["balanced"].cmyk_conversion, Some(false));
-    }
-
-    #[test]
-    fn preset_config_v2_migrates_the_bilevel_default_flip() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let config_path = dir.path().join("preset-user-config.json");
-
-        // A ≤0.9 config materialized the then-default "jpeg" into every
-        // preset — indistinguishable from untouched, so it must reset for
-        // the 0.10.0 G4 default; "ccitt-g4" was a deliberate opt-in.
-        fs::write(
-            &config_path,
-            r#"{
-                "version": 2,
-                "presets": {
-                    "balanced":  { "imageQuality": 72, "maxImageSizePercent": 68, "bilevelCodec": "jpeg" },
-                    "maximum":   { "imageQuality": 46, "maxImageSizePercent": 52, "bilevelCodec": "ccitt-g4" },
-                    "custom":    { "imageQuality": 60, "maxImageSizePercent": 70 }
-                }
-            }"#,
-        )
-        .expect("write v2 config");
-
-        let migrated = read_preset_config_at(&config_path).expect("read v2");
-        assert_eq!(migrated.version, 3, "v2 configs are stamped to v3");
-        assert_eq!(
-            migrated.presets["balanced"].bilevel_codec, None,
-            "old default jpeg resets to unset (G4 default applies)"
-        );
-        assert_eq!(
-            migrated.presets["maximum"].bilevel_codec,
-            Some("ccitt-g4".to_string()),
-            "deliberate opt-ins survive"
-        );
-        assert_eq!(
-            migrated.presets["custom"].bilevel_codec, None,
-            "untouched entries stay unset"
-        );
-    }
-
-    #[test]
-    fn preset_config_v3_keeps_genuine_opt_outs() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let config_path = dir.path().join("preset-user-config.json");
-
-        // A jpeg written by 0.10.0+ is a genuine opt-out: no migration may
-        // touch it (otherwise every re-save could silently re-enable G4).
-        fs::write(
-            &config_path,
-            r#"{ "version": 3, "presets": { "balanced": { "imageQuality": 72, "maxImageSizePercent": 68, "bilevelCodec": "jpeg" } } }"#,
-        )
-        .expect("write v3 config");
-
-        let loaded = read_preset_config_at(&config_path).expect("read v3");
-        assert_eq!(loaded.version, 3);
-        assert_eq!(
-            loaded.presets["balanced"].bilevel_codec,
-            Some("jpeg".to_string())
-        );
     }
 
     #[test]
