@@ -198,6 +198,13 @@ impl AppView {
         .detach();
     }
 
+    pub fn receive_external_paths(&mut self, paths: Vec<PathBuf>, cx: &mut Context<'_, Self>) {
+        cx.activate(true);
+        if !paths.is_empty() {
+            self.add_paths(paths, cx);
+        }
+    }
+
     fn add_paths(&mut self, paths: Vec<PathBuf>, cx: &mut Context<'_, Self>) {
         if self.queue.is_locked() {
             self.last_error = Some("The queue is locked while compression is running.".into());
