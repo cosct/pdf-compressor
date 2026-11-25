@@ -15,7 +15,8 @@ use pdf_core::models::ProgressUpdate;
 use super::{
     engine,
     job::{JobId, JobStatus},
-    locale, persistence,
+    locale::{self, Text},
+    persistence,
     prefs::{LocalePreference, Preferences, ThemePreference},
     presets::Presets,
     queue::{Queue, QueueMutation},
@@ -749,7 +750,7 @@ impl AppView {
             .child(div().text_xs().child(status))
             .child(
                 Button::new(("remove", id.0))
-                    .label("Remove")
+                    .label(locale::text(Text::Remove))
                     .disabled(self.queue.is_locked())
                     .on_click(cx.listener(move |this, _, _, cx| this.remove_job(id, cx))),
             )
@@ -783,7 +784,7 @@ impl AppView {
                 )
                 .child(
                     Button::new(("dismiss-toast", id))
-                        .label("Dismiss")
+                        .label(locale::text(Text::Dismiss))
                         .on_click(cx.listener(move |this, _, _, cx| this.dismiss_toast(id, cx))),
                 )
         });
@@ -868,6 +869,9 @@ impl Render for AppView {
             .selected_job()
             .map(|job| job.settings.clone())
             .unwrap_or_else(|| self.queue.draft_settings.clone());
+        let text = |id: Text| locale::text(id);
+        let state = |value: bool| text(if value { Text::On } else { Text::Off });
+        let setting_label = |id: Text, value: bool| text(id).replace("%{state}", &state(value));
         v_flex()
             .size_full()
             .bg(theme.background)
@@ -877,7 +881,7 @@ impl Render for AppView {
                     div()
                         .text_sm()
                         .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .child("PDF Compressor"),
+                        .child(text(Text::Title)),
                 ),
             )
             .child(
@@ -901,14 +905,14 @@ impl Render for AppView {
                             .gap_2()
                             .child(
                                 Button::new("browse")
-                                    .label("Add PDFs")
+                                    .label(text(Text::AddPdfs))
                                     .disabled(locked)
                                     .on_click(cx.listener(|this, _, _, cx| this.browse(cx))),
                             )
                             .child(
                                 Button::new("compress-selected")
                                     .primary()
-                                    .label("Compress selected")
+                                    .label(text(Text::CompressSelected))
                                     .disabled(
                                         locked
                                             || self.queue.selected_compression_target().is_empty(),
@@ -919,7 +923,7 @@ impl Render for AppView {
                             )
                             .child(
                                 Button::new("compress-all")
-                                    .label("Compress pending")
+                                    .label(text(Text::CompressPending))
                                     .disabled(
                                         locked
                                             || self.queue.pending_compression_targets().is_empty(),
@@ -929,7 +933,7 @@ impl Render for AppView {
                             .child(
                                 Button::new("cancel")
                                     .danger()
-                                    .label("Cancel")
+                                    .label(text(Text::Cancel))
                                     .disabled(!running)
                                     .on_click(cx.listener(|this, _, _, cx| this.cancel(cx))),
                             ),
@@ -939,7 +943,7 @@ impl Render for AppView {
                             .gap_2()
                             .child(
                                 Button::new("preset-conservative")
-                                    .label("Conservative")
+                                    .label(text(Text::Conservative))
                                     .disabled(locked)
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.choose_preset(Preset::Conservative, window, cx)
@@ -947,7 +951,7 @@ impl Render for AppView {
                             )
                             .child(
                                 Button::new("preset-balanced")
-                                    .label("Balanced")
+                                    .label(text(Text::Balanced))
                                     .disabled(locked)
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.choose_preset(Preset::Balanced, window, cx)
@@ -955,7 +959,7 @@ impl Render for AppView {
                             )
                             .child(
                                 Button::new("preset-maximum")
-                                    .label("Maximum")
+                                    .label(text(Text::Maximum))
                                     .disabled(locked)
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.choose_preset(Preset::Maximum, window, cx)
@@ -963,7 +967,7 @@ impl Render for AppView {
                             )
                             .child(
                                 Button::new("preset-custom")
-                                    .label("Custom")
+                                    .label(text(Text::Custom))
                                     .disabled(locked)
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.choose_preset(Preset::Custom, window, cx)
@@ -971,7 +975,7 @@ impl Render for AppView {
                             )
                             .child(
                                 Button::new("apply-all-settings")
-                                    .label("Apply settings to all")
+                                    .label(text(Text::ApplyToAll))
                                     .disabled(locked || !has_selected || !many_jobs)
                                     .on_click(
                                         cx.listener(|this, _, _, cx| {
@@ -983,44 +987,46 @@ impl Render for AppView {
                     .child(
                         h_flex()
                             .gap_2()
-                            .child(Button::new("theme-system").label("System theme").on_click(
-                                cx.listener(|this, _, _, cx| {
-                                    this.set_theme(ThemePreference::System, cx)
-                                }),
-                            ))
+                            .child(
+                                Button::new("theme-system")
+                                    .label(text(Text::SystemTheme))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.set_theme(ThemePreference::System, cx)
+                                    })),
+                            )
                             .child(
                                 Button::new("theme-light")
-                                    .label("Light")
+                                    .label(text(Text::Light))
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.set_theme(ThemePreference::Light, cx)
                                     })),
                             )
-                            .child(
-                                Button::new("theme-dark")
-                                    .label("Dark")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.set_theme(ThemePreference::Dark, cx)
-                                    })),
-                            )
+                            .child(Button::new("theme-dark").label(text(Text::Dark)).on_click(
+                                cx.listener(|this, _, _, cx| {
+                                    this.set_theme(ThemePreference::Dark, cx)
+                                }),
+                            ))
                             .child(
                                 Button::new("locale-system")
-                                    .label("System language")
+                                    .label(text(Text::SystemLanguage))
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.set_locale(LocalePreference::System, cx)
                                     })),
                             )
                             .child(
                                 Button::new("locale-en")
-                                    .label("English")
+                                    .label(text(Text::English))
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.set_locale(LocalePreference::English, cx)
                                     })),
                             )
-                            .child(Button::new("locale-zh-cn").label("简体中文").on_click(
-                                cx.listener(|this, _, _, cx| {
-                                    this.set_locale(LocalePreference::ChineseSimplified, cx)
-                                }),
-                            )),
+                            .child(
+                                Button::new("locale-zh-cn")
+                                    .label(text(Text::Chinese))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.set_locale(LocalePreference::ChineseSimplified, cx)
+                                    })),
+                            ),
                     )
                     .child(
                         h_flex()
@@ -1033,7 +1039,7 @@ impl Render for AppView {
                             )
                             .child(
                                 Button::new("browse-output-dir")
-                                    .label("Choose folder…")
+                                    .label(text(Text::ChooseFolder))
                                     .disabled(locked)
                                     .on_click(
                                         cx.listener(|this, _, _, cx| this.browse_output_dir(cx)),
@@ -1046,7 +1052,7 @@ impl Render for AppView {
                             )
                             .child(
                                 Button::new("apply-output-dir")
-                                    .label("Apply directory")
+                                    .label(text(Text::ApplyDirectory))
                                     .disabled(locked)
                                     .on_click(
                                         cx.listener(|this, _, _, cx| this.apply_output_dir(cx)),
@@ -1054,7 +1060,7 @@ impl Render for AppView {
                             )
                             .child(
                                 Button::new("apply-target-size")
-                                    .label("Apply target")
+                                    .label(text(Text::ApplyTarget))
                                     .disabled(locked)
                                     .on_click(
                                         cx.listener(|this, _, _, cx| this.apply_target_size(cx)),
@@ -1072,11 +1078,12 @@ impl Render for AppView {
                                         this.adjust_number_setting("quality", -1, cx)
                                     })),
                             )
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .child(format!("Quality {}", selected_settings.image_quality)),
-                            )
+                            .child(div().text_sm().child(
+                                text(Text::Quality).replace(
+                                    "%{value}",
+                                    &selected_settings.image_quality.to_string(),
+                                ),
+                            ))
                             .child(
                                 Button::new("quality-up")
                                     .label("+")
@@ -1093,9 +1100,9 @@ impl Render for AppView {
                                         this.adjust_number_setting("size-percent", -1, cx)
                                     })),
                             )
-                            .child(div().text_sm().child(format!(
-                                "Max edge {}%",
-                                selected_settings.max_image_size_percent
+                            .child(div().text_sm().child(text(Text::MaxEdge).replace(
+                                "%{value}",
+                                &selected_settings.max_image_size_percent.to_string(),
                             )))
                             .child(
                                 Button::new("size-percent-up")
@@ -1111,13 +1118,9 @@ impl Render for AppView {
                             .gap_2()
                             .child(
                                 Button::new("toggle-optimize-images")
-                                    .label(format!(
-                                        "Images: {}",
-                                        if selected_settings.optimize_images {
-                                            "on"
-                                        } else {
-                                            "off"
-                                        }
+                                    .label(setting_label(
+                                        Text::Images,
+                                        selected_settings.optimize_images,
                                     ))
                                     .disabled(locked)
                                     .on_click(cx.listener(|this, _, _, cx| {
@@ -1126,13 +1129,9 @@ impl Render for AppView {
                             )
                             .child(
                                 Button::new("toggle-compress-streams")
-                                    .label(format!(
-                                        "Streams: {}",
-                                        if selected_settings.compress_streams {
-                                            "on"
-                                        } else {
-                                            "off"
-                                        }
+                                    .label(setting_label(
+                                        Text::Streams,
+                                        selected_settings.compress_streams,
                                     ))
                                     .disabled(locked)
                                     .on_click(cx.listener(|this, _, _, cx| {
@@ -1141,13 +1140,9 @@ impl Render for AppView {
                             )
                             .child(
                                 Button::new("toggle-strip-metadata")
-                                    .label(format!(
-                                        "Strip metadata: {}",
-                                        if selected_settings.strip_metadata {
-                                            "on"
-                                        } else {
-                                            "off"
-                                        }
+                                    .label(setting_label(
+                                        Text::StripMetadata,
+                                        selected_settings.strip_metadata,
                                     ))
                                     .disabled(locked)
                                     .on_click(cx.listener(|this, _, _, cx| {
@@ -1156,13 +1151,9 @@ impl Render for AppView {
                             )
                             .child(
                                 Button::new("toggle-grayscale")
-                                    .label(format!(
-                                        "Grayscale: {}",
-                                        if selected_settings.grayscale {
-                                            "on"
-                                        } else {
-                                            "off"
-                                        }
+                                    .label(setting_label(
+                                        Text::Grayscale,
+                                        selected_settings.grayscale,
                                     ))
                                     .disabled(locked)
                                     .on_click(cx.listener(|this, _, _, cx| {
@@ -1171,13 +1162,9 @@ impl Render for AppView {
                             )
                             .child(
                                 Button::new("toggle-subset-fonts")
-                                    .label(format!(
-                                        "Subset fonts: {}",
-                                        if selected_settings.subset_fonts {
-                                            "on"
-                                        } else {
-                                            "off"
-                                        }
+                                    .label(setting_label(
+                                        Text::SubsetFonts,
+                                        selected_settings.subset_fonts,
                                     ))
                                     .disabled(locked)
                                     .on_click(cx.listener(|this, _, _, cx| {
@@ -1186,13 +1173,9 @@ impl Render for AppView {
                             )
                             .child(
                                 Button::new("toggle-cmyk")
-                                    .label(format!(
-                                        "CMYK conversion: {}",
-                                        if selected_settings.cmyk_conversion {
-                                            "on"
-                                        } else {
-                                            "off"
-                                        }
+                                    .label(setting_label(
+                                        Text::Cmyk,
+                                        selected_settings.cmyk_conversion,
                                     ))
                                     .disabled(locked)
                                     .on_click(cx.listener(|this, _, _, cx| {
@@ -1214,7 +1197,7 @@ impl Render for AppView {
                                 .child(
                                     Button::new("submit-password")
                                         .primary()
-                                        .label("Retry analysis")
+                                        .label(text(Text::RetryAnalysis))
                                         .on_click(cx.listener(|this, _, window, cx| {
                                             this.submit_password(window, cx)
                                         })),
