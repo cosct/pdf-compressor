@@ -3,6 +3,7 @@
 pub mod engine;
 pub mod format;
 pub mod job;
+pub mod locale;
 pub mod notices;
 pub mod persistence;
 pub mod prefs;

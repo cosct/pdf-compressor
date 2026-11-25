@@ -15,7 +15,7 @@ use pdf_core::models::ProgressUpdate;
 use super::{
     engine,
     job::{JobId, JobStatus},
-    persistence,
+    locale, persistence,
     prefs::{LocalePreference, Preferences, ThemePreference},
     presets::Presets,
     queue::{Queue, QueueMutation},
@@ -846,18 +846,7 @@ fn apply_preferences(preferences: &Preferences, window: Option<&mut Window>, cx:
         ThemePreference::Light => Theme::change(ThemeMode::Light, window, cx),
         ThemePreference::Dark => Theme::change(ThemeMode::Dark, window, cx),
     }
-    gpui_component::set_locale(match preferences.locale {
-        LocalePreference::ChineseSimplified => "zh-CN",
-        LocalePreference::System => {
-            if std::env::var("LANG").is_ok_and(|value| value.to_ascii_lowercase().starts_with("zh"))
-            {
-                "zh-CN"
-            } else {
-                "en"
-            }
-        }
-        LocalePreference::English => "en",
-    });
+    locale::set_locale(preferences.locale);
 }
 
 impl Render for AppView {

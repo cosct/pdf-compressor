@@ -1,0 +1,52 @@
+app:
+  title: PDF Compressor
+  add_pdfs: Add PDFs
+  compress_selected: Compress selected
+  compress_pending: Compress pending
+  cancel: Cancel
+  conservative: Conservative
+  balanced: Balanced
+  maximum: Maximum
+  custom: Custom
+  apply_to_all: Apply settings to all
+  choose_folder: Choose folder…
+  output_directory: Output directory
+  target_mb: Target size (MB)
+  apply_directory: Apply directory
+  apply_target: Apply target
+  quality: Quality %{value}
+  max_edge: Max edge %{value}%
+  images: Images: %{state}
+  streams: Streams: %{state}
+  strip_metadata: Strip metadata: %{state}
+  grayscale: Grayscale: %{state}
+  subset_fonts: Subset fonts: %{state}
+  cmyk: CMYK conversion: %{state}
+  system_theme: System theme
+  light: Light
+  dark: Dark
+  system_language: System language
+  english: English
+  chinese: 简体中文
+  pdf_password: PDF password
+  retry_analysis: Retry analysis
+  dismiss: Dismiss
+  remove: Remove
+  add_files_hint: Add PDF files to begin.
+  ready_to_analyze: Ready to analyze.
+  compression_finished: Compression finished.
+  no_smaller_output: The original is already smaller; no output was written.
+  saved_percent: Saved %{percent}% to %{path}
+  analyze_summary: "%{pages} pages · %{images} images · %{kind} · recommended %{preset}"
+  progress: "%{phase} · %{percent}%"
+  queue_locked: The queue is locked while compression is running.
+  file_picker_error: "File picker: %{error}"
+  directory_picker_error: "Directory picker: %{error}"
+  queue_restore_error: "Queue restore: %{error}"
+  missing_restore: "Skipped %{count} missing PDF file(s) while restoring the queue."
+  scan_pipeline: Scan-heavy document: image and stream optimization are enabled.
+  settings_recommended: The selected settings match the current recommendation.
+  only_session_outputs: Only files produced during this session can be opened.
+  preset_load_error: Failed to load preset settings.
+  on: on
+  off: off

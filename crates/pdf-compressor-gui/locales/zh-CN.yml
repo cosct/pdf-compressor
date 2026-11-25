@@ -1,0 +1,52 @@
+app:
+  title: PDF 压缩器
+  add_pdfs: 添加 PDF
+  compress_selected: 压缩选中项
+  compress_pending: 压缩待处理项
+  cancel: 取消
+  conservative: 保守
+  balanced: 均衡
+  maximum: 最大压缩
+  custom: 自定义
+  apply_to_all: 应用到全部任务
+  choose_folder: 选择文件夹…
+  output_directory: 输出目录
+  target_mb: 目标大小（MB）
+  apply_directory: 应用目录
+  apply_target: 应用目标大小
+  quality: 质量 %{value}
+  max_edge: 最大边长 %{value}%
+  images: 图片优化：%{state}
+  streams: 流压缩：%{state}
+  strip_metadata: 清除元数据：%{state}
+  grayscale: 灰度：%{state}
+  subset_fonts: 字体子集化：%{state}
+  cmyk: CMYK 转换：%{state}
+  system_theme: 跟随系统主题
+  light: 浅色
+  dark: 深色
+  system_language: 跟随系统语言
+  english: English
+  chinese: 简体中文
+  pdf_password: PDF 密码
+  retry_analysis: 重试分析
+  dismiss: 关闭
+  remove: 移除
+  add_files_hint: 添加 PDF 文件以开始。
+  ready_to_analyze: 准备分析。
+  compression_finished: 压缩完成。
+  no_smaller_output: 原文件已经更小，因此没有写入输出文件。
+  saved_percent: 已节省 %{percent}%，保存到 %{path}
+  analyze_summary: "%{pages} 页 · %{images} 张图片 · %{kind} · 推荐 %{preset}"
+  progress: "%{phase} · %{percent}%"
+  queue_locked: 压缩运行时队列已锁定。
+  file_picker_error: "文件选择器：%{error}"
+  directory_picker_error: "目录选择器：%{error}"
+  queue_restore_error: "恢复队列：%{error}"
+  missing_restore: "恢复队列时跳过了 %{count} 个不存在的 PDF 文件。"
+  scan_pipeline: 扫描件：已启用图片优化和流压缩。
+  settings_recommended: 当前设置与推荐设置一致。
+  only_session_outputs: 只能打开本次会话生成的文件。
+  preset_load_error: 加载预设设置失败。
+  on: 开
+  off: 关
